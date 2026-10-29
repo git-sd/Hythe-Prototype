@@ -161,9 +161,18 @@ impl Scroll {
     pub fn clamped(self, buf: &Buffer, vp: Size) -> Scroll {
         let m = self.metrics();
         let max = (buf.line_count() as f32 * m.line_h - vp.height + m.line_h * 3.0).max(0.0);
+        let y = self.y.clamp(0.0, max);
+        // Sideways, only as far as the longest line on screen reaches.
+        let first = (y / m.line_h) as usize;
+        let rows = (vp.height / m.line_h).ceil() as usize + 2;
+        let widest = (first..(first + rows).min(buf.line_count()))
+            .map(|l| visual_col(&buf.line_text(l), usize::MAX))
+            .max()
+            .unwrap_or(0);
+        let max_x = (widest as f32 * m.char_w - (vp.width - m.text_x) + 60.0).max(0.0);
         Scroll {
-            x: self.x.max(0.0),
-            y: self.y.clamp(0.0, max),
+            x: self.x.clamp(0.0, max_x),
+            y,
             zoom: self.zoom,
         }
     }

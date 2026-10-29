@@ -163,6 +163,8 @@ struct App {
     git_wanted: bool,
     git_busy: bool,
     chat: Chat,
+    /// Shift is held, for sideways scrolling with the wheel.
+    shift: bool,
     /// A tab being dragged: (pane, tab).
     tab_drag: Option<(usize, usize)>,
     /// A rail tile, terminal or pinned file being dragged.
@@ -229,7 +231,7 @@ pub struct Member {
 pub enum Message {
     Key(keyboard::Event),
     Click { pane: usize, line: usize, col: usize, select: bool },
-    Scroll { pane: usize, dy: f32 },
+    Scroll { pane: usize, dy: f32, dx: f32 },
     Paste(Option<String>),
     NewFile,
     OpenFileDialog,
@@ -370,6 +372,7 @@ impl App {
             git_busy: false,
             // Closed until asked for; the title bar and bottom bar icons open it.
             chat: Chat { dismissed: true, ..Chat::default() },
+            shift: false,
             tab_drag: None,
             item_drag: None,
             agent_right: false,
@@ -897,12 +900,15 @@ impl App {
                 self.accept_completion();
             }
             Message::TriggerCompletion => self.refresh_completion(true),
-            Message::Scroll { pane, dy } => {
+            Message::Scroll { pane, dy, dx } => {
+                // Shift + wheel scrolls sideways.
+                let (dx, dy) = if self.shift { (dy, 0.0) } else { (dx, dy) };
                 if let Some(p) = self.panes.list.get_mut(pane) {
                     let vp = p.viewport.get();
                     if let Some(tab) = p.tabs.get_mut(p.active) {
                         if let Some(d) = self.docs.get(tab.doc) {
                             tab.scroll.y -= dy;
+                            tab.scroll.x -= dx;
                             tab.scroll = tab.scroll.clamped(&d.buffer, vp);
                         }
                     }
@@ -923,6 +929,7 @@ impl App {
                 self.reveal_cursor();
             }
             Message::Paste(None) => {}
+            Message::Key(keyboard::Event::ModifiersChanged(m)) => self.shift = m.shift(),
             Message::Key(keyboard::Event::KeyPressed { key, modifiers, text, .. }) => {
                 // Any key press dismisses an open dropdown; Esc is just the dismissal.
                 if self.menu.take().is_some() && matches!(key, Key::Named(Named::Escape)) {

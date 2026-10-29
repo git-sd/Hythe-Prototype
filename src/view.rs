@@ -31,6 +31,24 @@ pub(crate) const CHAT_W: f32 = 160.0;
 /// Width of a draggable divider (the visible line is 1px in the middle).
 pub(crate) const HANDLE_W: f32 = 5.0;
 
+/// A slim scrollbar, so lists keep their width.
+pub(crate) fn thin() -> scrollable::Scrollbar {
+    scrollable::Scrollbar::new().width(4).scroller_width(4).margin(1)
+}
+
+/// A vertically scrolling area with a slim scrollbar.
+pub(crate) fn vscroll<'a>(content: impl Into<Element<'a, Message>>) -> scrollable::Scrollable<'a, Message> {
+    scrollable(content).direction(scrollable::Direction::Vertical(thin()))
+}
+
+/// The column that sits furthest right, which carries the window buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Edge {
+    Editor,
+    Agent,
+    Chat,
+}
+
 pub(crate) fn divider_h<'a>() -> Element<'a, Message> {
     container(space::vertical().height(Length::Fixed(1.0)))
         .width(Length::Fill)
@@ -134,7 +152,14 @@ impl App {
         }
         body = body.push(right);
 
-        let base = column![self.title_bar(), divider_h(), body];        if let Some(p) = &self.palette {
+        // With the sidebar open the column headers form the only top row, and carry the
+        // window buttons; with it hidden the full title bar comes back above everything.
+        let base: Element<'_, Message> = if self.show_sidebar {
+            body.into()
+        } else {
+            column![self.title_bar(), divider_h(), body].into()
+        };
+        if let Some(p) = &self.palette {
             return stack![
                 base,
                 mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
@@ -166,19 +191,63 @@ impl App {
 
     // --- title bar ---
 
-    fn title_bar(&self) -> Element<'_, Message> {
+    /// Menu, sidebar, search and history buttons.
+    fn left_controls(&self) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
-        let doc_name = self
-            .docs
-            .get(self.panes.cur())
-            .map(|d| d.name())
-            .unwrap_or_default();
+        row![
+            icon_button(Icon::Menu, dim, self.menu == Some(0), Message::OpenMenu(0)),
+            icon_button(Icon::Sidebar, dim, self.show_sidebar, Message::ToggleSidebar),
+            icon_button(Icon::Search, dim, false, Message::OpenPalette),
+        ]
+        .spacing(2)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    /// Follow mode, who is here, Share and the window buttons.
+    fn right_controls(&self) -> Element<'_, Message> {
+        let dim = theme::TEXT_DIM;
+        row![
+            icon_button(Icon::Eye, dim, false, Message::Unavailable("Follow mode")),
+            self.people_bar(),
+            button(row![icon(Icon::Send, 14.0, dim), text("Share").size(13)].spacing(6).align_y(Alignment::Center))
+                .padding([5, 10])
+                .style(theme::flat(false))
+                .on_press(Message::Collab(CollabMsg::Panel(true))),
+            icon_button(Icon::Minus, dim, false, Message::MinimizeWindow),
+            icon_button(Icon::Expand, dim, false, Message::ToggleMaximize),
+            icon_button(Icon::Close, dim, false, Message::CloseRequested),
+        ]
+        .spacing(2)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    pub(crate) fn rightmost(&self) -> Edge {
+        if self.chat_visible() && self.chat_right {
+            Edge::Chat
+        } else if self.show_term && self.agent_right {
+            Edge::Agent
+        } else {
+            Edge::Editor
+        }
+    }
+
+    /// The window buttons, if this column's header is the one at the right edge.
+    pub(crate) fn header_extra(&self, edge: Edge) -> Element<'_, Message> {
+        if self.show_sidebar && self.rightmost() == edge {
+            self.right_controls()
+        } else {
+            space::horizontal().width(Length::Shrink).into()
+        }
+    }
+
+    /// Full-width bar used only while the sidebar is hidden.
+    fn title_bar(&self) -> Element<'_, Message> {
+        let doc_name = self.docs.get(self.panes.cur()).map(|d| d.name()).unwrap_or_default();
         container(
             row![
-                icon_button(Icon::Menu, dim, self.menu == Some(0), Message::OpenMenu(0)),
-                icon_button(Icon::Sidebar, dim, self.show_sidebar, Message::ToggleSidebar),
-                icon_button(Icon::Search, dim, false, Message::OpenPalette),
-                icon_button(Icon::History, dim, false, Message::Unavailable("History")),
+                self.left_controls(),
                 // The empty stretch of the bar drags the window; double-click maximises.
                 mouse_area(
                     container(text(doc_name).size(13).color(theme::TEXT_DIM))
@@ -189,19 +258,7 @@ impl App {
                 )
                 .on_press(Message::DragWindow)
                 .on_double_click(Message::ToggleMaximize),
-                icon_button(Icon::Eye, dim, false, Message::Unavailable("Follow mode")),
-                self.people_bar(),
-                button(
-                    row![icon(Icon::Send, 14.0, dim), text("Share").size(13)]
-                        .spacing(6)
-                        .align_y(Alignment::Center),
-                )
-                .padding([5, 10])
-                .style(theme::flat(false))
-                .on_press(Message::Collab(CollabMsg::Panel(true))),
-                icon_button(Icon::Minus, dim, false, Message::MinimizeWindow),
-                icon_button(Icon::Expand, dim, false, Message::ToggleMaximize),
-                icon_button(Icon::Close, dim, false, Message::CloseRequested),
+                self.right_controls(),
             ]
             .spacing(2)
             .align_y(Alignment::Center)
@@ -280,7 +337,7 @@ impl App {
                 2 => menus::editor_entries(),
                 _ => menus::project_entries(),
             };
-            container(scrollable(column(entries.into_iter().map(Self::menu_row)).padding(4)).height(Length::Shrink))
+            container(vscroll(column(entries.into_iter().map(Self::menu_row)).padding(4)).height(Length::Shrink))
                 .width(Length::Fixed(300.0))
                 .max_height(560.0)
                 .style(|_: &Theme| container::Style {
@@ -291,13 +348,15 @@ impl App {
                 .into()
         };
         // Each menu opens beside the button that asked for it.
+        // With the sidebar open there is no separate title bar above the headers.
+        let top_shift = if self.show_sidebar { TITLE_H + 1.0 } else { 0.0 };
         let sidebar_left = if self.show_sidebar { RAIL_W + self.list_w + HANDLE_W } else { 0.0 };
         let (align_x, align_y, pad) = match kind {
             // Thread column "…": right-aligned under the column header.
             1 => (
                 Alignment::Start,
                 Alignment::Start,
-                Padding { top: TITLE_H + 42.0, left: {
+                Padding { top: TITLE_H + 42.0 - top_shift, left: {
                     let chat = if self.chat_visible() { self.chat_w + HANDLE_W } else { 0.0 };
                     if self.agent_right {
                         (self.win.width - if self.chat_right { chat } else { 0.0 } - 300.0 - 8.0).max(8.0)
@@ -307,11 +366,20 @@ impl App {
                 }, ..Padding::ZERO },
             ),
             // Editor tabs "…": right edge of the window, under the tab bar.
-            2 => (Alignment::End, Alignment::Start, Padding { top: TITLE_H + 42.0, right: 8.0, ..Padding::ZERO }),
+            2 => (
+                Alignment::End,
+                Alignment::Start,
+                Padding {
+                    top: TITLE_H + 42.0 - top_shift,
+                    // The window buttons sit to the right of the tab bar's own "…".
+                    right: 8.0 + if self.show_sidebar && self.rightmost() == Edge::Editor { 250.0 } else { 0.0 },
+                    ..Padding::ZERO
+                },
+            ),
             // Account chip: above the chip, bottom-left.
             3 => (Alignment::Start, Alignment::End, Padding { bottom: 56.0, left: 8.0, ..Padding::ZERO }),
             // Repository name: under it, in the file list.
-            4 => (Alignment::Start, Alignment::Start, Padding { top: TITLE_H + 42.0, left: RAIL_W + 8.0, ..Padding::ZERO }),
+            4 => (Alignment::Start, Alignment::Start, Padding { top: TITLE_H + 42.0 - top_shift, left: 90.0, ..Padding::ZERO }),
             _ => (Alignment::Start, Alignment::Start, Padding { top: TITLE_H + 4.0, left: 8.0, ..Padding::ZERO }),
         };
         container(opaque(panel))
@@ -382,6 +450,8 @@ impl App {
 
     fn left_block(&self) -> Element<'_, Message> {
         container(column![
+            self.left_top(),
+            divider_h(),
             row![self.rail(), self.channel_list()].height(Length::Fill),
             divider_h(),
             self.account_chip(),
@@ -389,6 +459,29 @@ impl App {
         .width(Length::Fixed(RAIL_W + self.list_w))
         .height(Length::Fill)
         .into()
+    }
+
+    /// Top row of the sidebar: window menu, sidebar toggle, search and the repository name.
+    fn left_top(&self) -> Element<'_, Message> {
+        let name = self.active_project.map(|i| self.project_name(i)).unwrap_or_else(|| "Hythe".to_string());
+        let repo = button(
+            row![
+                text(name).size(14).wrapping(text::Wrapping::None),
+                space::horizontal(),
+                icon(Icon::ChevronDown, 12.0, theme::TEXT_DIM),
+            ]
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding([4, 8])
+        .style(theme::row(false))
+        .on_press(Message::OpenMenu(4));
+        container(row![self.left_controls(), repo].spacing(4).align_y(Alignment::Center).padding([0, 8]))
+            .width(Length::Fixed(RAIL_W + self.list_w))
+            .height(Length::Fixed(TAB_H))
+            .align_y(Alignment::Center)
+            .style(theme::bg(theme::BAR_BG))
+            .into()
     }
 
     /// The far-left strip: one small tile per repository.
@@ -410,7 +503,7 @@ impl App {
         }
         rail = rail.push(rail_tile(RailFace::Plus, false, false, "Add a repository".into(), Message::AddRepo(AddRepoMsg::Open), None));
 
-        container(scrollable(rail).height(Length::Fill))
+        container(vscroll(rail).height(Length::Fill))
             .width(Length::Fixed(RAIL_W))
             .height(Length::Fill)
             .style(theme::bg(theme::RAIL_BG))
@@ -419,21 +512,6 @@ impl App {
     /// The repository's files as channels: folders are categories, files are rows.
     fn channel_list(&self) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
-        let name = self
-            .active_project
-            .map(|i| self.project_name(i))
-            .unwrap_or_else(|| "Hythe".to_string());
-
-        let header = button(
-            container(row![text(name).size(15), space::horizontal(), icon(Icon::ChevronDown, 13.0, dim)].align_y(Alignment::Center))
-                .height(Length::Fill)
-                .align_y(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .height(Length::Fixed(TAB_H))
-        .padding([0, 12])
-        .style(theme::row(false))
-        .on_press(Message::OpenMenu(4));
 
         let changes = self.scm.changes.len();
         let mut list = column![].spacing(1).padding([6, 8]);
@@ -559,7 +637,7 @@ impl App {
             }
         }
 
-        container(column![header, divider_h(), scrollable(list).height(Length::Fill)])
+        container(column![vscroll(list).height(Length::Fill)])
             .width(Length::Fixed(self.list_w))
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))
@@ -623,6 +701,7 @@ impl App {
                 icon_button(Icon::Expand, dim, false, Message::Unavailable("Zoom")),
                 icon_button(Icon::More, dim, self.menu == Some(1), Message::OpenMenu(1)),
             ]
+            .push(self.header_extra(Edge::Agent))
             .spacing(2)
             .align_y(Alignment::Center)
             .padding([0, 10]),
@@ -732,14 +811,27 @@ impl App {
     fn editor_area(&self) -> Element<'_, Message> {
         if self.scm.open {
             // Source Control is one more tab: the file tabs stay in view above it.
-            return container(column![self.tab_bar(0), self.scm_view()])
+            return container(column![self.tab_bar_with(0, true), self.scm_view()])
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(theme::bg(theme::EDITOR_BG))
                 .into();
         }
         if self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty() {
-            return container(self.welcome())
+            let strip = container(
+                row![
+                    mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
+                        .on_press(Message::DragWindow)
+                        .on_double_click(Message::ToggleMaximize),
+                    self.header_extra(Edge::Editor),
+                ]
+                .align_y(Alignment::Center)
+                .padding([0, 8]),
+            )
+            .width(Length::Fill)
+            .height(Length::Fixed(TAB_H))
+            .style(theme::bg(theme::TAB_BAR_BG));
+            return container(column![strip, divider_h(), self.welcome()])
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(theme::bg(theme::EDITOR_BG))
@@ -822,6 +914,15 @@ impl App {
     }
 
     fn tab_bar(&self, pane_index: usize) -> Element<'_, Message> {
+        let last = match self.panes.axis {
+            Axis::Horizontal => self.panes.list.len() - 1,
+            Axis::Vertical => 0,
+        };
+        self.tab_bar_with(pane_index, pane_index == last)
+    }
+
+    /// `edge`: this bar is at the window's right edge, so it carries the window buttons.
+    fn tab_bar_with(&self, pane_index: usize, edge: bool) -> Element<'_, Message> {
         let pane = &self.panes.list[pane_index];
         let tabs = pane.tabs.iter().enumerate().filter_map(|(i, t)| {
             let d = self.docs.get(t.doc)?;
@@ -866,9 +967,12 @@ impl App {
         let bar = container(
             row![
                 tabs,
-                space::horizontal(),
+                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
+                    .on_press(Message::DragWindow)
+                    .on_double_click(Message::ToggleMaximize),
                 icon_button(Icon::Split, theme::TEXT_DIM, self.panes.list.len() > 1, Message::Split(Axis::Horizontal)),
                 icon_button(Icon::More, theme::TEXT_DIM, self.menu == Some(2), Message::OpenMenu(2)),
+                if edge { self.header_extra(Edge::Editor) } else { space::horizontal().width(Length::Shrink).into() },
             ]
             .align_y(Alignment::Center)
             .padding([0, 6]),

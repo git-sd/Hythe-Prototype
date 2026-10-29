@@ -199,7 +199,7 @@ impl App {
         }
 
         container(
-            column![top, commit_box, scrollable(files).height(Length::Fill)]
+            column![top, commit_box, crate::view::vscroll(files).height(Length::Fill)]
                 .spacing(10)
                 .padding(10),
         )
@@ -289,7 +289,7 @@ impl App {
         .spacing(8)
         .align_y(Alignment::Center);
 
-        container(column![self.mode_switch(), top, scrollable(list).height(Length::Fill)].spacing(8).padding(10))
+        container(column![self.mode_switch(), top, crate::view::vscroll(list).height(Length::Fill)].spacing(8).padding(10))
             .width(Length::Fixed(self.scm_w))
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))
@@ -365,7 +365,7 @@ impl App {
             column![
                 head,
                 files_label,
-                container(scrollable(files).height(Length::Shrink)).max_height(170.0),
+                container(crate::view::vscroll(files).height(Length::Shrink)).max_height(170.0),
                 body,
             ]
             .spacing(8)
@@ -412,7 +412,7 @@ impl App {
         .spacing(6)
         .align_y(Alignment::Center);
 
-        let panel = container(column![scrollable(list).height(Length::Shrink), divider_h(), create].spacing(8).padding(8))
+        let panel = container(column![crate::view::vscroll(list).height(Length::Shrink), divider_h(), create].spacing(8).padding(8))
             .width(Length::Fixed(300.0))
             .max_height(420.0)
             .style(|_: &Theme| container::Style {
@@ -485,8 +485,8 @@ fn diff_body(diff: &[DiffLine], pane_w: f32) -> Element<'static, Message> {
 
     scrollable(lines)
         .direction(scrollable::Direction::Both {
-            vertical: scrollable::Scrollbar::default(),
-            horizontal: scrollable::Scrollbar::default(),
+            vertical: crate::view::thin(),
+            horizontal: crate::view::thin(),
         })
         .height(Length::Fill)
         .into()

@@ -117,11 +117,11 @@ impl canvas::Program<Message> for EditorView<'_> {
                 None
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if cursor.is_over(bounds) => {
-                let dy = match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => y * m.line_h * 3.0,
-                    mouse::ScrollDelta::Pixels { y, .. } => *y,
+                let (dx, dy) = match delta {
+                    mouse::ScrollDelta::Lines { x, y } => (x * m.char_w * 6.0, y * m.line_h * 3.0),
+                    mouse::ScrollDelta::Pixels { x, y } => (*x, *y),
                 };
-                Some(canvas::Action::publish(Message::Scroll { pane: self.pane, dy }).and_capture())
+                Some(canvas::Action::publish(Message::Scroll { pane: self.pane, dy, dx }).and_capture())
             }
             _ => None,
         }

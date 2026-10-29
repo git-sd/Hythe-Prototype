@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, mouse_area, opaque, row, scrollable, space, stack, text, text_input};
+use iced::widget::{button, column, container, mouse_area, opaque, row, space, stack, text, text_input};
 use iced::{Alignment, Color, Element, Length, Task, Theme};
 
 use crate::github::RepoEntry;
@@ -216,7 +216,7 @@ impl App {
                             .on_press(msg(AddRepoMsg::Pick(i))),
                     );
                 }
-                body = body.push(scrollable(list).height(Length::Fixed(190.0)));
+                body = body.push(crate::view::vscroll(list).height(Length::Fixed(190.0)));
             }
             body = body.push(text("Or clone with a link").size(11).color(dim));
             body = body.push(

@@ -5,11 +5,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use hythe_git::ChatMessage;
-use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, mouse_area, row, text, text_input};
 use iced::{Alignment, Color, Element, Length, Padding, Task, Theme};
 
 use crate::icons::{icon, Icon};
-use crate::view::{divider_h, icon_button, TAB_H};
+use crate::view::{divider_h, icon_button, vscroll, Edge, TAB_H};
 use crate::{theme, App, Handle, Message};
 
 const HISTORY: usize = 300;
@@ -247,6 +247,7 @@ impl App {
                     .on_press_maybe(c.busy.is_none().then(|| msg(ChatMsg::Sync))),
                 icon_button(Icon::Close, theme::TEXT_FAINT, false, msg(ChatMsg::Hide)),
             ]
+            .push(self.header_extra(Edge::Chat))
             .spacing(6)
             .align_y(Alignment::Center)
             .padding([0, 8]),
@@ -308,7 +309,7 @@ impl App {
         .spacing(4)
         .padding(6);
 
-        container(column![header, divider_h(), scrollable(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
+        container(column![header, divider_h(), vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
             .width(Length::Fixed(self.chat_w))
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))
