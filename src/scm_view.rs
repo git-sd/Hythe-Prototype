@@ -6,7 +6,8 @@ use iced::{Alignment, Color, Element, Font, Length, Padding, Theme};
 
 use crate::icons::{icon, Icon};
 use crate::scm::{ScmMsg, ScmTab};
-use crate::view::{divider_h, divider_v, icon_button, list_row, BAR_H, SIDEBAR_W};
+use crate::view::{divider_h, icon_button, list_row, BAR_H};
+use crate::Handle;
 use crate::{theme, App, Message};
 
 const MAX_DIFF_LINES: usize = 3000;
@@ -25,7 +26,7 @@ fn status_color(s: Status) -> Color {
 
 impl App {
     pub(crate) fn scm_view(&self) -> Element<'_, Message> {
-        container(row![self.scm_left(), divider_v(), self.scm_diff()])
+        container(row![self.scm_left(), self.handle(Handle::Scm, true), self.scm_diff()])
             .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::bg(theme::EDITOR_BG))
@@ -84,7 +85,9 @@ impl App {
         .spacing(4);
 
         let staged_count = s.staged().count();
-        let can_commit = staged_count > 0 && !s.message.trim().is_empty();
+        let changed = s.changes.len();
+        let can_commit = (staged_count > 0 || changed > 0) && !s.message.trim().is_empty();
+        let files_word = |n: usize| format!("{n} file{}", if n == 1 { "" } else { "s" });
         let commit_box = column![
             text_input("Commit message", &s.message)
                 .on_input(|t| scm(ScmMsg::Text(t)))
@@ -93,7 +96,13 @@ impl App {
                 .size(13)
                 .style(theme::input),
             button(
-                text(if staged_count > 0 { format!("Commit {staged_count} file{}", if staged_count == 1 { "" } else { "s" }) } else { "Commit".into() })
+                text(if staged_count > 0 {
+                    format!("Commit {}", files_word(staged_count))
+                } else if changed > 0 {
+                    format!("Commit all {}", files_word(changed))
+                } else {
+                    "Commit".into()
+                })
                     .size(13)
                     .center()
                     .width(Length::Fill),
@@ -109,6 +118,11 @@ impl App {
                 style
             })
             .on_press_maybe(can_commit.then(|| scm(ScmMsg::Commit))),
+            button(text("Commit & Push").size(13).center().width(Length::Fill))
+                .width(Length::Fill)
+                .padding([6, 8])
+                .style(theme::flat(false))
+                .on_press_maybe(can_commit.then(|| scm(ScmMsg::CommitPush))),
         ]
         .spacing(6);
 
@@ -177,7 +191,7 @@ impl App {
                 .spacing(10)
                 .padding(10),
         )
-        .width(Length::Fixed(340.0))
+        .width(Length::Fixed(self.scm_w))
         .height(Length::Fill)
         .style(theme::bg(theme::PANEL_BG))
         .into()
@@ -264,7 +278,7 @@ impl App {
         .align_y(Alignment::Center);
 
         container(column![self.mode_switch(), top, scrollable(list).height(Length::Fill)].spacing(8).padding(10))
-            .width(Length::Fixed(340.0))
+            .width(Length::Fixed(self.scm_w))
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))
             .into()
@@ -400,7 +414,7 @@ impl App {
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .align_y(Alignment::End)
-                .padding(Padding { bottom: BAR_H + 6.0, left: SIDEBAR_W + 8.0, ..Padding::ZERO }),
+                .padding(Padding { bottom: BAR_H + 6.0, left: crate::view::RAIL_W + self.list_w + crate::view::HANDLE_W + 8.0, ..Padding::ZERO }),
         ]
         .into()
     }

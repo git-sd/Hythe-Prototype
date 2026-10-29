@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use iced::Size;
 
@@ -20,6 +21,15 @@ pub struct Doc {
     pub classes: Vec<u8>,
     /// Last-change info per line, when inline blame is on.
     pub blame: Option<Vec<hythe_git::BlameLine>>,
+    /// Modified time and size of the file as last read or written by us, to
+    /// notice when something else (an agent, say) changes it.
+    pub stamp: Option<(SystemTime, u64)>,
+}
+
+/// Modified time and size of a file, if it exists.
+pub fn disk_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
 }
 
 impl Doc {
@@ -29,7 +39,9 @@ impl Doc {
 
     pub fn open(path: PathBuf, hl: &mut Highlighter) -> std::io::Result<Self> {
         let text = std::fs::read_to_string(&path)?;
+        let stamp = disk_stamp(&path);
         let mut doc = Self::from_text(&text, Some(path));
+        doc.stamp = stamp;
         doc.rehighlight(hl);
         Ok(doc)
     }
@@ -41,6 +53,7 @@ impl Doc {
             dirty: false,
             classes: Vec::new(),
             blame: None,
+            stamp: None,
         }
     }
 
@@ -90,6 +103,7 @@ impl Doc {
         self.buffer = Buffer::new(text);
         self.buffer.set_cursor(line, col, false);
         self.dirty = false;
+        self.stamp = self.path.as_deref().and_then(disk_stamp);
         self.rehighlight(hl);
     }
 
@@ -106,6 +120,7 @@ impl Doc {
                 .ok_or_else(|| "Save cancelled".to_string())?,
         };
         std::fs::write(&path, self.buffer.text()).map_err(|e| format!("Save failed: {e}"))?;
+        self.stamp = disk_stamp(&path);
         self.path = Some(path.clone());
         self.dirty = false;
         Ok(path)

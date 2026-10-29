@@ -8,6 +8,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub mod chat;
+pub use chat::{Attachment, ChatMessage};
+
 pub type Result<T> = std::result::Result<T, String>;
 
 /// A git repository, found from any directory inside it.
@@ -355,6 +358,21 @@ impl Repo {
             .or_else(|| self.git(&["remote", "get-url", "origin"]).ok().and_then(|u| github_owner(u.trim())))
     }
 
+    /// `(owner, repository)` of the GitHub `origin` remote, if there is one.
+    pub fn origin_slug(&self) -> Option<(String, String)> {
+        let url = self.git(&["remote", "get-url", "origin"]).ok()?;
+        let url = url.trim();
+        let owner = github_owner(url)?;
+        let name = repo_dir_name(url);
+        (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')))
+            .then_some((owner, name))
+    }
+
+    /// The GitHub owner in the `origin` remote, if there is one.
+    pub fn origin_owner(&self) -> Option<String> {
+        self.git(&["remote", "get-url", "origin"]).ok().and_then(|u| github_owner(u.trim()))
+    }
+
     /// The most recent `limit` commits on the current branch, newest first.
     pub fn log(&self, limit: usize) -> Result<Vec<Commit>> {
         let n = limit.to_string();
@@ -446,6 +464,14 @@ pub fn is_github_login(s: &str) -> bool {
         && !s.starts_with('-')
         && !s.ends_with('-')
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// The login in a GitHub no-reply address (`123+login@users.noreply.github.com`
+/// or `login@users.noreply.github.com`).
+pub fn noreply_login(email: &str) -> Option<String> {
+    let local = email.strip_suffix("@users.noreply.github.com")?;
+    let login = local.rsplit('+').next()?;
+    is_github_login(login).then(|| login.to_string())
 }
 
 /// The owner in a GitHub remote URL (`https://github.com/owner/repo.git`,

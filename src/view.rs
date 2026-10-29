@@ -11,26 +11,23 @@ use crate::editor::EditorView;
 use crate::icons::{icon, Icon};
 use crate::palette::{self, Palette};
 use crate::add_repo::AddRepoMsg;
+use crate::chat::ChatMsg;
 use crate::collab::CollabMsg;
 use crate::panes::Axis;
 use crate::scm::ScmMsg;
 use crate::terminal_view::TerminalView;
-use crate::{menus, theme, App, Message};
+use crate::{menus, theme, App, Handle, Message};
 
 pub(crate) const TITLE_H: f32 = 38.0;
 pub(crate) const BAR_H: f32 = 32.0;
 pub(crate) const TAB_H: f32 = 36.0;
 pub(crate) const RAIL_W: f32 = 52.0;
 pub(crate) const LIST_W: f32 = 232.0;
-pub(crate) const SIDEBAR_W: f32 = RAIL_W + LIST_W;
-const AGENT_W: f32 = 470.0;
-
-pub(crate) fn divider_v<'a>() -> Element<'a, Message> {
-    container(space::horizontal().width(Length::Fixed(1.0)))
-        .height(Length::Fill)
-        .style(theme::bg(theme::BORDER))
-        .into()
-}
+pub(crate) const AGENT_W: f32 = 470.0;
+pub(crate) const SCM_W: f32 = 340.0;
+pub(crate) const MEMBERS_W: f32 = 220.0;
+/// Width of a draggable divider (the visible line is 1px in the middle).
+pub(crate) const HANDLE_W: f32 = 5.0;
 
 pub(crate) fn divider_h<'a>() -> Element<'a, Message> {
     container(space::vertical().height(Length::Fixed(1.0)))
@@ -68,18 +65,48 @@ pub(crate) fn dot<'a>(color: Color) -> Element<'a, Message> {
 }
 
 impl App {
+    /// A divider you can drag to resize the panels on either side of it.
+    /// `across` is true for a vertical bar between columns.
+    pub(crate) fn handle(&self, h: Handle, across: bool) -> Element<'static, Message> {
+        let dragging = self.drag.map(|d| d.handle) == Some(h);
+        let line = |c: Color| container(space::horizontal().width(Length::Fixed(1.0)).height(Length::Fixed(1.0))).style(theme::bg(c));
+        let color = if dragging { theme::ACCENT } else { theme::BORDER };
+        if across {
+            mouse_area(
+                container(line(color).width(Length::Fixed(1.0)).height(Length::Fill))
+                    .center_x(Length::Fixed(HANDLE_W))
+                    .height(Length::Fill),
+            )
+            .on_press(Message::DragStart(h))
+            .interaction(iced::mouse::Interaction::ResizingHorizontally)
+            .into()
+        } else {
+            mouse_area(
+                container(line(color).width(Length::Fill).height(Length::Fixed(1.0)))
+                    .center_y(Length::Fixed(HANDLE_W))
+                    .width(Length::Fill),
+            )
+            .on_press(Message::DragStart(h))
+            .interaction(iced::mouse::Interaction::ResizingVertically)
+            .into()
+        }
+    }
+
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let mut main = row![].height(Length::Fill);
         // Source Control wants the width for diffs, so the thread column steps aside.
         if self.show_term {
-            main = main.push(self.agent_panel()).push(divider_v());
+            main = main.push(self.agent_panel()).push(self.handle(Handle::Agent, true));
         }
         main = main.push(self.editor_area());
+        if self.show_members() {
+            main = main.push(self.handle(Handle::Members, true)).push(self.members_panel());
+        }
         let right = column![main, divider_h(), self.bottom_bar()].width(Length::Fill);
 
         let mut body = row![].height(Length::Fill);
         if self.show_sidebar {
-            body = body.push(self.left_block()).push(divider_v());
+            body = body.push(self.left_block()).push(self.handle(Handle::List, true));
         }
         body = body.push(right);
 
@@ -140,6 +167,12 @@ impl App {
                 .on_double_click(Message::ToggleMaximize),
                 icon_button(Icon::Eye, dim, false, Message::Unavailable("Follow mode")),
                 self.peer_dots(),
+                icon_button(
+                    Icon::Chat,
+                    dim,
+                    self.chat.open,
+                    Message::Chat(if self.chat.open { ChatMsg::Hide } else { ChatMsg::Show }),
+                ),
                 icon_button(Icon::Branch, dim, false, Message::GitRefresh),
                 button(
                     row![icon(Icon::Send, 14.0, dim), text("Share").size(13)]
@@ -241,13 +274,13 @@ impl App {
                 .into()
         };
         // Each menu opens beside the button that asked for it.
-        let sidebar_left = if self.show_sidebar { SIDEBAR_W + 1.0 } else { 0.0 };
+        let sidebar_left = if self.show_sidebar { RAIL_W + self.list_w + HANDLE_W } else { 0.0 };
         let (align_x, align_y, pad) = match kind {
             // Thread column "…": right-aligned under the column header.
             1 => (
                 Alignment::Start,
                 Alignment::Start,
-                Padding { top: TITLE_H + 42.0, left: (sidebar_left + AGENT_W - 300.0 - 8.0).max(8.0), ..Padding::ZERO },
+                Padding { top: TITLE_H + 42.0, left: (sidebar_left + self.agent_w - 300.0 - 8.0).max(8.0), ..Padding::ZERO },
             ),
             // Editor tabs "…": right edge of the window, under the tab bar.
             2 => (Alignment::End, Alignment::Start, Padding { top: TITLE_H + 40.0, right: 8.0, ..Padding::ZERO }),
@@ -328,7 +361,7 @@ impl App {
             row![self.rail(), self.channel_list()].height(Length::Fill),
             self.account_chip(),
         ])
-        .width(Length::Fixed(SIDEBAR_W))
+        .width(Length::Fixed(RAIL_W + self.list_w))
         .height(Length::Fill)
         .into()
     }
@@ -341,8 +374,12 @@ impl App {
             // Marker for a repo you're not looking at that still has something running or unsaved.
             let busy = self.active_project != Some(i)
                 && project.ws.as_ref().is_some_and(|w| w.has_running_terminal() || w.has_dirty_docs());
+            let face = match self.repo_avatars.get(&project.path) {
+                Some(h) => RailFace::Image(h.clone()),
+                None => RailFace::Text(initials(&name)),
+            };
             rail = rail.push(rail_tile(
-                RailFace::Text(initials(&name)),
+                face,
                 self.active_project == Some(i),
                 busy,
                 project.path.display().to_string(),
@@ -494,7 +531,7 @@ impl App {
         }
 
         container(column![header, divider_h(), scrollable(list).height(Length::Fill)])
-            .width(Length::Fixed(LIST_W))
+            .width(Length::Fixed(self.list_w))
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))
             .into()
@@ -650,7 +687,7 @@ impl App {
             .width(Length::Fill)
             .style(theme::bg(if self.focus_term { theme::ACCENT } else { theme::AGENT_BG }));
         container(column![focus_line, header, divider_h(), body])
-            .width(Length::Fixed(AGENT_W))
+            .width(Length::Fixed(self.agent_w))
             .height(Length::Fill)
             .style(theme::bg(theme::AGENT_BG))
             .into()
@@ -659,6 +696,9 @@ impl App {
     // --- editor area ---
 
     fn editor_area(&self) -> Element<'_, Message> {
+        if self.chat.open {
+            return self.chat_view();
+        }
         if self.scm.open {
             // Source Control is one more tab: the file tabs stay in view above it.
             return container(column![self.tab_bar(0), self.scm_view()])
@@ -677,10 +717,7 @@ impl App {
         let mut views = Vec::new();
         for i in 0..self.panes.list.len() {
             if i > 0 {
-                views.push(match self.panes.axis {
-                    Axis::Horizontal => divider_v(),
-                    Axis::Vertical => divider_h(),
-                });
+                views.push(self.handle(Handle::Panes(i - 1), self.panes.axis == Axis::Horizontal));
             }
             views.push(self.pane_view(i));
         }
@@ -717,9 +754,14 @@ impl App {
         if let Some(b) = breadcrumb {
             col = col.push(b);
         }
+        let share = Length::FillPortion((pane.weight * 1000.0).round().clamp(1.0, 60000.0) as u16);
+        let (w, h) = match self.panes.axis {
+            Axis::Horizontal => (share, Length::Fill),
+            Axis::Vertical => (Length::Fill, share),
+        };
         container(col.push(body))
-            .width(Length::FillPortion(1))
-            .height(Length::FillPortion(1))
+            .width(w)
+            .height(h)
             .style(theme::bg(theme::EDITOR_BG))
             .into()
     }
@@ -960,6 +1002,98 @@ impl App {
         Some(format!("{who}, {} • {}", hythe_git::time_ago(b.time, now), b.summary))
     }
 }
+impl App {
+    /// Discord-style list of the people on this repository, down the right side.
+    pub(crate) fn members_panel(&self) -> Element<'_, Message> {
+        let header = |label: String| {
+            container(text(label).size(11).color(theme::TEXT_FAINT)).padding(Padding { top: 12.0, right: 8.0, bottom: 4.0, left: 8.0 })
+        };
+        let face = |name: &str, handle: Option<&iced::widget::image::Handle>, color: Color| -> Element<'static, Message> {
+            match handle {
+                Some(h) => iced::widget::image(h.clone())
+                    .width(Length::Fixed(28.0))
+                    .height(Length::Fixed(28.0))
+                    .border_radius(14.0)
+                    .into(),
+                None => {
+                    let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+                    container(text(initial).size(12).color(Color::WHITE))
+                        .center(Length::Fixed(28.0))
+                        .style(move |_: &Theme| container::Style {
+                            background: Some(color.into()),
+                            border: iced::Border { radius: 14.0.into(), ..Default::default() },
+                            ..Default::default()
+                        })
+                        .into()
+                }
+            }
+        };
+        let person = |face: Element<'static, Message>, name: String, sub: String, dim: bool| -> Element<'static, Message> {
+            container(
+                row![
+                    face,
+                    column![
+                        text(name).size(13).color(if dim { theme::TEXT_DIM } else { theme::TEXT }),
+                        text(sub).size(11).color(theme::TEXT_FAINT)
+                    ]
+                    .spacing(1),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            )
+            .padding([4, 8])
+            .width(Length::Fill)
+            .into()
+        };
+
+        let mut list = column![].spacing(1).padding([0, 4]);
+        if let Some(c) = &self.collab {
+            if !c.peers.is_empty() {
+                list = list.push(header(format!("ONLINE — {}", c.peers.len())));
+                for p in &c.peers {
+                    let color = crate::collab::rgb(p.color);
+                    list = list.push(person(face(&p.name, None, color), p.name.clone(), "In this session".into(), false));
+                }
+            }
+        }
+        list = list.push(header(format!("COLLABORATORS — {}", self.members.len())));
+        for m in &self.members {
+            let hue = m.name.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
+            let color = hsv(hue as f32);
+            let handle = m.login.as_ref().and_then(|l| self.member_avatars.get(l));
+            let sub = format!("{} commit{}", m.commits, if m.commits == 1 { "" } else { "s" });
+            list = list.push(person(face(&m.name, handle, color), m.name.clone(), sub, true));
+        }
+
+        container(column![
+            container(text("People").size(13)).height(Length::Fixed(TAB_H)).padding([0, 12]).align_y(Alignment::Center),
+            divider_h(),
+            scrollable(list).height(Length::Fill),
+        ])
+        .width(Length::Fixed(self.members_w))
+        .height(Length::Fill)
+        .style(theme::bg(theme::PANEL_BG))
+        .into()
+    }
+}
+
+/// A muted colour for a hue in degrees.
+pub(crate) fn hsv(h: f32) -> Color {
+    let (s, v) = (0.45f32, 0.62f32);
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    Color::from_rgb(r + m, g + m, b + m)
+}
+
 /// Letters for a repository tile: "Hythe-Prototype" becomes "HP".
 pub(crate) fn initials(name: &str) -> String {
     let letters: String = name
@@ -974,6 +1108,7 @@ pub(crate) fn initials(name: &str) -> String {
 
 enum RailFace {
     Text(String),
+    Image(iced::widget::image::Handle),
     Plus,
 }
 
@@ -984,6 +1119,12 @@ fn rail_tile<'a>(face: RailFace, active: bool, busy: bool, tip: String, msg: Mes
     let fg = if active { Color::WHITE } else { theme::TEXT_DIM };
     let inner: Element<'a, Message> = match face {
         RailFace::Text(label) => text(label).size(12).color(fg).center().into(),
+        RailFace::Image(h) => iced::widget::image(h)
+            .width(Length::Fixed(34.0))
+            .height(Length::Fixed(34.0))
+            .content_fit(iced::ContentFit::Cover)
+            .border_radius(4.0)
+            .into(),
         RailFace::Plus => icon(Icon::Plus, 14.0, theme::TEXT_DIM),
     };
     let tile = container(inner)

@@ -24,6 +24,8 @@ pub struct Pane {
     pub active: usize,
     /// Size of the editor area, recorded while the pane is drawn.
     pub viewport: Cell<Size>,
+    /// Share of the split this pane gets, changed by dragging the divider.
+    pub weight: f32,
 }
 
 impl Pane {
@@ -32,6 +34,7 @@ impl Pane {
             tabs: Vec::new(),
             active: 0,
             viewport: Cell::new(Size::new(600.0, 600.0)),
+            weight: 1.0,
         }
     }
 

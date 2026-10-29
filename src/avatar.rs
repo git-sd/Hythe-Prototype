@@ -41,16 +41,29 @@ pub fn fetch(user: &str) -> Option<PathBuf> {
     if !hythe_git::is_github_login(user) {
         return None;
     }
+    download(user, &format!("https://github.com/{user}.png?size=96"))
+}
+
+/// The picture GitHub shows for a repository: its social preview if the owner set
+/// one, otherwise the generated card.
+pub fn fetch_repo(owner: &str, repo: &str) -> Option<PathBuf> {
+    if !hythe_git::is_github_login(owner) || repo.is_empty() {
+        return None;
+    }
+    download(&format!("{owner}__{repo}"), &format!("https://opengraph.githubassets.com/1/{owner}/{repo}"))
+}
+
+fn download(stem: &str, url: &str) -> Option<PathBuf> {
     let dir = cache_dir()?;
     std::fs::create_dir_all(&dir).ok()?;
-    let file = dir.join(format!("{user}.png"));
+    let file = dir.join(format!("{stem}.png"));
     if is_valid_image(&file) && is_fresh(&file) {
         return Some(file);
     }
 
-    let tmp = dir.join(format!("{user}.download"));
+    let tmp = dir.join(format!("{stem}.download"));
     let mut cmd = Command::new("curl");
-    cmd.args(["-sSL", "-m", "10", "-o"]).arg(&tmp).arg(format!("https://github.com/{user}.png?size=96"));
+    cmd.args(["-sSL", "-m", "10", "-A", "Mozilla/5.0", "-o"]).arg(&tmp).arg(url);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

@@ -84,7 +84,7 @@ pub fn color_for(name: &str) -> u32 {
     COLORS[hash as usize % COLORS.len()]
 }
 
-fn rgb(c: u32) -> Color {
+pub(crate) fn rgb(c: u32) -> Color {
     Color::from_rgb8((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 

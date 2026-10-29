@@ -29,6 +29,8 @@ pub enum Icon {
     More,
     Pin,
     Expand,
+    Chat,
+    Paperclip,
 }
 
 macro_rules! svg_icon {
@@ -67,6 +69,8 @@ impl Icon {
             Icon::Eye => svg_icon!(r#"<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>"#),
             Icon::More => svg_icon!(r#"<circle cx="6" cy="12" r="1" fill="white"/><circle cx="12" cy="12" r="1" fill="white"/><circle cx="18" cy="12" r="1" fill="white"/>"#),
             Icon::Pin => svg_icon!(r#"<path d="M9 4h6l-1 6 3 3H7l3-3z"/><path d="M12 13v7"/>"#),
+            Icon::Chat => svg_icon!(r#"<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3.5V16A2.5 2.5 0 0 1 4 13.5z"/>"#),
+            Icon::Paperclip => svg_icon!(r#"<path d="M20 11.5l-7.8 7.8a4.5 4.5 0 0 1-6.4-6.4l8-8a3 3 0 0 1 4.3 4.3l-8 8a1.5 1.5 0 0 1-2.1-2.1l7.4-7.4"/>"#),
             Icon::Expand => svg_icon!(r#"<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>"#),
         }
     }
@@ -92,6 +96,7 @@ mod tests {
             Icon::ChevronRight, Icon::ChevronDown, Icon::Branch, Icon::Terminal, Icon::Bug,
             Icon::Outline, Icon::Users, Icon::Panels, Icon::Plus, Icon::Minus, Icon::Close, Icon::Split,
             Icon::Sparkle, Icon::Send, Icon::Eye, Icon::More, Icon::Pin, Icon::Expand,
+            Icon::Chat, Icon::Paperclip,
         ] {
             let s = icon.source();
             assert!(s.starts_with("<svg") && s.ends_with("</svg>"), "{icon:?}");

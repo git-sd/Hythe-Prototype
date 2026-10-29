@@ -65,6 +65,27 @@ impl Node {
         self.children = children;
     }
 
+    /// Re-read every folder that has been opened, keeping what is expanded, so
+    /// files created or deleted by other programs show up.
+    pub fn refresh(&mut self) {
+        if !self.loaded {
+            return;
+        }
+        let mut old = std::mem::take(&mut self.children);
+        self.load();
+        for child in &mut self.children {
+            if let Some(i) = old.iter().position(|o| o.path == child.path) {
+                let o = old.swap_remove(i);
+                if child.is_dir && o.loaded {
+                    child.expanded = o.expanded;
+                    child.children = o.children;
+                    child.loaded = true;
+                    child.refresh();
+                }
+            }
+        }
+    }
+
     pub fn toggle(&mut self, target: &Path) -> bool {
         if self.path == target {
             self.expanded = !self.expanded;
@@ -87,5 +108,31 @@ impl Node {
                 child.rows(depth + 1, out);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_picks_up_new_files_and_keeps_expansion() {
+        let dir = std::env::temp_dir().join(format!("hythe-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        let mut root = Node::root(dir.clone());
+        let names = |root: &Node| {
+            let mut rows = Vec::new();
+            root.rows(0, &mut rows);
+            rows.iter().map(|(_, n)| n.name.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(names(&root), ["sub", "a.txt"]);
+        std::fs::write(dir.join("sub").join("b.txt"), "b").unwrap();
+        std::fs::write(dir.join("c.txt"), "c").unwrap();
+        std::fs::remove_file(dir.join("a.txt")).unwrap();
+        root.refresh();
+        assert_eq!(names(&root), ["sub", "b.txt", "c.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

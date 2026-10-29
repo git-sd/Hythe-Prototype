@@ -1,11 +1,13 @@
 mod add_repo;
 mod avatar;
 mod buffer;
+mod chat;
 mod collab;
 mod completion_ui;
 mod doc;
 mod editor;
 mod explorer;
+mod github;
 mod highlight;
 mod icons;
 mod menus;
@@ -19,6 +21,7 @@ mod theme;
 mod view;
 mod workspace;
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use iced::keyboard::{self, key::Named, Key};
@@ -27,6 +30,7 @@ use iced::{clipboard, window, Subscription, Task, Theme};
 use doc::{Doc, TAB_WIDTH};
 use explorer::Node;
 use add_repo::{AddRepo, AddRepoMsg};
+use chat::{Chat, ChatMsg};
 use collab::{Collab, CollabMsg, CollabUi};
 use completion_ui::CompletionUi;
 use highlight::Highlighter;
@@ -36,6 +40,20 @@ use panes::{Axis, Panes};
 use scm::{Scm, ScmMsg};
 use state::{GitInfo, Persisted};
 use workspace::{Project, Workspace};
+
+/// People who committed, one entry per person, most active first.
+fn members_of(repo: &hythe_git::Repo) -> Vec<Member> {
+    let mut seen = HashSet::new();
+    repo.contributors()
+        .into_iter()
+        .filter_map(|c| {
+            let login = hythe_git::noreply_login(&c.email);
+            let key = login.clone().unwrap_or_else(|| c.name.to_lowercase());
+            seen.insert(key).then(|| Member { name: c.name, login, commits: c.commits })
+        })
+        .take(40)
+        .collect()
+}
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
@@ -129,6 +147,65 @@ struct App {
     /// GitHub profile picture for the account chip.
     avatar: Option<iced::widget::image::Handle>,
     avatar_tried: bool,
+    /// Column widths, changed by dragging the dividers.
+    list_w: f32,
+    agent_w: f32,
+    scm_w: f32,
+    members_w: f32,
+    /// Window size, for keeping dragged columns on screen.
+    win: iced::Size,
+    drag: Option<Drag>,
+    /// Owner's GitHub picture per repository in the rail.
+    repo_avatars: HashMap<PathBuf, iced::widget::image::Handle>,
+    repo_avatar_tried: HashSet<PathBuf>,
+    /// Everyone who has committed to the open repository.
+    members: Vec<Member>,
+    members_for: Option<PathBuf>,
+    member_avatars: HashMap<String, iced::widget::image::Handle>,
+    member_avatar_tried: HashSet<String>,
+    /// Git is read off the UI thread; these track the request in flight.
+    git_wanted: bool,
+    git_busy: bool,
+    chat: Chat,
+}
+
+/// What a background git read found.
+#[derive(Debug, Clone)]
+pub struct GitResult {
+    for_root: Option<PathBuf>,
+    repo: Option<hythe_git::Repo>,
+    info: Option<GitInfo>,
+    /// `None`: the member list is already current.
+    members: Option<Vec<Member>>,
+}
+
+/// A divider that can be dragged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Handle {
+    List,
+    Agent,
+    Scm,
+    Members,
+    /// Between editor pane `n` and `n + 1`.
+    Panes(usize),
+}
+
+/// A drag in progress. For pane splits, `base` is (weight of pane n, weight of
+/// pane n + 1, their combined size in pixels) when the drag began.
+#[derive(Debug, Clone, Copy)]
+pub struct Drag {
+    pub handle: Handle,
+    origin: Option<f32>,
+    base: (f32, f32, f32),
+}
+
+/// A committer shown in the people panel.
+#[derive(Debug, Clone)]
+pub struct Member {
+    pub name: String,
+    /// GitHub login, when the commit email reveals it.
+    pub login: Option<String>,
+    pub commits: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -198,6 +275,19 @@ pub enum Message {
     MinimizeWindow,
     ToggleMaximize,
     AvatarReady(Option<PathBuf>),
+    RepoAvatar(PathBuf, Option<PathBuf>),
+    MemberAvatar(String, Option<PathBuf>),
+    DragStart(Handle),
+    PointerMoved(iced::Point),
+    PointerUp,
+    WindowSized(iced::Size),
+    GitLoaded(Option<Box<GitResult>>),
+    /// Look for open files changed on disk by something else.
+    DiskTick,
+    /// Repository chat.
+    Chat(ChatMsg),
+    /// Look for files added or removed on disk.
+    TreeTick,
     Save,
     CloseActive,
     Undo,
@@ -242,6 +332,21 @@ impl App {
             submenu: 0,
             avatar: None,
             avatar_tried: false,
+            list_w: view::LIST_W,
+            agent_w: view::AGENT_W,
+            scm_w: view::SCM_W,
+            members_w: view::MEMBERS_W,
+            win: iced::Size::new(1280.0, 780.0),
+            drag: None,
+            repo_avatars: HashMap::new(),
+            repo_avatar_tried: HashSet::new(),
+            members: Vec::new(),
+            members_for: None,
+            member_avatars: HashMap::new(),
+            member_avatar_tried: HashSet::new(),
+            git_wanted: false,
+            git_busy: false,
+            chat: Chat::default(),
         };
         app.projects = app.persisted.projects.iter().map(|p| Project { path: p.clone(), ws: None }).collect();
         // Scripted runs: HYTHE_COLLAB="ws://host:port|room|name" joins a room on startup.
@@ -292,22 +397,92 @@ impl App {
         )
     }
 
+    /// GitHub login used to list repositories and to fetch the account picture.
+    pub(crate) fn github_login(&self) -> Option<String> {
+        self.repo
+            .as_ref()
+            .and_then(|r| r.github_user())
+            .or_else(|| Some(self.user.clone()).filter(|u| hythe_git::is_github_login(u)))
+    }
+
+    /// Fetch pictures not tried yet: each repository's owner, and each committer
+    /// whose GitHub login is known.
+    fn picture_tasks(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        for p in &self.projects {
+            if self.repo_avatar_tried.insert(p.path.clone()) {
+                let (path, key) = (p.path.clone(), p.path.clone());
+                tasks.push(Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            hythe_git::Repo::open(&path)
+                                .and_then(|r| r.origin_slug())
+                                .and_then(|(owner, name)| avatar::fetch_repo(&owner, &name))
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    },
+                    move |f| Message::RepoAvatar(key.clone(), f),
+                ));
+            }
+        }
+        let logins: Vec<String> =
+            self.members.iter().filter_map(|m| m.login.clone()).chain(self.chat_logins().cloned()).collect();
+        for login in logins {
+            if self.member_avatar_tried.insert(login.clone()) {
+                let key = login.clone();
+                tasks.push(Task::perform(
+                    async move { tokio::task::spawn_blocking(move || avatar::fetch(&login)).await.ok().flatten() },
+                    move |f| Message::MemberAvatar(key.clone(), f),
+                ));
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    /// People panel: shown only when more than one person works on the repository.
+    pub(crate) fn show_members(&self) -> bool {
+        self.members.len() >= 2 || self.collab.as_ref().is_some_and(|c| !c.peers.is_empty())
+    }
+
+    /// Ask for branch, change counts and committers to be re-read. Each `git`
+    /// call is a process launch, so the read happens off the UI thread (see
+    /// [`App::git_task`]) and switching repositories never waits on it.
     fn refresh_git(&mut self) {
+        self.git_wanted = true;
+    }
+
+    fn git_task(&mut self) -> Task<Message> {
+        if !self.git_wanted || self.git_busy {
+            return Task::none();
+        }
+        self.git_wanted = false;
+        self.git_busy = true;
         let root = self.root.as_ref().map(|r| r.path.clone());
         // Only look for the repository again when the project changed.
-        let stale = match (&self.repo, &root) {
-            (Some(repo), Some(root)) => !root.starts_with(repo.root()),
-            (None, Some(_)) => true,
-            (_, None) => true,
-        };
-        if stale {
-            self.repo = root.as_ref().and_then(|r| hythe_git::Repo::open(r));
-        }
-        self.git = self.repo.as_ref().map(|r| {
-            let (added, removed) = r.summary();
-            GitInfo { repo: r.name(), branch: r.current_branch(), added, removed }
-        });
-        self.scm_reload();
+        let known = self.repo.clone().filter(|r| root.as_ref().is_some_and(|p| p.starts_with(r.root())));
+        let have_members = known.as_ref().is_some_and(|r| self.members_for.as_deref() == Some(r.root()));
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let repo = known.or_else(|| root.as_ref().and_then(|r| hythe_git::Repo::open(r)));
+                    let info = repo.as_ref().map(|r| {
+                        let (added, removed) = r.summary();
+                        GitInfo { repo: r.name(), branch: r.current_branch(), added, removed }
+                    });
+                    let members = match (&repo, have_members) {
+                        (Some(r), false) => Some(members_of(r)),
+                        (None, _) => Some(Vec::new()),
+                        _ => None,
+                    };
+                    Box::new(GitResult { for_root: root, repo, info, members })
+                })
+                .await
+                .ok()
+            },
+            Message::GitLoaded,
+        )
     }
 
     fn title(&self) -> String {
@@ -320,6 +495,7 @@ impl App {
     fn open_file(&mut self, path: PathBuf) {
         // Opening a file always brings you back to the code.
         self.scm.open = false;
+        self.chat.open = false;
         if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
             self.panes.open_doc(i);
             return;
@@ -687,7 +863,7 @@ impl App {
         let task = self.update_inner(message);
         // Anything that edited the text or moved the cursor is sent to collaborators.
         self.collab_flush();
-        task
+        Task::batch([task, self.git_task(), self.picture_tasks()])
     }
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
@@ -770,6 +946,7 @@ impl App {
             Message::Key(_) => {}
             Message::NewFile => {
                 self.scm.open = false;
+                self.chat.open = false;
                 self.docs.push(Doc::empty());
                 self.panes.open_doc(self.docs.len() - 1);
             }
@@ -832,6 +1009,45 @@ impl App {
             Message::MinimizeWindow => return window::oldest().and_then(|id| window::minimize(id, true)),
             Message::ResetWindow => return self.fit_window_task(),
             Message::ToggleMaximize => return window::oldest().and_then(window::toggle_maximize),
+            Message::RepoAvatar(path, file) => {
+                if let Some(h) = file.and_then(|f| std::fs::read(f).ok()).map(iced::widget::image::Handle::from_bytes) {
+                    self.repo_avatars.insert(path, h);
+                }
+            }
+            Message::MemberAvatar(login, file) => {
+                if let Some(h) = file.and_then(|f| std::fs::read(f).ok()).map(iced::widget::image::Handle::from_bytes) {
+                    self.member_avatars.insert(login, h);
+                }
+            }
+            Message::WindowSized(size) => self.win = size,
+            Message::Chat(m) => return self.chat_update(m),
+            Message::DiskTick => self.reload_changed_files(),
+            Message::TreeTick => {
+                if let Some(root) = &mut self.root {
+                    root.refresh();
+                }
+            }
+            Message::GitLoaded(result) => {
+                self.git_busy = false;
+                if let Some(r) = result {
+                    if r.for_root == self.root.as_ref().map(|n| n.path.clone()) {
+                        let r = *r;
+                        self.repo = r.repo;
+                        self.git = r.info;
+                        if let Some(m) = r.members {
+                            self.members = m;
+                            self.members_for = self.repo.as_ref().map(|x| x.root().to_path_buf());
+                        }
+                        self.scm_reload();
+                    } else {
+                        // Another repository was opened meanwhile.
+                        self.git_wanted = true;
+                    }
+                }
+            }
+            Message::DragStart(handle) => self.start_drag(handle),
+            Message::PointerUp => self.drag = None,
+            Message::PointerMoved(p) => self.drag_to(p),
             Message::AvatarReady(path) => self.avatar = path.and_then(|p| std::fs::read(p).ok()).map(iced::widget::image::Handle::from_bytes),
             Message::Unavailable(what) => self.status = format!("{what} isn't available yet"),
             Message::OpenFile(p) => self.open_file(p),
@@ -842,6 +1058,7 @@ impl App {
             }
             Message::SelectTab { pane, tab } => {
                 self.scm.open = false;
+                self.chat.open = false;
                 self.panes.focus_pane(pane);
                 if let Some(p) = self.panes.list.get_mut(pane) {
                     if tab < p.tabs.len() {
@@ -1147,11 +1364,104 @@ impl App {
         Task::none()
     }
 
+    /// Bring open files up to date with the disk, so an agent's edits show as
+    /// they happen. A file with unsaved edits is left alone.
+    fn reload_changed_files(&mut self) {
+        let mut reloaded = Vec::new();
+        let mut conflicts = Vec::new();
+        for d in self.docs.iter_mut() {
+            let Some(path) = d.path.clone() else { continue };
+            let now = doc::disk_stamp(&path);
+            if now.is_none() || now == d.stamp {
+                continue;
+            }
+            if d.dirty {
+                d.stamp = now;
+                conflicts.push(d.name());
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                if text != d.buffer.text() {
+                    d.replace_text(&text, &mut self.highlighter);
+                    reloaded.push(d.name());
+                } else {
+                    d.stamp = now;
+                }
+            }
+        }
+        if let Some(name) = conflicts.first() {
+            self.status = format!("{name} changed on disk, but you have unsaved edits; saving will overwrite it");
+        }
+        if !reloaded.is_empty() {
+            self.status = format!("{} updated from disk", reloaded.join(", "));
+            self.refresh_git();
+        }
+    }
+
+    fn start_drag(&mut self, handle: Handle) {
+        let mut base = (1.0, 1.0, 1.0);
+        if let Handle::Panes(i) = handle {
+            if let (Some(a), Some(b)) = (self.panes.list.get(i), self.panes.list.get(i + 1)) {
+                let px = |p: &panes::Pane| match self.panes.axis {
+                    Axis::Horizontal => p.viewport.get().width,
+                    Axis::Vertical => p.viewport.get().height,
+                };
+                base = (a.weight, b.weight, (px(a) + px(b)).max(1.0));
+            }
+        }
+        self.drag = Some(Drag { handle, origin: None, base });
+    }
+
+    fn drag_to(&mut self, p: iced::Point) {
+        let Some(mut drag) = self.drag else { return };
+        let sidebar = if self.show_sidebar { view::RAIL_W + self.list_w + view::HANDLE_W } else { 0.0 };
+        let left = sidebar + if self.show_term { self.agent_w + view::HANDLE_W } else { 0.0 };
+        let win = self.win;
+        match drag.handle {
+            Handle::List => self.list_w = (p.x - view::RAIL_W).clamp(140.0, (win.width - 300.0).clamp(140.0, 480.0)),
+            Handle::Agent => self.agent_w = (p.x - sidebar).clamp(220.0, (win.width - sidebar - 300.0).max(220.0)),
+            Handle::Scm => self.scm_w = (p.x - left).clamp(220.0, (win.width - left - 300.0).clamp(220.0, 700.0)),
+            Handle::Members => self.members_w = (win.width - p.x).clamp(150.0, 420.0),
+            Handle::Panes(i) => {
+                let pos = match self.panes.axis {
+                    Axis::Horizontal => p.x,
+                    Axis::Vertical => p.y,
+                };
+                let origin = *drag.origin.get_or_insert(pos);
+                let (wa, wb, px) = drag.base;
+                let total = wa + wb;
+                let a = (wa + (pos - origin) / px * total).clamp(total * 0.1, total * 0.9);
+                if let Some(pane) = self.panes.list.get_mut(i) {
+                    pane.weight = a;
+                }
+                if let Some(pane) = self.panes.list.get_mut(i + 1) {
+                    pane.weight = total - a;
+                }
+                self.drag = Some(drag);
+            }
+        }
+    }
+
     fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![
             keyboard::listen().map(Message::Key),
             window::close_requests().map(|_| Message::CloseRequested),
+            window::resize_events().map(|(_, size)| Message::WindowSized(size)),
         ];
+        if self.chat.open {
+            subs.push(iced::time::every(std::time::Duration::from_secs(15)).map(|_| Message::Chat(ChatMsg::Sync)));
+        }
+        if !self.docs.is_empty() {
+            subs.push(iced::time::every(std::time::Duration::from_millis(400)).map(|_| Message::DiskTick));
+        }
+        if self.root.is_some() {
+            subs.push(iced::time::every(std::time::Duration::from_secs(2)).map(|_| Message::TreeTick));
+        }
+        if self.drag.is_some() {
+            subs.push(iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::PointerMoved(position)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::PointerUp),
+                _ => None,
+            }));
+        }
         // Collaboration: poll the connection for edits and cursors.
         if self.collab.is_some() {
             subs.push(iced::time::every(std::time::Duration::from_millis(40)).map(|_| Message::Collab(CollabMsg::Tick)));

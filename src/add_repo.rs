@@ -3,9 +3,10 @@
 
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, mouse_area, opaque, row, space, stack, text, text_input};
+use iced::widget::{button, column, container, mouse_area, opaque, row, scrollable, space, stack, text, text_input};
 use iced::{Alignment, Color, Element, Length, Task, Theme};
 
+use crate::github::RepoEntry;
 use crate::icons::{icon, Icon};
 use crate::view::icon_button;
 use crate::{theme, App, Message};
@@ -19,6 +20,11 @@ pub struct AddRepo {
     pub dest: Option<PathBuf>,
     pub busy: bool,
     pub error: Option<String>,
+    /// The account's most recently pushed repositories.
+    pub repos: Vec<RepoEntry>,
+    pub loading: bool,
+    /// Why the list is empty, when it is.
+    pub list_note: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +38,9 @@ pub enum AddRepoMsg {
     ChooseDest,
     Clone,
     Done(Result<PathBuf, String>),
+    Repos(Result<Vec<RepoEntry>, String>),
+    /// Fill the form from the n-th listed repository.
+    Pick(usize),
 }
 
 impl App {
@@ -59,7 +68,38 @@ impl App {
                 self.add_repo.open = false;
                 return self.update(Message::OpenFolderDialog);
             }
-            AddRepoMsg::ShowClone => self.add_repo.clone = true,
+            AddRepoMsg::ShowClone => {
+                self.add_repo.clone = true;
+                if self.add_repo.repos.is_empty() && !self.add_repo.loading {
+                    self.add_repo.loading = true;
+                    self.add_repo.list_note = None;
+                    let login = self.github_login();
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || crate::github::recent_repos(login.as_deref()))
+                                .await
+                                .unwrap_or_else(|e| Err(e.to_string()))
+                        },
+                        |r| Message::AddRepo(AddRepoMsg::Repos(r)),
+                    );
+                }
+            }
+            AddRepoMsg::Repos(result) => {
+                self.add_repo.loading = false;
+                match result {
+                    Ok(list) => {
+                        self.add_repo.list_note = list.is_empty().then(|| "No repositories yet".to_string());
+                        self.add_repo.repos = list;
+                    }
+                    Err(e) => self.add_repo.list_note = Some(e),
+                }
+            }
+            AddRepoMsg::Pick(i) => {
+                if let Some(r) = self.add_repo.repos.get(i) {
+                    self.add_repo.url = r.clone_url.clone();
+                    self.add_repo.error = None;
+                }
+            }
             AddRepoMsg::Url(s) => {
                 self.add_repo.url = s;
                 self.add_repo.error = None;
@@ -150,7 +190,35 @@ impl App {
             let dest = s.dest.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "No folder chosen".into());
             let can_clone = !s.busy && !s.url.trim().is_empty() && s.dest.is_some();
             body = body.push(container(crate::view::divider_h()).padding([6, 0]));
-            body = body.push(text("Repository").size(11).color(dim));
+            body = body.push(text("Your recent repositories").size(11).color(dim));
+            if s.loading {
+                body = body.push(text("Loading from GitHub…").size(12).color(theme::TEXT_FAINT));
+            } else if s.repos.is_empty() {
+                let note = s.list_note.clone().unwrap_or_default();
+                body = body.push(text(note).size(12).color(theme::TEXT_FAINT));
+                body = body.push(
+                    text("Run `gh auth login` to also list private repositories.").size(11).color(theme::TEXT_FAINT),
+                );
+            } else {
+                let wanted = hythe_git::clone_url(&s.url);
+                let mut list = column![].spacing(1);
+                for (i, r) in s.repos.iter().enumerate() {
+                    let mut name = row![text(r.full_name.clone()).size(13)].spacing(6).align_y(Alignment::Center);
+                    if r.private {
+                        name = name.push(text("private").size(10).color(theme::TEXT_FAINT));
+                    }
+                    let sub = if r.description.is_empty() { r.pushed.clone() } else { format!("{} · {}", r.pushed, r.description) };
+                    list = list.push(
+                        button(column![name, text(sub).size(11).color(theme::TEXT_DIM).wrapping(text::Wrapping::None)].spacing(1))
+                            .width(Length::Fill)
+                            .padding([5, 8])
+                            .style(theme::row(wanted == r.clone_url))
+                            .on_press(msg(AddRepoMsg::Pick(i))),
+                    );
+                }
+                body = body.push(scrollable(list).height(Length::Fixed(190.0)));
+            }
+            body = body.push(text("Or clone with a link").size(11).color(dim));
             body = body.push(
                 text_input("owner/name or https://github.com/owner/name", &s.url)
                     .on_input(|t| Message::AddRepo(AddRepoMsg::Url(t)))

@@ -125,6 +125,8 @@ pub enum ScmMsg {
     UnstageAll,
     Text(String),
     Commit,
+    /// Commit, then push.
+    CommitPush,
     Push,
     Pull,
     Fetch,
@@ -161,6 +163,41 @@ impl App {
         }
     }
 
+    /// Commit with the message in the box. With nothing staged, everything
+    /// changed is committed, like VS Code's smart commit. True if it worked.
+    fn scm_commit(&mut self, repo: &Repo) -> bool {
+        if self.scm.message.trim().is_empty() {
+            self.status = "Write a commit message first".into();
+            return false;
+        }
+        if self.scm.staged().next().is_none() {
+            if self.scm.changes.is_empty() {
+                self.status = "Nothing to commit".into();
+                return false;
+            }
+            let paths: Vec<String> = self.scm.changes.iter().map(|c| c.path.clone()).collect();
+            let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+            if let Err(e) = repo.stage(&refs) {
+                self.status = e;
+                return false;
+            }
+        }
+        let ok = match repo.commit(&self.scm.message) {
+            Ok(sha) => {
+                self.status = format!("Committed {sha}");
+                self.scm.message.clear();
+                true
+            }
+            Err(e) => {
+                self.status = e;
+                false
+            }
+        };
+        self.refresh_git();
+        self.scm.reload(repo);
+        ok
+    }
+
     pub(crate) fn scm_update(&mut self, msg: ScmMsg) -> Task<Message> {
         let Some(repo) = self.repo.clone() else {
             if matches!(msg, ScmMsg::Show) {
@@ -171,6 +208,7 @@ impl App {
         match msg {
             ScmMsg::Show => {
                 self.scm.open = true;
+                self.chat.open = false;
                 self.focus_term = false;
                 self.scm.reload(&repo);
             }
@@ -210,18 +248,11 @@ impl App {
             }
             ScmMsg::Text(t) => self.scm.message = t,
             ScmMsg::Commit => {
-                if self.scm.staged().next().is_none() {
-                    self.status = "Stage some changes to commit".into();
-                } else {
-                    match repo.commit(&self.scm.message) {
-                        Ok(sha) => {
-                            self.status = format!("Committed {sha}");
-                            self.scm.message.clear();
-                        }
-                        Err(e) => self.status = e,
-                    }
-                    self.refresh_git();
-                    self.scm.reload(&repo);
+                self.scm_commit(&repo);
+            }
+            ScmMsg::CommitPush => {
+                if self.scm_commit(&repo) {
+                    return self.scm_background(repo, "Pushing…", |r| r.push());
                 }
             }
             ScmMsg::Push => return self.scm_background(repo, "Pushing…", |r| r.push()),
