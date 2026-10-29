@@ -28,6 +28,9 @@ pub struct Chat {
     pub images_tried: HashSet<String>,
     /// Recent commits, shown in the feed between the messages.
     pub commits: Vec<hythe_git::Commit>,
+    /// The commit card that is open, and the files it changed.
+    pub expanded: Option<String>,
+    pub expanded_files: Vec<hythe_git::CommitFile>,
     /// Repository whose messages were last loaded.
     pub loaded_for: Option<PathBuf>,
     /// Closed from the welcome area, which shows the welcome menu again.
@@ -51,8 +54,13 @@ pub enum ChatMsg {
     Loaded(Result<(Vec<ChatMessage>, Vec<hythe_git::Commit>), String>),
     /// Commit the text in the box (everything changed, if nothing is staged).
     Commit,
-    /// Open a commit's changes.
+    /// Open a commit's changes in the full diff view.
     OpenCommit(String),
+    /// Open or close a commit card in place.
+    ToggleCommit(String),
+    CommitFiles(String, Vec<hythe_git::CommitFile>),
+    /// Open one file of a commit in the diff view.
+    OpenCommitFile(String, String),
     /// Save an uploaded file somewhere (entry name, file name).
     Save(String, String),
     Saved(Result<String, String>),
@@ -219,6 +227,35 @@ impl App {
                     self.chat.input.clear();
                     return self.chat_load();
                 }
+            }
+            ChatMsg::ToggleCommit(sha) => {
+                if self.chat.expanded.as_ref() == Some(&sha) {
+                    self.chat.expanded = None;
+                    return Task::none();
+                }
+                self.chat.expanded = Some(sha.clone());
+                self.chat.expanded_files.clear();
+                let Some(repo) = self.repo.clone() else { return Task::none() };
+                let key = sha.clone();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || repo.commit_files(&sha).unwrap_or_default())
+                            .await
+                            .unwrap_or_default()
+                    },
+                    move |files| Message::Chat(ChatMsg::CommitFiles(key.clone(), files)),
+                );
+            }
+            ChatMsg::CommitFiles(sha, files) => {
+                if self.chat.expanded.as_ref() == Some(&sha) {
+                    self.chat.expanded_files = files;
+                }
+            }
+            ChatMsg::OpenCommitFile(sha, path) => {
+                let shown = self.scm_update(ScmMsg::Show);
+                let selected = self.scm_update(ScmMsg::SelectCommit(sha));
+                let file = self.scm_update(ScmMsg::SelectCommitFile(path));
+                return Task::batch([shown, selected, file]);
             }
             ChatMsg::OpenCommit(sha) => {
                 let shown = self.scm_update(ScmMsg::Show);
@@ -452,14 +489,60 @@ impl App {
     fn chat_commit<'a>(&'a self, k: &'a hythe_git::Commit, now: i64) -> Element<'a, Message> {
         let login = self.members.iter().find(|m| m.name == k.author).and_then(|m| m.login.as_ref());
         let avatar = self.chat_face(&k.author, login, Some(k.time), now);
+        let open = self.chat.expanded.as_ref() == Some(&k.sha);
         let mut body = column![text(k.subject.clone()).size(14).color(theme::TEXT).line_height(1.4)].spacing(3);
-        let detail = k.body.lines().filter(|l| !l.starts_with("Co-Authored-By:")).collect::<Vec<_>>().join(" ");
+        let detail = k.body.lines().filter(|l| !l.starts_with("Co-Authored-By:")).collect::<Vec<_>>().join("\n");
         if !detail.trim().is_empty() {
-            body = body.push(
-                container(text(detail.trim().to_string()).size(13).color(theme::TEXT_DIM).line_height(1.4)).max_height(72.0).clip(true),
-            );
+            let para = text(detail.trim().to_string()).size(13).color(theme::TEXT_DIM).line_height(1.4);
+            // Closed: a short preview. Open: the whole description.
+            body = body.push(if open { Element::from(para) } else { container(para).max_height(72.0).clip(true).into() });
         }
-        body = body.push(text(k.short.clone()).size(11).font(iced::Font::MONOSPACE).color(theme::ACCENT));
+        body = body.push(
+            row![
+                text(k.short.clone()).size(11).font(iced::Font::MONOSPACE).color(theme::ACCENT),
+                space::horizontal(),
+                icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }, 11.0, theme::TEXT_FAINT),
+            ]
+            .align_y(Alignment::Center),
+        );
+        if open {
+            let mut files = column![].spacing(1);
+            if self.chat.expanded_files.is_empty() {
+                files = files.push(text("Loading files…").size(11).color(theme::TEXT_FAINT));
+            }
+            for f in &self.chat.expanded_files {
+                let (name, dir) = match f.path.rsplit_once('/') {
+                    Some((d, n)) => (n.to_string(), d.to_string()),
+                    None => (f.path.clone(), String::new()),
+                };
+                let tint = match f.status {
+                    hythe_git::Status::Added | hythe_git::Status::Untracked => theme::ADDED,
+                    hythe_git::Status::Deleted | hythe_git::Status::Conflicted => theme::REMOVED,
+                    _ => theme::ACCENT,
+                };
+                files = files.push(
+                    button(
+                        row![
+                            text(f.status.letter().to_string()).size(11).color(tint).width(Length::Fixed(10.0)),
+                            text(name).size(12).wrapping(text::Wrapping::None),
+                            container(text(dir).size(10).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None))
+                                .width(Length::Fill)
+                                .clip(true),
+                            text(format!("+{}", f.added)).size(10).color(theme::ADDED),
+                            text(format!("−{}", f.removed)).size(10).color(theme::REMOVED),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .padding([3, 4])
+                    .style(theme::row(false))
+                    .on_press(Message::Chat(ChatMsg::OpenCommitFile(k.sha.clone(), f.path.clone()))),
+                );
+            }
+            body = body.push(container(crate::view::divider_h()).padding([4, 0]));
+            body = body.push(files);
+        }
         let card = button(body)
             .width(Length::Fill)
             .padding([8, 10])
@@ -469,7 +552,7 @@ impl App {
                 border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 4.0.into() },
                 ..button::Style::default()
             })
-            .on_press(Message::Chat(ChatMsg::OpenCommit(k.sha.clone())));
+            .on_press(Message::Chat(ChatMsg::ToggleCommit(k.sha.clone())));
         row![avatar, card].spacing(12).into()
     }
 
