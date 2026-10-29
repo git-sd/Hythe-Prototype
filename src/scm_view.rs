@@ -64,25 +64,18 @@ impl App {
             .into()
     }
 
-    /// Changes | History, as one compact switch at the top of the left column.
+    /// Title and close button at the top of the left column.
     fn mode_switch(&self) -> Element<'static, Message> {
-        let switch = container(row![
-            tab_button("Changes", self.scm.tab == ScmTab::Changes, ScmTab::Changes),
-            tab_button("History", self.scm.tab == ScmTab::History, ScmTab::History),
-        ])
-        .padding(2)
-        .style(|_: &Theme| container::Style {
-            border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 3.0.into() },
-            ..Default::default()
-        });
-        row![switch, space::horizontal(), icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::Hide))]
-            .align_y(Alignment::Center)
-            .into()
+        row![
+            text("History").size(13),
+            space::horizontal(),
+            icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::Hide)),
+        ]
+        .align_y(Alignment::Center)
+        .into()
     }
+
     fn scm_left(&self) -> Element<'_, Message> {
-        if self.scm.tab == ScmTab::History {
-            return self.history_left();
-        }
         let s = &self.scm;
         let dim = theme::TEXT_DIM;
         let branch = self.git.as_ref().map(|g| g.branch.clone()).unwrap_or_else(|| "—".into());
@@ -164,7 +157,7 @@ impl App {
                 Some((d, n)) => (n.to_string(), d.to_string()),
                 None => (c.path.clone(), String::new()),
             };
-            let selected = s.selected.as_ref() == Some(&(c.path.clone(), staged));
+            let selected = s.tab == ScmTab::Changes && s.selected.as_ref() == Some(&(c.path.clone(), staged));
             let toggle = if staged {
                 icon_button(Icon::Minus, dim, false, scm(ScmMsg::Unstage(c.path.clone())))
             } else {
@@ -219,7 +212,7 @@ impl App {
         }
 
         container(
-            column![top, commit_box, crate::view::vscroll(files).height(Length::Fill)]
+            column![top, commit_box, crate::view::vscroll(column![files, self.commit_list()].spacing(4)).height(Length::Fill)]
                 .spacing(10)
                 .padding(10),
         )
@@ -264,22 +257,25 @@ impl App {
             .into()
     }
 
-    /// The commit list.
-    fn history_left(&self) -> Element<'_, Message> {
+    /// The commits, newest first, under the working changes.
+    fn commit_list(&self) -> Element<'_, Message> {
         let s = &self.scm;
         let dim = theme::TEXT_DIM;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let branch = self.git.as_ref().map(|g| g.branch.clone()).unwrap_or_else(|| "—".into());
 
-        let mut list = column![].spacing(1);
+        let mut list = column![
+            container(text(format!("History · {}", s.commits.len())).size(12).color(dim))
+                .padding(Padding { top: 8.0, right: 0.0, bottom: 2.0, left: 8.0 })
+        ]
+        .spacing(1);
         if s.commits.is_empty() {
             list = list.push(container(text("No commits yet.").size(12).color(theme::TEXT_FAINT)).padding(10));
         }
         for c in &s.commits {
-            let selected = s.selected_commit.as_deref() == Some(c.sha.as_str());
+            let selected = s.tab == ScmTab::History && s.selected_commit.as_deref() == Some(c.sha.as_str());
             list = list.push(
                 button(
                     column![
@@ -299,21 +295,7 @@ impl App {
                 .on_press(scm(ScmMsg::SelectCommit(c.sha.clone()))),
             );
         }
-
-        let top = row![
-            icon(Icon::Branch, 14.0, dim),
-            text(branch).size(13),
-            space::horizontal(),
-            text(format!("{} commits", s.commits.len())).size(11).color(theme::TEXT_FAINT),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
-
-        container(column![top, crate::view::vscroll(list).height(Length::Fill)].spacing(8).padding(10))
-            .width(Length::Fixed(self.scm_w))
-            .height(Length::Fill)
-            .style(theme::bg(theme::PANEL_BG))
-            .into()
+        list.into()
     }
 
     /// Details of the selected commit: message, files, and the diff of one file.
@@ -509,15 +491,5 @@ fn diff_body(diff: &[DiffLine], pane_w: f32) -> Element<'static, Message> {
             horizontal: crate::view::thin(),
         })
         .height(Length::Fill)
-        .into()
-}
-
-/// A tab in the Source Control header.
-fn tab_button(label: &'static str, selected: bool, tab: ScmTab) -> Element<'static, Message> {
-    button(text(label).size(12).color(if selected { theme::TEXT } else { theme::TEXT_DIM }).center().width(Length::Fill))
-        .width(Length::Fill)
-        .padding([4, 12])
-        .style(theme::flat(selected))
-        .on_press(scm(ScmMsg::Tab(tab)))
         .into()
 }

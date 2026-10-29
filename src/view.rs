@@ -467,16 +467,27 @@ impl App {
         let repo = button(
             row![
                 text(name).size(14).wrapping(text::Wrapping::None),
-                space::horizontal(),
                 icon(Icon::ChevronDown, 12.0, theme::TEXT_DIM),
             ]
+            .spacing(6)
             .align_y(Alignment::Center),
         )
-        .width(Length::Fill)
         .padding([4, 8])
         .style(theme::row(false))
         .on_press(Message::OpenMenu(4));
-        container(row![self.left_controls(), repo].spacing(4).align_y(Alignment::Center).padding([0, 8]))
+        container(
+            row![
+                self.left_controls(),
+                repo,
+                // The rest of the row drags the window.
+                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
+                    .on_press(Message::DragWindow)
+                    .on_double_click(Message::ToggleMaximize),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center)
+            .padding([0, 8]),
+        )
             .width(Length::Fixed(RAIL_W + self.list_w))
             .height(Length::Fixed(TAB_H))
             .align_y(Alignment::Center)
@@ -518,7 +529,7 @@ impl App {
         list = list.push(list_row(
             row![
                 icon(Icon::Branch, 15.0, dim),
-                text("Changes").size(14).color(dim),
+                text("History").size(14).color(dim),
                 space::horizontal(),
                 text(if changes > 0 { changes.to_string() } else { String::new() }).size(11).color(theme::ACCENT),
             ]

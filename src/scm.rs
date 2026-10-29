@@ -20,7 +20,7 @@ pub struct Scm {
     pub branch_menu: bool,
     pub new_branch: String,
     pub ahead_behind: Option<(u32, u32)>,
-    /// Which list the left side shows.
+    /// Whether the right side shows a changed file or a commit.
     pub tab: ScmTab,
     pub commits: Vec<Commit>,
     /// Commit whose details are shown (by full hash).
@@ -63,20 +63,18 @@ impl Scm {
         if let Some((path, staged)) = self.selected.clone() {
             self.diff = repo.diff(&path, staged).unwrap_or_default();
         }
-        if self.tab == ScmTab::History {
-            self.load_history(repo);
-        }
+        self.load_history(repo);
     }
 
     /// Read the commit list, keeping the selected commit if it's still there.
     pub fn load_history(&mut self, repo: &Repo) {
         self.commits = repo.log(HISTORY_LIMIT).unwrap_or_default();
-        let keep = self
-            .selected_commit
-            .clone()
-            .filter(|sha| self.commits.iter().any(|c| &c.sha == sha))
-            .or_else(|| self.commits.first().map(|c| c.sha.clone()));
-        match keep {
+        // Keep showing the same commit; only pick one when none is showing (or it vanished).
+        let still_there = self.selected_commit.as_ref().is_some_and(|sha| self.commits.iter().any(|c| &c.sha == sha));
+        if still_there {
+            return;
+        }
+        match self.commits.first().map(|c| c.sha.clone()) {
             Some(sha) => self.select_commit(repo, sha),
             None => {
                 self.selected_commit = None;
@@ -138,8 +136,6 @@ pub enum ScmMsg {
     NewBranchText(String),
     CreateBranch,
     ToggleBlame,
-    /// Switch between current changes and commit history.
-    Tab(ScmTab),
     SelectCommit(String),
     SelectCommitFile(String),
 }
@@ -223,21 +219,23 @@ impl App {
                 self.scm.open = true;
                 self.focus_term = false;
                 self.scm.reload(&repo);
+                // Open on what needs attention: working changes if there are any, else history.
+                self.scm.tab = if self.scm.changes.is_empty() { ScmTab::History } else { ScmTab::Changes };
             }
             ScmMsg::Hide => self.scm.open = false,
-            ScmMsg::Tab(tab) => {
-                self.scm.tab = tab;
-                if tab == ScmTab::History {
-                    self.scm.load_history(&repo);
-                }
+            ScmMsg::SelectCommit(sha) => {
+                self.scm.tab = ScmTab::History;
+                self.scm.select_commit(&repo, sha);
             }
-            ScmMsg::SelectCommit(sha) => self.scm.select_commit(&repo, sha),
             ScmMsg::SelectCommitFile(path) => self.scm.select_commit_file(&repo, path),
             ScmMsg::Refresh => {
                 self.refresh_git();
                 self.scm.reload(&repo);
             }
-            ScmMsg::Select { path, staged } => self.scm.select(&repo, path, staged),
+            ScmMsg::Select { path, staged } => {
+                self.scm.tab = ScmTab::Changes;
+                self.scm.select(&repo, path, staged);
+            }
             ScmMsg::Stage(path) => self.scm_op(&repo, |r, p| r.stage(&[p]), &path),
             ScmMsg::Unstage(path) => self.scm_op(&repo, |r, p| r.unstage(&[p]), &path),
             ScmMsg::StageAll => {
