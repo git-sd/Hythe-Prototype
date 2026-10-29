@@ -374,12 +374,8 @@ impl App {
             // Marker for a repo you're not looking at that still has something running or unsaved.
             let busy = self.active_project != Some(i)
                 && project.ws.as_ref().is_some_and(|w| w.has_running_terminal() || w.has_dirty_docs());
-            let face = match self.repo_avatars.get(&project.path) {
-                Some(h) => RailFace::Image(h.clone()),
-                None => RailFace::Text(initials(&name)),
-            };
             rail = rail.push(rail_tile(
-                face,
+                RailFace::Text(initials(&name)),
                 self.active_project == Some(i),
                 busy,
                 project.path.display().to_string(),
@@ -1104,7 +1100,6 @@ pub(crate) fn initials(name: &str) -> String {
 
 enum RailFace {
     Text(String),
-    Image(iced::widget::image::Handle),
     Plus,
 }
 
@@ -1115,12 +1110,6 @@ fn rail_tile<'a>(face: RailFace, active: bool, busy: bool, tip: String, msg: Mes
     let fg = if active { Color::WHITE } else { theme::TEXT_DIM };
     let inner: Element<'a, Message> = match face {
         RailFace::Text(label) => text(label).size(12).color(fg).center().into(),
-        RailFace::Image(h) => iced::widget::image(h)
-            .width(Length::Fixed(34.0))
-            .height(Length::Fixed(34.0))
-            .content_fit(iced::ContentFit::Cover)
-            .border_radius(4.0)
-            .into(),
         RailFace::Plus => icon(Icon::Plus, 14.0, theme::TEXT_DIM),
     };
     let tile = container(inner)

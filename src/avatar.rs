@@ -44,15 +44,6 @@ pub fn fetch(user: &str) -> Option<PathBuf> {
     download(user, &format!("https://github.com/{user}.png?size=96"))
 }
 
-/// The picture GitHub shows for a repository: its social preview if the owner set
-/// one, otherwise the generated card.
-pub fn fetch_repo(owner: &str, repo: &str) -> Option<PathBuf> {
-    if !hythe_git::is_github_login(owner) || repo.is_empty() {
-        return None;
-    }
-    download(&format!("{owner}__{repo}"), &format!("https://opengraph.githubassets.com/1/{owner}/{repo}"))
-}
-
 fn download(stem: &str, url: &str) -> Option<PathBuf> {
     let dir = cache_dir()?;
     std::fs::create_dir_all(&dir).ok()?;

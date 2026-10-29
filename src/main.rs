@@ -155,9 +155,6 @@ struct App {
     /// Window size, for keeping dragged columns on screen.
     win: iced::Size,
     drag: Option<Drag>,
-    /// Owner's GitHub picture per repository in the rail.
-    repo_avatars: HashMap<PathBuf, iced::widget::image::Handle>,
-    repo_avatar_tried: HashSet<PathBuf>,
     /// Everyone who has committed to the open repository.
     members: Vec<Member>,
     members_for: Option<PathBuf>,
@@ -275,7 +272,6 @@ pub enum Message {
     MinimizeWindow,
     ToggleMaximize,
     AvatarReady(Option<PathBuf>),
-    RepoAvatar(PathBuf, Option<PathBuf>),
     MemberAvatar(String, Option<PathBuf>),
     DragStart(Handle),
     PointerMoved(iced::Point),
@@ -338,8 +334,6 @@ impl App {
             members_w: view::MEMBERS_W,
             win: iced::Size::new(1280.0, 780.0),
             drag: None,
-            repo_avatars: HashMap::new(),
-            repo_avatar_tried: HashSet::new(),
             members: Vec::new(),
             members_for: None,
             member_avatars: HashMap::new(),
@@ -405,28 +399,9 @@ impl App {
             .or_else(|| Some(self.user.clone()).filter(|u| hythe_git::is_github_login(u)))
     }
 
-    /// Fetch pictures not tried yet: each repository's owner, and each committer
-    /// whose GitHub login is known.
+    /// Fetch pictures of committers and chat authors whose GitHub login is known.
     fn picture_tasks(&mut self) -> Task<Message> {
         let mut tasks = Vec::new();
-        for p in &self.projects {
-            if self.repo_avatar_tried.insert(p.path.clone()) {
-                let (path, key) = (p.path.clone(), p.path.clone());
-                tasks.push(Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            hythe_git::Repo::open(&path)
-                                .and_then(|r| r.origin_slug())
-                                .and_then(|(owner, name)| avatar::fetch_repo(&owner, &name))
-                        })
-                        .await
-                        .ok()
-                        .flatten()
-                    },
-                    move |f| Message::RepoAvatar(key.clone(), f),
-                ));
-            }
-        }
         let logins: Vec<String> =
             self.members.iter().filter_map(|m| m.login.clone()).chain(self.chat_logins().cloned()).collect();
         for login in logins {
@@ -1009,11 +984,6 @@ impl App {
             Message::MinimizeWindow => return window::oldest().and_then(|id| window::minimize(id, true)),
             Message::ResetWindow => return self.fit_window_task(),
             Message::ToggleMaximize => return window::oldest().and_then(window::toggle_maximize),
-            Message::RepoAvatar(path, file) => {
-                if let Some(h) = file.and_then(|f| std::fs::read(f).ok()).map(iced::widget::image::Handle::from_bytes) {
-                    self.repo_avatars.insert(path, h);
-                }
-            }
             Message::MemberAvatar(login, file) => {
                 if let Some(h) = file.and_then(|f| std::fs::read(f).ok()).map(iced::widget::image::Handle::from_bytes) {
                     self.member_avatars.insert(login, h);
