@@ -1117,7 +1117,8 @@ impl App {
                 icons,
             ]
             .spacing(12)
-            .align_y(Alignment::Center),
+            .align_y(Alignment::Center)
+            .padding([0, 10]),
         )
         .width(Length::Fill)
         .height(Length::Fixed(BAR_H))
