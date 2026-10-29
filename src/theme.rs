@@ -1,4 +1,4 @@
-use iced::widget::{button, container};
+use iced::widget::{button, container, text_input};
 use iced::{Background, Border, Color, Theme};
 
 // A One Dark-style palette in the spirit of Zed's default theme.
@@ -63,5 +63,22 @@ pub fn row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
             },
             ..Default::default()
         }
+    }
+}
+
+/// Single-line text box.
+pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
+    let focused = matches!(status, text_input::Status::Focused { .. });
+    text_input::Style {
+        background: Background::Color(EDITOR_BG),
+        border: Border {
+            radius: 6.0.into(),
+            width: 1.0,
+            color: if focused { ACCENT } else { SELECTED },
+        },
+        icon: TEXT_DIM,
+        placeholder: TEXT_FAINT,
+        value: TEXT,
+        selection: Color { a: 0.35, ..ACCENT },
     }
 }

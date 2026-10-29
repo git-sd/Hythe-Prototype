@@ -20,6 +20,7 @@ pub enum Icon {
     Users,
     Panels,
     Plus,
+    Minus,
     Close,
     Split,
     Sparkle,
@@ -58,6 +59,7 @@ impl Icon {
             Icon::Users => svg_icon!(r#"<circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9.5" r="2.3"/><path d="M16 14.2a4.5 4.5 0 0 1 4.5 4.3"/>"#),
             Icon::Panels => svg_icon!(r#"<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><rect x="14.5" y="4.5" width="6.5" height="15" rx="2.5" fill="white"/>"#),
             Icon::Plus => svg_icon!(r#"<path d="M12 5v14M5 12h14"/>"#),
+            Icon::Minus => svg_icon!(r#"<path d="M5 12h14"/>"#),
             Icon::Close => svg_icon!(r#"<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>"#),
             Icon::Split => svg_icon!(r#"<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M12 4.5v15"/>"#),
             Icon::Sparkle => svg_icon!(r#"<path d="M12 3.5l1.9 5.6 5.6 1.9-5.6 1.9L12 18.5l-1.9-5.6-5.6-1.9 5.6-1.9z"/>"#),
@@ -88,7 +90,7 @@ mod tests {
         for icon in [
             Icon::Menu, Icon::Sidebar, Icon::Search, Icon::History, Icon::Folder, Icon::File,
             Icon::ChevronRight, Icon::ChevronDown, Icon::Branch, Icon::Terminal, Icon::Bug,
-            Icon::Outline, Icon::Users, Icon::Panels, Icon::Plus, Icon::Close, Icon::Split,
+            Icon::Outline, Icon::Users, Icon::Panels, Icon::Plus, Icon::Minus, Icon::Close, Icon::Split,
             Icon::Sparkle, Icon::Send, Icon::Eye, Icon::More, Icon::Pin, Icon::Expand,
         ] {
             let s = icon.source();

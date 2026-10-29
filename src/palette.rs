@@ -1,4 +1,5 @@
 use crate::panes::Axis;
+use crate::scm::ScmMsg;
 use crate::Message;
 
 pub struct Palette {
@@ -40,6 +41,12 @@ fn all(agents: &[String]) -> Vec<Command> {
         c("Split Down", "Ctrl+Shift+\\", Message::Split(Axis::Vertical)),
         c("Close Pane", "", Message::ClosePane),
         c("Focus Next Pane", "Ctrl+1-9", Message::FocusNextPane),
+        c("Source Control", "Ctrl+Shift+G", Message::Scm(ScmMsg::Show)),
+        c("Git: Push", "", Message::Scm(ScmMsg::Push)),
+        c("Git: Pull", "", Message::Scm(ScmMsg::Pull)),
+        c("Git: Fetch", "", Message::Scm(ScmMsg::Fetch)),
+        c("Git: Switch Branch…", "", Message::Scm(ScmMsg::BranchMenu(true))),
+        c("Toggle Inline Blame", "", Message::Scm(ScmMsg::ToggleBlame)),
         c("Toggle Explorer", "Ctrl+B", Message::ToggleSidebar),
         c("Toggle Terminal", "Ctrl+`", Message::ToggleTerminal),
         c("New Terminal", "Ctrl+Shift+`", Message::NewTerminal(None)),

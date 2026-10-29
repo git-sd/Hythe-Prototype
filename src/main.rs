@@ -8,6 +8,8 @@ mod icons;
 mod menus;
 mod palette;
 mod panes;
+mod scm;
+mod scm_view;
 mod state;
 mod terminal_view;
 mod theme;
@@ -25,6 +27,7 @@ use highlight::Highlighter;
 use hythe_term::{Profile, SessionId, Snapshot, TerminalManager};
 use palette::Palette;
 use panes::{Axis, Panes};
+use scm::{Scm, ScmMsg};
 use state::{GitInfo, Persisted};
 
 fn main() -> iced::Result {
@@ -89,6 +92,10 @@ struct App {
     persisted: Persisted,
     /// Branch and change counts for the open project.
     git: Option<GitInfo>,
+    repo: Option<hythe_git::Repo>,
+    scm: Scm,
+    /// Show who last changed the cursor line.
+    blame_on: bool,
     /// Name shown on the account chip.
     user: String,
 }
@@ -131,6 +138,8 @@ pub enum Message {
     TermScroll(i32),
     TermPaste(Option<String>),
     TermTick,
+    /// Source control: changes, commits, branches, blame.
+    Scm(ScmMsg),
     /// Open a project from the sidebar's Projects list.
     OpenRecent(PathBuf),
     /// Pin or unpin the current file in the sidebar.
@@ -169,6 +178,9 @@ impl App {
             highlighter: Highlighter::new(),
             persisted: Persisted::load(),
             git: None,
+            repo: None,
+            scm: Scm::default(),
+            blame_on: false,
             user: state::git_user().unwrap_or_else(|| "you".into()),
         };
         if let Some(arg) = std::env::args().nth(1) {
@@ -192,7 +204,21 @@ impl App {
     }
 
     fn refresh_git(&mut self) {
-        self.git = self.root.as_ref().and_then(|r| state::git_info(&r.path));
+        let root = self.root.as_ref().map(|r| r.path.clone());
+        // Only look for the repository again when the project changed.
+        let stale = match (&self.repo, &root) {
+            (Some(repo), Some(root)) => !root.starts_with(repo.root()),
+            (None, Some(_)) => true,
+            (_, None) => true,
+        };
+        if stale {
+            self.repo = root.as_ref().and_then(|r| hythe_git::Repo::open(r));
+        }
+        self.git = self.repo.as_ref().map(|r| {
+            let (added, removed) = r.summary();
+            GitInfo { repo: r.name(), branch: r.current_branch(), added, removed }
+        });
+        self.scm_reload();
     }
 
     fn title(&self) -> String {
@@ -218,6 +244,7 @@ impl App {
                 }
                 self.docs.push(doc);
                 self.panes.open_doc(self.docs.len() - 1);
+                self.load_blame(self.docs.len() - 1);
                 self.status = format!("Opened {}", path.display());
             }
             Err(e) => self.status = format!("Open failed: {e}"),
@@ -673,6 +700,7 @@ impl App {
                 }
             }
             Message::GitRefresh => self.refresh_git(),
+            Message::Scm(m) => return self.scm_update(m),
             Message::Unavailable(what) => self.status = format!("{what} isn't available yet"),
             Message::OpenFile(p) => self.open_file(p),
             Message::ToggleDir(p) => {
@@ -793,6 +821,7 @@ impl App {
                         Err(e) => e,
                     };
                     self.refresh_git();
+                    self.load_blame(self.panes.cur());
                 }
             }
             Message::CloseActive => {
@@ -874,6 +903,7 @@ impl App {
                     ("o", true) => return self.update(Message::OpenFolderDialog),
                     ("p", true) => return self.update(Message::OpenPalette),
                     ("b", _) => return self.update(Message::ToggleSidebar),
+                    ("g", true) => return self.update(Message::Scm(ScmMsg::Show)),
                     ("`", false) => return self.update(Message::ToggleTerminal),
                     ("`", true) | ("~", _) => return self.update(Message::NewTerminal(None)),
                     ("\\", false) => return self.update(Message::Split(Axis::Horizontal)),

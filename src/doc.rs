@@ -18,6 +18,8 @@ pub struct Doc {
     pub path: Option<PathBuf>,
     pub dirty: bool,
     pub classes: Vec<u8>,
+    /// Last-change info per line, when inline blame is on.
+    pub blame: Option<Vec<hythe_git::BlameLine>>,
 }
 
 impl Doc {
@@ -38,6 +40,7 @@ impl Doc {
             path,
             dirty: false,
             classes: Vec::new(),
+            blame: None,
         }
     }
 
@@ -81,6 +84,15 @@ impl Doc {
             _ => Vec::new(),
         };
     }
+    /// Replace the whole text (after the file changed on disk), keeping the cursor line.
+    pub fn replace_text(&mut self, text: &str, hl: &mut Highlighter) {
+        let (line, col) = self.buffer.cursor();
+        self.buffer = Buffer::new(text);
+        self.buffer.set_cursor(line, col, false);
+        self.dirty = false;
+        self.rehighlight(hl);
+    }
+
     pub fn edited(&mut self, hl: &mut Highlighter) {
         self.dirty = true;
         self.rehighlight(hl);

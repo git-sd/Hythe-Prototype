@@ -45,6 +45,8 @@ pub struct EditorView<'a> {
     pub viewport: &'a Cell<Size>,
     /// Completion popup, when this pane has one open.
     pub popup: Option<&'a CompletionUi>,
+    /// Inline blame note for the cursor line.
+    pub blame: Option<String>,
 }
 
 #[derive(Default)]
@@ -211,6 +213,20 @@ impl canvas::Program<Message> for EditorView<'_> {
             if self.focused { theme::ACCENT } else { theme::TEXT_DIM },
         );
 
+        if let Some(note) = &self.blame {
+            let line_len = buf.line_text(cur_line).chars().count();
+            let x = text_x + visual_col(&buf.line_text(cur_line), line_len) as f32 * CHAR_W + 3.0 * CHAR_W;
+            if cur_line >= first && cur_line < last {
+                frame.fill_text(canvas::Text {
+                    content: note.clone(),
+                    position: Point::new(x, cur_line as f32 * LINE_H - scroll.y + 3.0),
+                    color: theme::TEXT_FAINT,
+                    size: Pixels(FONT_SIZE - 1.5),
+                    font: Font { style: iced::font::Style::Italic, ..Font::MONOSPACE },
+                    ..canvas::Text::default()
+                });
+            }
+        }
         if let Some(ui) = self.popup {
             let rect = self.popup_rect(ui, bounds.size());
             ui.draw(&mut frame, rect);

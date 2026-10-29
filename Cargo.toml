@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = ["crates/hythe-term", "crates/hythe-complete"]
+members = ["crates/hythe-term", "crates/hythe-complete", "crates/hythe-git"]
 
 [dependencies]
 hythe-term = { path = "crates/hythe-term" }
 hythe-complete = { path = "crates/hythe-complete" }
+hythe-git = { path = "crates/hythe-git" }
 iced = { version = "0.14", features = ["canvas", "tokio", "svg"] }
 ropey = "1.6"
 tree-sitter = "0.27"
@@ -30,6 +31,7 @@ tree-sitter-bash = "0.25"
 tree-sitter-ruby = "0.23"
 tree-sitter-php = "0.24"
 rfd = "0.17"
+tokio = { version = "1", features = ["rt"] }
 
 [profile.dev]
 opt-level = 1

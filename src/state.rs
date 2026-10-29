@@ -98,30 +98,6 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Sum added/removed lines from `git diff --numstat` output (binary files show `-`).
-pub fn parse_numstat(text: &str) -> (u32, u32) {
-    text.lines().fold((0, 0), |(a, r), line| {
-        let mut cols = line.split('\t');
-        let added = cols.next().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
-        let removed = cols.next().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
-        (a + added, r + removed)
-    })
-}
-
-/// `None` if `dir` isn't inside a git repository (or git isn't installed).
-pub fn git_info(dir: &Path) -> Option<GitInfo> {
-    let top = git(dir, &["rev-parse", "--show-toplevel"])?;
-    let repo = Path::new(&top).file_name()?.to_string_lossy().into_owned();
-    let branch = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])
-        .filter(|b| b != "HEAD")
-        .or_else(|| git(dir, &["rev-parse", "--short", "HEAD"]))
-        .unwrap_or_else(|| "(no commits)".into());
-    let (added, removed) = git(dir, &["diff", "--numstat", "HEAD"])
-        .map(|t| parse_numstat(&t))
-        .unwrap_or((0, 0));
-    Some(GitInfo { repo, branch, added, removed })
-}
-
 /// The git user name, for the account chip in the corner.
 pub fn git_user() -> Option<String> {
     git(Path::new("."), &["config", "user.name"]).filter(|n| !n.is_empty())
@@ -152,20 +128,5 @@ mod tests {
         }
         assert_eq!(p.recents.len(), MAX_RECENTS);
         assert_eq!(p.recents[0], PathBuf::from("/p/19"));
-    }
-
-    #[test]
-    fn numstat_sums_and_skips_binary() {
-        assert_eq!(parse_numstat("3\t1\tsrc/a.rs\n10\t0\tsrc/b.rs\n-\t-\timg.png\n"), (13, 1));
-        assert_eq!(parse_numstat(""), (0, 0));
-    }
-
-    #[test]
-    fn reads_this_repository() {
-        // The tests run inside the project, which is a git repository.
-        let info = git_info(Path::new(env!("CARGO_MANIFEST_DIR")));
-        if let Some(info) = info {
-            assert!(!info.repo.is_empty() && !info.branch.is_empty());
-        }
     }
 }

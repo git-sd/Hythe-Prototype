@@ -1283,10 +1283,12 @@ name = "hythe"
 version = "0.1.0"
 dependencies = [
  "hythe-complete",
+ "hythe-git",
  "hythe-term",
  "iced",
  "rfd",
  "ropey",
+ "tokio",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-c",
@@ -1309,6 +1311,10 @@ dependencies = [
 
 [[package]]
 name = "hythe-complete"
+version = "0.1.0"
+
+[[package]]
+name = "hythe-git"
 version = "0.1.0"
 
 [[package]]

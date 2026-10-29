@@ -11,23 +11,24 @@ use crate::editor::EditorView;
 use crate::icons::{icon, Icon};
 use crate::palette::{self, Palette};
 use crate::panes::Axis;
+use crate::scm::ScmMsg;
 use crate::terminal_view::TerminalView;
 use crate::{menus, theme, App, Message};
 
-const TITLE_H: f32 = 38.0;
-const BAR_H: f32 = 32.0;
-const TAB_H: f32 = 36.0;
-const SIDEBAR_W: f32 = 276.0;
+pub(crate) const TITLE_H: f32 = 38.0;
+pub(crate) const BAR_H: f32 = 32.0;
+pub(crate) const TAB_H: f32 = 36.0;
+pub(crate) const SIDEBAR_W: f32 = 276.0;
 const AGENT_W: f32 = 470.0;
 
-fn divider_v<'a>() -> Element<'a, Message> {
+pub(crate) fn divider_v<'a>() -> Element<'a, Message> {
     container(space::horizontal().width(Length::Fixed(1.0)))
         .height(Length::Fill)
         .style(theme::bg(theme::BORDER))
         .into()
 }
 
-fn divider_h<'a>() -> Element<'a, Message> {
+pub(crate) fn divider_h<'a>() -> Element<'a, Message> {
     container(space::vertical().height(Length::Fixed(1.0)))
         .width(Length::Fill)
         .style(theme::bg(theme::BORDER))
@@ -35,7 +36,7 @@ fn divider_h<'a>() -> Element<'a, Message> {
 }
 
 /// A square icon button; `on` highlights it (an open panel, say).
-fn icon_button<'a>(glyph: Icon, color: Color, on: bool, msg: Message) -> Element<'a, Message> {
+pub(crate) fn icon_button<'a>(glyph: Icon, color: Color, on: bool, msg: Message) -> Element<'a, Message> {
     button(container(icon(glyph, 16.0, if on { theme::TEXT } else { color })).center(Length::Shrink))
         .padding([5, 7])
         .style(theme::flat(on))
@@ -43,13 +44,13 @@ fn icon_button<'a>(glyph: Icon, color: Color, on: bool, msg: Message) -> Element
         .into()
 }
 
-fn section_header<'a>(label: &'a str) -> Element<'a, Message> {
+pub(crate) fn section_header<'a>(label: &'a str) -> Element<'a, Message> {
     container(text(label).size(13).color(theme::TEXT_DIM))
         .padding(Padding { top: 12.0, right: 8.0, bottom: 4.0, left: 8.0 })
         .into()
 }
 
-fn list_row<'a>(content: Element<'a, Message>, selected: bool, msg: Message) -> Element<'a, Message> {
+pub(crate) fn list_row<'a>(content: Element<'a, Message>, selected: bool, msg: Message) -> Element<'a, Message> {
     button(content)
         .width(Length::Fill)
         .padding([5, 8])
@@ -58,7 +59,7 @@ fn list_row<'a>(content: Element<'a, Message>, selected: bool, msg: Message) -> 
         .into()
 }
 
-fn dot<'a>(color: Color) -> Element<'a, Message> {
+pub(crate) fn dot<'a>(color: Color) -> Element<'a, Message> {
     container(space::horizontal().width(Length::Fixed(7.0)).height(Length::Fixed(7.0)))
         .style(move |_: &Theme| container::Style {
             background: Some(color.into()),
@@ -97,6 +98,9 @@ impl App {
                 self.menu_dropdown(),
             ]
             .into();
+        }
+        if self.scm.branch_menu {
+            return stack![base, self.branch_menu()].into();
         }
         base.into()
     }
@@ -451,6 +455,9 @@ impl App {
     // --- editor area ---
 
     fn editor_area(&self) -> Element<'_, Message> {
+        if self.scm.open {
+            return self.scm_view();
+        }
         if self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty() {
             return container(self.welcome())
                 .width(Length::Fill)
@@ -486,6 +493,7 @@ impl App {
                 focused,
                 viewport: &pane.viewport,
                 popup: if focused && !self.focus_term { self.completion.as_ref() } else { None },
+                blame: if focused { self.blame_text(doc) } else { None },
             })
             .width(Length::Fill)
             .height(Length::Fill)
@@ -564,8 +572,26 @@ impl App {
         let tabs = scrollable(row(tabs)).direction(scrollable::Direction::Horizontal(
             scrollable::Scrollbar::new().width(0).scroller_width(0),
         ));
+        let changes_tab: Element<'_, Message> = if pane_index == 0 {
+            let n = self.scm.changes.len();
+            button(
+                row![
+                    text("Changes").size(13).color(theme::TEXT_DIM),
+                    text(if n > 0 { n.to_string() } else { String::new() }).size(11).color(theme::ACCENT),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .padding([8, 12])
+            .style(theme::flat(false))
+            .on_press(Message::Scm(ScmMsg::Show))
+            .into()
+        } else {
+            space::horizontal().width(Length::Shrink).into()
+        };
         container(
             row![
+                changes_tab,
                 tabs,
                 space::horizontal(),
                 icon_button(Icon::Split, theme::TEXT_DIM, self.panes.list.len() > 1, Message::Split(Axis::Horizontal)),
@@ -661,7 +687,7 @@ impl App {
             )
             .padding([3, 8])
             .style(theme::flat(false))
-            .on_press(Message::GitRefresh)
+            .on_press(Message::Scm(ScmMsg::BranchMenu(true)))
             .into(),
             None => text("No repository").size(12).color(theme::TEXT_FAINT).into(),
         };
@@ -692,7 +718,7 @@ impl App {
             icon_button(Icon::Bug, dim, false, Message::Unavailable("The debugger")),
             icon_button(Icon::Outline, dim, false, Message::Unavailable("Outline")),
             icon_button(Icon::Users, dim, false, Message::Unavailable("Collaboration")),
-            icon_button(Icon::Branch, dim, false, Message::Unavailable("Source control")),
+            icon_button(Icon::Branch, dim, self.scm.open, Message::Scm(ScmMsg::Show)),
             icon_button(Icon::Panels, dim, self.show_sidebar, Message::ToggleSidebar),
         ]
         .spacing(0);
@@ -717,5 +743,26 @@ impl App {
         .align_y(Alignment::Center)
         .style(theme::bg(theme::BAR_BG))
         .into()
+    }
+}
+
+impl App {
+    /// "You, 2 hours ago • subject" for the cursor line, when blame is loaded
+    /// and the file hasn't been edited since (line numbers would drift).
+    pub(crate) fn blame_text(&self, doc: &crate::doc::Doc) -> Option<String> {
+        if doc.dirty {
+            return None;
+        }
+        let (line, _) = doc.buffer.cursor();
+        let b = doc.blame.as_ref()?.get(line)?;
+        if b.uncommitted {
+            return Some("You • Uncommitted changes".into());
+        }
+        let who = if b.author == self.user { "You" } else { b.author.as_str() };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        Some(format!("{who}, {} • {}", hythe_git::time_ago(b.time, now), b.summary))
     }
 }

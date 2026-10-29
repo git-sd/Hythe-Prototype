@@ -1,4 +1,5 @@
 use crate::panes::Axis;
+use crate::scm::ScmMsg;
 use crate::Message;
 
 pub const MENUS: [&str; 4] = ["File", "Edit", "View", "Terminal"];
@@ -46,6 +47,8 @@ pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
         ],
         2 => vec![
             item("Command Palette…", "Ctrl+Shift+P", Message::OpenPalette),
+            item("Source Control", "Ctrl+Shift+G", Message::Scm(ScmMsg::Show)),
+            item("Toggle Inline Blame", "", Message::Scm(ScmMsg::ToggleBlame)),
             Separator,
             item("Toggle Sidebar", "Ctrl+B", Message::ToggleSidebar),
             item("Toggle Terminal", "Ctrl+`", Message::ToggleTerminal),
