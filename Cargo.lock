@@ -1213,6 +1213,7 @@ dependencies = [
 name = "hythe"
 version = "0.1.0"
 dependencies = [
+ "hythe-complete",
  "hythe-term",
  "iced",
  "rfd",
@@ -1221,6 +1222,10 @@ dependencies = [
  "tree-sitter-highlight",
  "tree-sitter-rust",
 ]
+
+[[package]]
+name = "hythe-complete"
+version = "0.1.0"
 
 [[package]]
 name = "hythe-term"

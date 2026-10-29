@@ -3,6 +3,7 @@ mod doc;
 mod editor;
 mod explorer;
 mod highlight;
+mod menus;
 mod palette;
 mod panes;
 mod terminal_view;
@@ -23,6 +24,11 @@ use hythe_term::{Profile, SessionId, Snapshot, TerminalManager};
 use palette::Palette;
 use panes::{Axis, Panes};
 use terminal_view::TerminalView;
+
+/// Height of the top bar and its horizontal padding; menu dropdowns are
+/// positioned from these.
+const TOP_BAR_H: f32 = 46.0;
+const TOP_BAR_PAD: f32 = 8.0;
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
@@ -77,6 +83,8 @@ struct App {
     agents: Vec<Profile>,
     status: String,
     palette: Option<Palette>,
+    /// Open top-bar dropdown (index into `menus::MENUS`).
+    menu: Option<usize>,
     highlighter: RustHighlighter,
 }
 
@@ -99,6 +107,10 @@ pub enum Message {
     FocusPane(usize),
     CloseRequested,
     ToggleSidebar,
+    OpenMenu(usize),
+    CloseMenu,
+    /// A menu entry was clicked: close the menu, then run the message.
+    MenuPick(Box<Message>),
     ToggleTerminal,
     /// New terminal running the default shell (`None`) or the n-th detected agent.
     NewTerminal(Option<usize>),
@@ -135,6 +147,7 @@ impl App {
             agents: hythe_term::available_agents(),
             status: String::new(),
             palette: None,
+            menu: None,
             highlighter: RustHighlighter::new(),
         };
         if let Some(arg) = std::env::args().nth(1) {
@@ -417,6 +430,10 @@ impl App {
             }
             Message::Paste(None) => {}
             Message::Key(keyboard::Event::KeyPressed { key, modifiers, text, .. }) => {
+                // Any key press dismisses an open dropdown; Esc is just the dismissal.
+                if self.menu.take().is_some() && matches!(key, Key::Named(Named::Escape)) {
+                    return Task::none();
+                }
                 if self.palette.is_some() {
                     return self.palette_key(key, modifiers, text.as_deref());
                 }
@@ -481,6 +498,15 @@ impl App {
             Message::FocusNextPane => self.panes.focus_next(),
             Message::FocusPane(i) => self.panes.focus_pane(i),
             Message::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
+            Message::OpenMenu(i) => {
+                // Clicking the open menu's button again closes it.
+                self.menu = if self.menu == Some(i) { None } else { Some(i) };
+            }
+            Message::CloseMenu => self.menu = None,
+            Message::MenuPick(inner) => {
+                self.menu = None;
+                return self.update(*inner);
+            }
             Message::ToggleTerminal => {
                 if !self.show_term {
                     self.show_term = true;
@@ -734,16 +760,68 @@ impl App {
             body = body.push(divider_v()).push(self.terminal_panel());
         }
         let base = column![self.top_bar(), divider_h(), body, divider_h(), self.status_bar()];
-        match &self.palette {
-            Some(p) => stack![
+        if let Some(p) = &self.palette {
+            return stack![
                 base,
                 mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
                     .on_press(Message::ClosePalette),
                 self.palette_view(p),
             ]
-            .into(),
-            None => base.into(),
+            .into();
         }
+        if let Some(menu) = self.menu {
+            return stack![
+                base,
+                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
+                    .on_press(Message::CloseMenu),
+                self.menu_dropdown(menu),
+            ]
+            .into();
+        }
+        base.into()
+    }
+
+    fn menu_dropdown(&self, menu: usize) -> Element<'_, Message> {
+        let rows = menus::entries(menu, &self.agent_names())
+            .into_iter()
+            .map(|entry| match entry {
+                menus::Entry::Separator => container(divider_h()).padding([4, 6]).into(),
+                menus::Entry::Item(it) => button(
+                    row![
+                        text(it.label).size(13),
+                        space::horizontal(),
+                        text(it.shortcut).size(11).color(theme::TEXT_DIM),
+                    ]
+                    .spacing(24)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding([6, 12])
+                .style(theme::flat(false))
+                .on_press(Message::MenuPick(Box::new(it.message)))
+                .into(),
+            });
+        let panel = container(column(rows).padding(4))
+            .width(Length::Fixed(300.0))
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::PANEL_BG.into()),
+                border: iced::Border { color: theme::BORDER, width: 1.0, radius: 8.0.into() },
+                shadow: iced::Shadow {
+                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 24.0,
+                },
+                ..Default::default()
+            });
+        container(opaque(panel))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(iced::Padding {
+                top: TOP_BAR_H,
+                left: TOP_BAR_PAD + menu as f32 * menus::MENU_W,
+                ..iced::Padding::ZERO
+            })
+            .into()
     }
 
     fn palette_view(&self, p: &Palette) -> Element<'_, Message> {
@@ -807,23 +885,70 @@ impl App {
     }
 
     fn top_bar(&self) -> Element<'_, Message> {
-        let project = self.root.as_ref().map(|r| r.name.as_str()).unwrap_or("No folder open");
+        let project = self.root.as_ref().map(|r| r.name.as_str()).unwrap_or("Open Folder…");
+
+        let mut menus_row = row![].align_y(Alignment::Center);
+        for (i, name) in menus::MENUS.iter().enumerate() {
+            menus_row = menus_row.push(
+                button(text(*name).size(13).center())
+                    .width(Length::Fixed(menus::MENU_W))
+                    .padding([7, 0])
+                    .style(theme::flat(self.menu == Some(i)))
+                    .on_press(Message::OpenMenu(i)),
+            );
+        }
+
+        // A labelled button with its shortcut beside the label.
+        let action = |label: &'static str, hint: &'static str, on: bool, msg: Message| {
+            button(
+                row![text(label).size(13), text(hint).size(11).color(theme::TEXT_DIM)]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+            )
+            .padding([7, 12])
+            .style(theme::flat(on))
+            .on_press(msg)
+        };
+
+        let search = button(
+            row![
+                text("Search commands…").size(13),
+                space::horizontal(),
+                text("Ctrl+Shift+P").size(11),
+            ]
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fixed(340.0))
+        .padding([7, 12])
+        .style(theme::pill)
+        .on_press(Message::OpenPalette);
+
         container(
             row![
+                menus_row,
                 button(text(format!("◆  {project}")).size(13))
+                    .padding([7, 12])
                     .style(theme::flat(false))
-                    .padding([3, 10])
                     .on_press(Message::OpenFolderDialog),
                 space::horizontal(),
-                text(self.docs.get(self.panes.cur()).map(|d| d.name()).unwrap_or_default())
-                    .size(12)
-                    .color(theme::TEXT_DIM),
-                space::horizontal().width(Length::Fixed(80.0)),
+                search,
+                space::horizontal(),
+                action("Explorer", "Ctrl+B", self.show_sidebar, Message::ToggleSidebar),
+                action(
+                    "Split",
+                    "Ctrl+\\",
+                    self.panes.list.len() > 1,
+                    Message::Split(Axis::Horizontal)
+                ),
+                action("Terminal", "Ctrl+`", self.show_term, Message::ToggleTerminal),
             ]
+            .spacing(2)
             .align_y(Alignment::Center)
-            .padding([4, 8]),
+            .padding(iced::Padding::from([0.0, TOP_BAR_PAD])),
         )
         .width(Length::Fill)
+        .height(Length::Fixed(TOP_BAR_H))
+        .align_y(Alignment::Center)
         .style(theme::bg(theme::BAR_BG))
         .into()
     }
@@ -1003,8 +1128,8 @@ impl App {
                 action("New File", "Ctrl+N", Message::NewFile),
                 action("Open File", "Ctrl+O", Message::OpenFileDialog),
                 action("Open Folder", "Ctrl+Shift+O", Message::OpenFolderDialog),
-                space::vertical().height(Length::Fixed(14.0)),
-                text("Ctrl+B toggles the sidebar").size(12).color(theme::TEXT_DIM),
+                action("Command Palette", "Ctrl+Shift+P", Message::OpenPalette),
+                action("Open Terminal", "Ctrl+`", Message::ToggleTerminal),
             ]
             .spacing(4)
             .align_x(Alignment::Center),
@@ -1071,12 +1196,6 @@ impl App {
     }
 
     fn status_bar(&self) -> Element<'_, Message> {
-        let toggle = |label: &'static str, on: bool, msg: Message| {
-            button(text(label).size(12))
-                .padding([2, 8])
-                .style(theme::flat(on))
-                .on_press(msg)
-        };
         let position = self
             .docs
             .get(self.panes.cur())
@@ -1087,16 +1206,13 @@ impl App {
             .unwrap_or_default();
         container(
             row![
-                toggle("Explorer", self.show_sidebar, Message::ToggleSidebar),
                 text(self.status.clone()).size(12).color(theme::TEXT_DIM),
                 space::horizontal(),
                 text(position).size(12).color(theme::TEXT_DIM),
-                toggle("Split", self.panes.list.len() > 1, Message::Split(Axis::Horizontal)),
-                toggle("Terminal", self.show_term, Message::ToggleTerminal),
             ]
             .spacing(14)
             .align_y(Alignment::Center)
-            .padding([3, 8]),
+            .padding([5, 12]),
         )
         .width(Length::Fill)
         .style(theme::bg(theme::BAR_BG))

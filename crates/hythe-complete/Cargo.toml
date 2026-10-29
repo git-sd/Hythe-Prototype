@@ -1,0 +1,7 @@
+[package]
+name = "hythe-complete"
+version = "0.1.0"
+edition = "2021"
+description = "Fast, offline code completion: keywords, snippets, members and document symbols for common languages"
+
+[dependencies]

@@ -19,6 +19,21 @@ pub fn bg(color: Color) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
+/// Outlined, search-box-like button.
+pub fn pill(_: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: Some(Background::Color(if hovered { HOVER } else { EDITOR_BG })),
+        text_color: TEXT_DIM,
+        border: Border {
+            color: if hovered { ACCENT } else { BORDER },
+            width: 1.0,
+            radius: 7.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 pub fn flat(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_, status| {
         let background = match (selected, status) {

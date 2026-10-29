@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = ["crates/hythe-term"]
+members = ["crates/hythe-term", "crates/hythe-complete"]
 
 [dependencies]
 hythe-term = { path = "crates/hythe-term" }
+hythe-complete = { path = "crates/hythe-complete" }
 iced = { version = "0.14", features = ["canvas", "tokio"] }
 ropey = "1.6"
 tree-sitter = "0.27"
