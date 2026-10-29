@@ -1009,6 +1009,11 @@ impl App {
                             self.members_for = self.repo.as_ref().map(|x| x.root().to_path_buf());
                         }
                         self.scm_reload();
+                        let here = self.repo.as_ref().map(|x| x.root().to_path_buf());
+                        if here.is_some() && self.chat.loaded_for != here {
+                            self.chat.loaded_for = here;
+                            return Task::batch([self.chat_load(), self.chat_sync()]);
+                        }
                     } else {
                         // Another repository was opened meanwhile.
                         self.git_wanted = true;
@@ -1416,7 +1421,7 @@ impl App {
             window::close_requests().map(|_| Message::CloseRequested),
             window::resize_events().map(|(_, size)| Message::WindowSized(size)),
         ];
-        if self.chat.open {
+        if self.chat_visible() {
             subs.push(iced::time::every(std::time::Duration::from_secs(15)).map(|_| Message::Chat(ChatMsg::Sync)));
         }
         if !self.docs.is_empty() {

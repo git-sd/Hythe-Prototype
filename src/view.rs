@@ -693,7 +693,7 @@ impl App {
 
     fn editor_area(&self) -> Element<'_, Message> {
         if self.chat.open {
-            return self.chat_view();
+            return self.chat_view(false);
         }
         if self.scm.open {
             // Source Control is one more tab: the file tabs stay in view above it.
@@ -704,6 +704,9 @@ impl App {
                 .into();
         }
         if self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty() {
+            if self.chat_in_welcome() {
+                return self.chat_view(true);
+            }
             return container(self.welcome())
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -876,7 +879,8 @@ impl App {
 
     /// A one-line box in the bottom bar: Enter sends the text to the repository chat.
     fn message_bar(&self) -> Element<'_, Message> {
-        if self.repo.is_none() {
+        // While the chat is on screen it has its own message box.
+        if self.repo.is_none() || self.chat_visible() {
             return space::horizontal().width(Length::Shrink).into();
         }
         iced::widget::text_input("Message the team…", &self.chat.input)
@@ -939,6 +943,7 @@ impl App {
             icon_button(Icon::Bug, dim, false, Message::Unavailable("The debugger")),
             icon_button(Icon::Outline, dim, false, Message::Unavailable("Outline")),
             icon_button(Icon::Users, dim, self.collab.is_some(), Message::Collab(CollabMsg::Panel(true))),
+            icon_button(Icon::Chat, dim, self.chat.open, Message::Chat(if self.chat.open { ChatMsg::Hide } else { ChatMsg::Show })),
             icon_button(Icon::Branch, dim, self.scm.open, Message::Scm(ScmMsg::Show)),
             icon_button(Icon::Panels, dim, self.show_sidebar, Message::ToggleSidebar),
         ]

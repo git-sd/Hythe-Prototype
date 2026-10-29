@@ -26,6 +26,8 @@ pub struct Chat {
     pub note: Option<String>,
     pub images: HashMap<String, iced::widget::image::Handle>,
     pub images_tried: HashSet<String>,
+    /// Repository whose messages were last loaded.
+    pub loaded_for: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +64,7 @@ fn now_secs() -> i64 {
 }
 
 impl App {
-    fn chat_load(&self) -> Task<Message> {
+    pub(crate) fn chat_load(&self) -> Task<Message> {
         let Some(repo) = self.repo.clone() else { return Task::none() };
         Task::perform(
             async move { tokio::task::spawn_blocking(move || repo.chat_messages(HISTORY)).await.unwrap_or_else(|e| Err(e.to_string())) },
@@ -70,7 +72,7 @@ impl App {
         )
     }
 
-    fn chat_sync(&mut self) -> Task<Message> {
+    pub(crate) fn chat_sync(&mut self) -> Task<Message> {
         let Some(repo) = self.repo.clone() else { return Task::none() };
         if self.chat.busy.is_some() {
             return Task::none();
@@ -135,7 +137,7 @@ impl App {
                 match result {
                     // Show it at once, then share it.
                     Ok(()) => {
-                        if !self.chat.open {
+                        if !self.chat_visible() {
                             self.status = "Message sent to chat".into();
                         }
                         return Task::batch([self.chat_load(), self.chat_sync()]);
@@ -211,7 +213,18 @@ impl App {
         Task::none()
     }
 
-    pub(crate) fn chat_view(&self) -> Element<'_, Message> {
+    /// The chat fills the editor area when asked for, and also stands in for the
+    /// welcome screen while no file is open.
+    pub(crate) fn chat_visible(&self) -> bool {
+        self.chat.open || self.chat_in_welcome()
+    }
+
+    pub(crate) fn chat_in_welcome(&self) -> bool {
+        self.repo.is_some() && !self.scm.open && self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty()
+    }
+
+    /// `embedded`: shown in place of the welcome screen, so it has no close button.
+    pub(crate) fn chat_view(&self, embedded: bool) -> Element<'_, Message> {
         let c = &self.chat;
         let dim = theme::TEXT_DIM;
         let msg = |m: ChatMsg| Message::Chat(m);
@@ -232,7 +245,11 @@ impl App {
                     .padding([4, 10])
                     .style(theme::flat(false))
                     .on_press_maybe(c.busy.is_none().then(|| msg(ChatMsg::Sync))),
-                icon_button(Icon::Close, theme::TEXT_FAINT, false, msg(ChatMsg::Hide)),
+                if embedded {
+                    space::horizontal().width(Length::Shrink).into()
+                } else {
+                    icon_button(Icon::Close, theme::TEXT_FAINT, false, msg(ChatMsg::Hide))
+                },
             ]
             .spacing(10)
             .align_y(Alignment::Center)
