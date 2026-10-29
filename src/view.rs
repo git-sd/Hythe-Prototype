@@ -811,11 +811,7 @@ impl App {
     fn editor_area(&self) -> Element<'_, Message> {
         if self.scm.open {
             // Source Control is one more tab: the file tabs stay in view above it.
-            return container(column![self.tab_bar_with(0, true), self.scm_view()])
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(theme::bg(theme::EDITOR_BG))
-                .into();
+            return self.scm_view();
         }
         if self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty() {
             let strip = container(
@@ -922,7 +918,7 @@ impl App {
     }
 
     /// `edge`: this bar is at the window's right edge, so it carries the window buttons.
-    fn tab_bar_with(&self, pane_index: usize, edge: bool) -> Element<'_, Message> {
+    pub(crate) fn tab_bar_with(&self, pane_index: usize, edge: bool) -> Element<'_, Message> {
         let pane = &self.panes.list[pane_index];
         let tabs = pane.tabs.iter().enumerate().filter_map(|(i, t)| {
             let d = self.docs.get(t.doc)?;

@@ -35,8 +35,29 @@ impl App {
         (self.win.width - sidebar - others - self.scm_w - HANDLE_W).max(300.0)
     }
 
+    /// Source Control shares the single top row: its Changes / History switch sits
+    /// over the list, and the file tabs and window buttons over the diff.
     pub(crate) fn scm_view(&self) -> Element<'_, Message> {
-        container(row![self.scm_left(), self.handle(Handle::Scm, true), self.scm_diff()])
+        let left_head = column![
+            container(self.mode_switch())
+                .width(Length::Fixed(self.scm_w))
+                .height(Length::Fixed(crate::view::TAB_H))
+                .padding([0, 10])
+                .align_y(Alignment::Center)
+                .style(theme::bg(theme::PANEL_BG)),
+            divider_h(),
+        ];
+        // A fixed-height stand-in for the drag handle below, so the header row stays one row tall.
+        let gap = container(
+            container(space::horizontal().width(Length::Fixed(1.0)))
+                .height(Length::Fill)
+                .style(theme::bg(theme::BORDER)),
+        )
+        .center_x(Length::Fixed(crate::view::HANDLE_W))
+        .height(Length::Fixed(crate::view::TAB_H + 1.0));
+        let head = row![left_head, gap, self.tab_bar_with(0, true)];
+        let body = row![self.scm_left(), self.handle(Handle::Scm, true), self.scm_diff()].height(Length::Fill);
+        container(column![head, body])
             .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::bg(theme::EDITOR_BG))
@@ -78,7 +99,6 @@ impl App {
         };
 
         let top = column![
-            self.mode_switch(),
             row![
                 button(
                     row![icon(Icon::Branch, 14.0, dim), text(branch).size(13), icon(Icon::ChevronDown, 11.0, dim)]
@@ -289,7 +309,7 @@ impl App {
         .spacing(8)
         .align_y(Alignment::Center);
 
-        container(column![self.mode_switch(), top, crate::view::vscroll(list).height(Length::Fill)].spacing(8).padding(10))
+        container(column![top, crate::view::vscroll(list).height(Length::Fill)].spacing(8).padding(10))
             .width(Length::Fixed(self.scm_w))
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))
