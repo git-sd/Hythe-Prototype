@@ -191,13 +191,6 @@ impl App {
                 .on_double_click(Message::ToggleMaximize),
                 icon_button(Icon::Eye, dim, false, Message::Unavailable("Follow mode")),
                 self.people_bar(),
-                icon_button(
-                    Icon::Chat,
-                    dim,
-                    self.chat_visible(),
-                    Message::Chat(if self.chat_visible() { ChatMsg::Hide } else { ChatMsg::Show }),
-                ),
-                icon_button(Icon::Branch, dim, false, Message::GitRefresh),
                 button(
                     row![icon(Icon::Send, 14.0, dim), text("Share").size(13)]
                         .spacing(6)
@@ -988,7 +981,6 @@ impl App {
             icon_button(Icon::Terminal, dim, self.show_term, Message::ToggleTerminal),
             icon_button(Icon::Bug, dim, false, Message::Unavailable("The debugger")),
             icon_button(Icon::Outline, dim, false, Message::Unavailable("Outline")),
-            icon_button(Icon::Users, dim, self.collab.is_some(), Message::Collab(CollabMsg::Panel(true))),
             icon_button(Icon::Chat, dim, self.chat_visible(), Message::Chat(if self.chat_visible() { ChatMsg::Hide } else { ChatMsg::Show })),
             icon_button(Icon::Branch, dim, self.scm.open, Message::Scm(ScmMsg::Show)),
             icon_button(Icon::Panels, dim, self.show_sidebar, Message::ToggleSidebar),
