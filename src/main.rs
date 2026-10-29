@@ -311,6 +311,8 @@ pub enum Message {
     TabEnter { pane: usize, tab: usize },
     /// Repository chat.
     Chat(ChatMsg),
+    /// Zoom the current tab's text: 1 in, -1 out, 0 back to normal.
+    Zoom(i32),
     /// Look for files added or removed on disk.
     TreeTick,
     Save,
@@ -369,7 +371,8 @@ impl App {
             member_avatar_tried: HashSet::new(),
             git_wanted: false,
             git_busy: false,
-            chat: Chat::default(),
+            // Closed until asked for; the title bar and bottom bar icons open it.
+            chat: Chat { dismissed: true, ..Chat::default() },
             tab_drag: None,
             item_drag: None,
             agent_right: false,
@@ -1023,6 +1026,17 @@ impl App {
             }
             Message::WindowSized(size) => self.win = size,
             Message::Chat(m) => return self.chat_update(m),
+            Message::Zoom(step) => {
+                let vp = self.panes.list[self.panes.focus].viewport.get();
+                let focus = self.panes.focus;
+                let active = self.panes.list[focus].active;
+                let cur = self.panes.cur();
+                if let (Some(tab), Some(d)) = (self.panes.list[focus].tabs.get_mut(active), self.docs.get(cur)) {
+                    let percent = tab.scroll.zoom_by(step);
+                    tab.scroll = tab.scroll.clamped(&d.buffer, vp);
+                    self.status = format!("Zoom {percent}%");
+                }
+            }
             Message::DiskTick => self.reload_changed_files(),
             Message::TreeTick => {
                 if let Some(root) = &mut self.root {
@@ -1305,6 +1319,9 @@ impl App {
                     ("b", _) => return self.update(Message::ToggleSidebar),
                     ("g", true) => return self.update(Message::Scm(ScmMsg::Show)),
                     ("0", true) | (")", _) => return self.update(Message::ResetWindow),
+                    ("-", _) | ("_", _) => return self.update(Message::Zoom(-1)),
+                    ("=", _) | ("+", _) => return self.update(Message::Zoom(1)),
+                    ("0", false) => return self.update(Message::Zoom(0)),
                     ("`", false) => return self.update(Message::ToggleTerminal),
                     ("`", true) | ("~", _) => return self.update(Message::NewTerminal(None)),
                     ("\\", false) => return self.update(Message::Split(Axis::Horizontal)),
@@ -1341,13 +1358,14 @@ impl App {
         }
 
         let vp = self.panes.list[self.panes.focus].viewport.get();
+        let line_h = self.panes.list[self.panes.focus].current().map(|t| t.scroll.metrics().line_h).unwrap_or(doc::LINE_H);
         let Some(d) = self.docs.get_mut(self.panes.cur()) else {
             return Task::none();
         };
         let hl = &mut self.highlighter;
 
         if let Key::Named(named) = key.as_ref() {
-            let page = (vp.height / doc::LINE_H) as isize - 1;
+            let page = (vp.height / line_h) as isize - 1;
             match named {
                 Named::ArrowLeft => d.buffer.move_left(shift),
                 Named::ArrowRight => d.buffer.move_right(shift),

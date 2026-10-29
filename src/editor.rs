@@ -59,20 +59,22 @@ pub struct DragState {
 impl EditorView<'_> {
     /// Popup rectangle in canvas coordinates, anchored under the typed prefix.
     fn popup_rect(&self, ui: &CompletionUi, bounds_size: Size) -> Rectangle {
+        let m = self.scroll.metrics();
         let buf = &self.doc.buffer;
         let scroll = self.scroll.clamped(buf, bounds_size);
         let (line, col) = buf.line_col(ui.start_char);
-        let x = TEXT_X - scroll.x + visual_col(&buf.line_text(line), col) as f32 * CHAR_W;
-        let y = line as f32 * LINE_H - scroll.y;
-        ui.rect(Point::new(x, y), bounds_size)
+        let x = m.text_x - scroll.x + visual_col(&buf.line_text(line), col) as f32 * m.char_w;
+        let y = line as f32 * m.line_h - scroll.y;
+        ui.rect(Point::new(x, y), bounds_size, m.line_h)
     }
 
     fn hit(&self, p: Point) -> (usize, usize) {
+        let m = self.scroll.metrics();
         let doc = self.doc;
         let scroll = self.scroll.clamped(&doc.buffer, self.viewport.get());
-        let line = (((p.y + scroll.y) / LINE_H).floor().max(0.0) as usize)
+        let line = (((p.y + scroll.y) / m.line_h).floor().max(0.0) as usize)
             .min(doc.buffer.line_count() - 1);
-        let vcol = ((p.x - TEXT_X + scroll.x) / CHAR_W).round().max(0.0) as usize;
+        let vcol = ((p.x - m.text_x + scroll.x) / m.char_w).round().max(0.0) as usize;
         (line, col_from_visual(&doc.buffer.line_text(line), vcol))
     }
 }
@@ -88,6 +90,7 @@ impl canvas::Program<Message> for EditorView<'_> {
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         self.viewport.set(bounds.size());
+        let m = self.scroll.metrics();
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_in(bounds)?;
@@ -115,7 +118,7 @@ impl canvas::Program<Message> for EditorView<'_> {
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if cursor.is_over(bounds) => {
                 let dy = match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => y * LINE_H * 3.0,
+                    mouse::ScrollDelta::Lines { y, .. } => y * m.line_h * 3.0,
                     mouse::ScrollDelta::Pixels { y, .. } => *y,
                 };
                 Some(canvas::Action::publish(Message::Scroll { pane: self.pane, dy }).and_capture())
@@ -132,31 +135,32 @@ impl canvas::Program<Message> for EditorView<'_> {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
+        let m = self.scroll.metrics();
         let doc = self.doc;
         let buf = &doc.buffer;
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         frame.fill_rectangle(Point::ORIGIN, bounds.size(), theme::EDITOR_BG);
 
         let scroll = self.scroll.clamped(buf, bounds.size());
-        let first = (scroll.y / LINE_H).floor() as usize;
-        let last = (first + (bounds.height / LINE_H).ceil() as usize + 1).min(buf.line_count());
+        let first = (scroll.y / m.line_h).floor() as usize;
+        let last = (first + (bounds.height / m.line_h).ceil() as usize + 1).min(buf.line_count());
         let (cur_line, cur_col) = buf.cursor();
-        let text_x = TEXT_X - scroll.x;
+        let text_x = m.text_x - scroll.x;
 
         for line in first..last {
-            let y = line as f32 * LINE_H - scroll.y;
+            let y = line as f32 * m.line_h - scroll.y;
             let text = buf.line_text(line);
             let len = text.chars().count();
 
             if line == cur_line && self.focused {
-                frame.fill_rectangle(Point::new(0.0, y), Size::new(bounds.width, LINE_H), CURRENT_LINE);
+                frame.fill_rectangle(Point::new(0.0, y), Size::new(bounds.width, m.line_h), CURRENT_LINE);
             }
             if let Some((s, e)) = buf.selection_on_line(line) {
-                let x0 = text_x + visual_col(&text, s) as f32 * CHAR_W;
+                let x0 = text_x + visual_col(&text, s) as f32 * m.char_w;
                 let x1 = text_x
-                    + visual_col(&text, e.min(len)) as f32 * CHAR_W
-                    + if e > len { CHAR_W / 2.0 } else { 0.0 };
-                frame.fill_rectangle(Point::new(x0, y), Size::new((x1 - x0).max(2.0), LINE_H), SELECTION);
+                    + visual_col(&text, e.min(len)) as f32 * m.char_w
+                    + if e > len { m.char_w / 2.0 } else { 0.0 };
+                frame.fill_rectangle(Point::new(x0, y), Size::new((x1 - x0).max(2.0), m.line_h), SELECTION);
             }
 
             // Colored runs, split where the highlight class changes.
@@ -172,9 +176,9 @@ impl canvas::Program<Message> for EditorView<'_> {
                 }
                 frame.fill_text(canvas::Text {
                     content: std::mem::take(run),
-                    position: Point::new(text_x + run_vcol as f32 * CHAR_W, y + 2.0),
+                    position: Point::new(text_x + run_vcol as f32 * m.char_w, y + 2.0),
                     color: class_color(class),
-                    size: Pixels(FONT_SIZE),
+                    size: Pixels(m.font),
                     font: Font::MONOSPACE,
                     ..canvas::Text::default()
                 });
@@ -203,27 +207,27 @@ impl canvas::Program<Message> for EditorView<'_> {
                 content: format!("{:>width$}", line + 1, width = GUTTER_COLS - 1),
                 position: Point::new(4.0, y + 2.0),
                 color: if line == cur_line { theme::TEXT } else { theme::GUTTER },
-                size: Pixels(FONT_SIZE),
+                size: Pixels(m.font),
                 font: Font::MONOSPACE,
                 ..canvas::Text::default()
             });
         }
 
-        let cy = cur_line as f32 * LINE_H - scroll.y;
-        let cx = text_x + visual_col(&buf.line_text(cur_line), cur_col) as f32 * CHAR_W;
-        frame.fill_rectangle(Point::new(cx, cy + 1.0), Size::new(2.0, LINE_H - 2.0),
+        let cy = cur_line as f32 * m.line_h - scroll.y;
+        let cx = text_x + visual_col(&buf.line_text(cur_line), cur_col) as f32 * m.char_w;
+        frame.fill_rectangle(Point::new(cx, cy + 1.0), Size::new(2.0, m.line_h - 2.0),
             if self.focused { theme::ACCENT } else { theme::TEXT_DIM },
         );
 
         if let Some(note) = &self.blame {
             let line_len = buf.line_text(cur_line).chars().count();
-            let x = text_x + visual_col(&buf.line_text(cur_line), line_len) as f32 * CHAR_W + 3.0 * CHAR_W;
+            let x = text_x + visual_col(&buf.line_text(cur_line), line_len) as f32 * m.char_w + 3.0 * m.char_w;
             if cur_line >= first && cur_line < last {
                 frame.fill_text(canvas::Text {
                     content: note.clone(),
-                    position: Point::new(x, cur_line as f32 * LINE_H - scroll.y + 3.0),
+                    position: Point::new(x, cur_line as f32 * m.line_h - scroll.y + 3.0),
                     color: theme::TEXT_FAINT,
-                    size: Pixels(FONT_SIZE - 1.5),
+                    size: Pixels(m.font - 1.5),
                     font: Font { style: iced::font::Style::Italic, ..Font::MONOSPACE },
                     ..canvas::Text::default()
                 });
@@ -234,11 +238,11 @@ impl canvas::Program<Message> for EditorView<'_> {
             if line < first || line >= last {
                 continue;
             }
-            let x = text_x + visual_col(&buf.line_text(line), col) as f32 * CHAR_W;
-            let y = line as f32 * LINE_H - scroll.y;
-            frame.fill_rectangle(Point::new(x, y + 1.0), Size::new(2.0, LINE_H - 2.0), r.color);
+            let x = text_x + visual_col(&buf.line_text(line), col) as f32 * m.char_w;
+            let y = line as f32 * m.line_h - scroll.y;
+            frame.fill_rectangle(Point::new(x, y + 1.0), Size::new(2.0, m.line_h - 2.0), r.color);
             let tag_w = r.name.chars().count() as f32 * 6.4 + 8.0;
-            let tag_y = if y < 14.0 { y + LINE_H - 2.0 } else { y - 13.0 };
+            let tag_y = if y < 14.0 { y + m.line_h - 2.0 } else { y - 13.0 };
             frame.fill_rectangle(Point::new(x, tag_y), Size::new(tag_w, 13.0), r.color);
             frame.fill_text(canvas::Text {
                 content: r.name.clone(),

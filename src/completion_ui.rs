@@ -28,7 +28,7 @@ impl CompletionUi {
 
     /// Where the popup sits for an anchor (top-left of the prefix, and the
     /// line height below it), flipped above the line if there's no room.
-    pub fn rect(&self, anchor: Point, bounds_size: Size) -> Rectangle {
+    pub fn rect(&self, anchor: Point, bounds_size: Size, line_h: f32) -> Rectangle {
         let rows = self.items.len().min(VISIBLE_ROWS);
         let chars = self
             .items
@@ -42,7 +42,7 @@ impl CompletionUi {
         if x + width > bounds_size.width {
             x = (bounds_size.width - width).max(0.0);
         }
-        let below = anchor.y + LINE_H;
+        let below = anchor.y + line_h;
         let y = if below + height > bounds_size.height { (anchor.y - height).max(0.0) } else { below };
         Rectangle::new(Point::new(x, y), Size::new(width, height))
     }

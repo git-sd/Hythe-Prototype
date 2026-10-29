@@ -127,34 +127,72 @@ impl Doc {
     }
 }
 
-/// Scroll offset of one pane's view of a document, in pixels.
+/// Sizes of the editor text at one zoom level.
+#[derive(Debug, Clone, Copy)]
+pub struct Metrics {
+    pub font: f32,
+    pub line_h: f32,
+    pub char_w: f32,
+    pub text_x: f32,
+}
+
+impl Metrics {
+    pub fn new(zoom: f32) -> Self {
+        Metrics {
+            font: FONT_SIZE * zoom,
+            line_h: LINE_H * zoom,
+            char_w: CHAR_W * zoom,
+            text_x: GUTTER_COLS as f32 * CHAR_W * zoom + 12.0,
+        }
+    }
+}
+
+/// Scroll offset of one pane's view of a document, in pixels, and that tab's
+/// zoom (a multiple of the normal text size; 0 means not set, i.e. normal).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Scroll {
     pub x: f32,
     pub y: f32,
+    pub zoom: f32,
 }
 
 impl Scroll {
     /// This offset limited to the document's extent, so a view stays valid
     /// after edits made through another pane.
     pub fn clamped(self, buf: &Buffer, vp: Size) -> Scroll {
-        let max = (buf.line_count() as f32 * LINE_H - vp.height + LINE_H * 3.0).max(0.0);
+        let m = self.metrics();
+        let max = (buf.line_count() as f32 * m.line_h - vp.height + m.line_h * 3.0).max(0.0);
         Scroll {
             x: self.x.max(0.0),
             y: self.y.clamp(0.0, max),
+            zoom: self.zoom,
         }
     }
 
+    /// Text sizes for this tab's zoom.
+    pub fn metrics(&self) -> Metrics {
+        Metrics::new(if self.zoom > 0.0 { self.zoom } else { 1.0 })
+    }
+
+    /// Zoom one step in (`+1`), out (`-1`) or back to normal (`0`). Returns the new
+    /// zoom as a percentage.
+    pub fn zoom_by(&mut self, step: i32) -> u32 {
+        let now = if self.zoom > 0.0 { self.zoom } else { 1.0 };
+        self.zoom = if step == 0 { 1.0 } else { (now + 0.1 * step as f32).clamp(0.4, 3.0) };
+        (self.zoom * 100.0).round() as u32
+    }
+
     pub fn ensure_cursor_visible(&mut self, buf: &Buffer, vp: Size) {
+        let m = self.metrics();
         let (line, col) = buf.cursor();
-        let y = line as f32 * LINE_H;
+        let y = line as f32 * m.line_h;
         if y < self.y {
             self.y = y;
-        } else if y + LINE_H > self.y + vp.height {
-            self.y = y + LINE_H - vp.height;
+        } else if y + m.line_h > self.y + vp.height {
+            self.y = y + m.line_h - vp.height;
         }
-        let x = visual_col(&buf.line_text(line), col) as f32 * CHAR_W;
-        let view_w = (vp.width - TEXT_X - 20.0).max(CHAR_W);
+        let x = visual_col(&buf.line_text(line), col) as f32 * m.char_w;
+        let view_w = (vp.width - m.text_x - 20.0).max(m.char_w);
         if x < self.x {
             self.x = x;
         } else if x > self.x + view_w {
@@ -187,4 +225,26 @@ pub fn col_from_visual(line: &str, vcol: usize) -> usize {
         v += w;
     }
     line.chars().count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_steps_are_clamped_and_reset() {
+        let mut s = Scroll::default();
+        assert_eq!(s.metrics().line_h, LINE_H, "unset zoom is normal size");
+        assert_eq!(s.zoom_by(-1), 90);
+        assert!(s.metrics().font < FONT_SIZE);
+        for _ in 0..20 {
+            s.zoom_by(-1);
+        }
+        assert_eq!(s.zoom_by(-1), 40);
+        for _ in 0..40 {
+            s.zoom_by(1);
+        }
+        assert_eq!(s.zoom_by(1), 300);
+        assert_eq!(s.zoom_by(0), 100);
+    }
 }
