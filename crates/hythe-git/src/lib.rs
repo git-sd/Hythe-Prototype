@@ -115,6 +115,27 @@ pub struct BlameLine {
     pub uncommitted: bool,
 }
 
+/// One commit in the history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    pub sha: String,
+    pub short: String,
+    pub author: String,
+    /// Unix time.
+    pub time: i64,
+    pub subject: String,
+    pub body: String,
+}
+
+/// A file changed by a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitFile {
+    pub path: String,
+    pub status: Status,
+    pub added: u32,
+    pub removed: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Contributor {
     pub name: String,
@@ -321,6 +342,38 @@ impl Repo {
         Ok(parse_blame(&out))
     }
 
+    /// The most recent `limit` commits on the current branch, newest first.
+    pub fn log(&self, limit: usize) -> Result<Vec<Commit>> {
+        let n = limit.to_string();
+        // Unit and record separators can't appear in commit text.
+        let out = self.git(&["log", "-n", &n, "--format=%H%x1f%an%x1f%at%x1f%s%x1f%b%x1e"])?;
+        Ok(parse_log(&out))
+    }
+
+    /// What the commit compares against: its first parent, or the empty tree for a root commit.
+    fn base_of(&self, sha: &str) -> String {
+        const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+        match self.git(&["rev-parse", "--verify", "--quiet", &format!("{sha}^")]) {
+            Ok(p) if !p.trim().is_empty() => p.trim().to_string(),
+            _ => EMPTY_TREE.to_string(),
+        }
+    }
+
+    /// Files changed by `sha`, with line counts.
+    pub fn commit_files(&self, sha: &str) -> Result<Vec<CommitFile>> {
+        let base = self.base_of(sha);
+        let names = self.git(&["diff", "--name-status", "-M", &base, sha])?;
+        let nums = self.git(&["diff", "--numstat", "-M", &base, sha]).unwrap_or_default();
+        Ok(parse_commit_files(&names, &nums))
+    }
+
+    /// Diff of one file as changed by `sha`.
+    pub fn commit_diff(&self, sha: &str, path: &str) -> Result<Vec<DiffLine>> {
+        let base = self.base_of(sha);
+        let text = self.git(&["diff", "--no-color", "--no-ext-diff", "-U3", &base, sha, "--", path])?;
+        Ok(parse_diff(&text))
+    }
+
     /// People who committed, most active first.
     pub fn contributors(&self) -> Vec<Contributor> {
         let out = self.git(&["shortlog", "-sne", "HEAD"]).unwrap_or_default();
@@ -373,6 +426,54 @@ pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
     let name = dest.file_name().ok_or("choose a folder to clone into")?.to_string_lossy().into_owned();
     run(parent, &["clone", "--", url, &name]).map(|_| ())
 }
+/// Parse `git log` output made with the separators used by [`Repo::log`].
+pub fn parse_log(text: &str) -> Vec<Commit> {
+    text.split('\u{1e}')
+        .filter_map(|rec| {
+            let rec = rec.trim_start_matches('\n');
+            let mut f = rec.split('\u{1f}');
+            let sha = f.next()?.trim().to_string();
+            if sha.len() < 7 {
+                return None;
+            }
+            Some(Commit {
+                short: sha.chars().take(7).collect(),
+                sha,
+                author: f.next()?.to_string(),
+                time: f.next()?.trim().parse().ok()?,
+                subject: f.next()?.to_string(),
+                body: f.next().unwrap_or("").trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Merge `git diff --name-status` and `--numstat` output into per-file entries.
+pub fn parse_commit_files(name_status: &str, numstat: &str) -> Vec<CommitFile> {
+    let counts: std::collections::HashMap<&str, (u32, u32)> = numstat
+        .lines()
+        .filter_map(|l| {
+            let mut c = l.splitn(3, '\t');
+            let (a, r, p) = (c.next()?, c.next()?, c.next()?);
+            // Renames print as `old => new` or `dir/{old => new}/f`; key on the new name.
+            let key = p.rsplit(" => ").next().unwrap_or(p).trim_end_matches('}');
+            Some((key, (a.parse().unwrap_or(0), r.parse().unwrap_or(0))))
+        })
+        .collect();
+    name_status
+        .lines()
+        .filter_map(|l| {
+            let mut c = l.split('\t');
+            let code = c.next()?;
+            let status = Status::from_code(*code.as_bytes().first()?)?;
+            // Renames and copies list the old path first.
+            let path = c.last()?.to_string();
+            let (added, removed) = counts.get(path.as_str()).copied().unwrap_or((0, 0));
+            Some(CommitFile { path, status, added, removed })
+        })
+        .collect()
+}
+
 /// Parse `git status --porcelain=v1 -z` output.
 pub fn parse_status(raw: &str) -> Vec<Change> {
     let mut out = Vec::new();
@@ -684,6 +785,53 @@ mod tests {
         assert!(again.is_err(), "must not clone over an existing folder");
         let _ = std::fs::remove_dir_all(&dest);
     }
+    #[test]
+    fn history_lists_commits_with_their_files_and_diffs() {
+        let f = Fixture::new();
+        f.write("a.txt", "one\nTWO\nthree\nfour\n");
+        f.write("b.txt", "new file\n");
+        f.repo.stage(&["a.txt", "b.txt"]).unwrap();
+        f.repo.commit("second: edit a, add b\n\nlonger explanation").unwrap();
+
+        let log = f.repo.log(10).unwrap();
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0].subject, "second: edit a, add b");
+        assert_eq!(log[0].body, "longer explanation");
+        assert_eq!(log[0].author, "Test User");
+        assert_eq!(log[1].subject, "first commit");
+        assert_eq!(log[0].short.len(), 7);
+        assert_eq!(f.repo.log(1).unwrap().len(), 1);
+
+        let files = f.repo.commit_files(&log[0].sha).unwrap();
+        let a = files.iter().find(|c| c.path == "a.txt").unwrap();
+        assert_eq!((a.status, a.added, a.removed), (Status::Modified, 2, 1));
+        let b = files.iter().find(|c| c.path == "b.txt").unwrap();
+        assert_eq!((b.status, b.added, b.removed), (Status::Added, 1, 0));
+
+        // The root commit compares against the empty tree.
+        let root = f.repo.commit_files(&log[1].sha).unwrap();
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].status, Status::Added);
+
+        let diff = f.repo.commit_diff(&log[0].sha, "a.txt").unwrap();
+        assert!(diff.iter().any(|l| l.kind == LineKind::Added && l.text == "TWO"));
+        assert!(diff.iter().any(|l| l.kind == LineKind::Removed && l.text == "two"));
+    }
+
+    #[test]
+    fn log_and_file_parsers_handle_odd_input() {
+        assert!(parse_log("").is_empty());
+        assert!(parse_log("garbage").is_empty());
+        let raw = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u{1f}Ann\u{1f}100\u{1f}subject\u{1f}\u{1e}";
+        let c = parse_log(raw);
+        assert_eq!((c[0].author.as_str(), c[0].time, c[0].body.as_str()), ("Ann", 100, ""));
+
+        let files = parse_commit_files("R100\told.rs\tnew.rs\nD\tgone.rs\nM\tsrc/x.rs\n", "5\t2\tnew.rs\n0\t7\tgone.rs\n1\t1\tsrc/x.rs\n");
+        assert_eq!(files.len(), 3);
+        assert_eq!((files[0].path.as_str(), files[0].status, files[0].added, files[0].removed), ("new.rs", Status::Renamed, 5, 2));
+        assert_eq!((files[1].status, files[1].removed), (Status::Deleted, 7));
+    }
+
     #[test]
     fn time_ago_reads_naturally() {
         assert_eq!(time_ago(100, 130), "just now");

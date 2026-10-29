@@ -113,6 +113,8 @@ struct App {
     collab: Option<Collab>,
     collab_ui: CollabUi,
     add_repo: AddRepo,
+    /// The agent dropdown in the empty thread panel is open.
+    agent_menu: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +161,8 @@ pub enum Message {
     Collab(CollabMsg),
     /// The "Add a repository" dialog: local folder or clone.
     AddRepo(AddRepoMsg),
+    /// Open or close the agent dropdown in the empty thread panel.
+    AgentMenu(bool),
     /// Open a project from the sidebar's Projects list.
     OpenRecent(PathBuf),
     /// Click on a repository in the rail (None is the Home button).
@@ -211,6 +215,7 @@ impl App {
             collab: None,
             collab_ui: CollabUi::default(),
             add_repo: AddRepo::default(),
+            agent_menu: false,
         };
         app.projects = app.persisted.projects.iter().map(|p| Project { path: p.clone(), ws: None }).collect();
         // Scripted runs: HYTHE_COLLAB="ws://host:port|room|name" joins a room on startup.
@@ -483,6 +488,7 @@ impl App {
 
     /// Start a shell (`None`) or the n-th detected agent in the project folder.
     fn new_terminal(&mut self, profile: Option<usize>) {
+        self.agent_menu = false;
         let profile = match profile {
             Some(i) => match self.agents.get(i) {
                 Some(p) => p.clone(),
@@ -750,6 +756,7 @@ impl App {
             Message::Scm(m) => return self.scm_update(m),
             Message::Collab(m) => return self.collab_update(m),
             Message::AddRepo(m) => return self.add_repo_update(m),
+            Message::AgentMenu(open) => self.agent_menu = open,
             Message::Unavailable(what) => self.status = format!("{what} isn't available yet"),
             Message::OpenFile(p) => self.open_file(p),
             Message::ToggleDir(p) => {

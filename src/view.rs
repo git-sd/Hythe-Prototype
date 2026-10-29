@@ -70,7 +70,8 @@ pub(crate) fn dot<'a>(color: Color) -> Element<'a, Message> {
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let mut main = row![].height(Length::Fill);
-        if self.show_term {
+        // Source Control wants the width for diffs, so the thread column steps aside.
+        if self.show_term && !self.scm.open {
             main = main.push(self.agent_panel()).push(divider_v());
         }
         main = main.push(self.editor_area());
@@ -501,25 +502,63 @@ impl App {
                 ]
                 .spacing(4)
                 .width(Length::Fixed(280.0));
-                let mut order: Vec<usize> = (0..self.agents.len()).collect();
-                order.sort_by_key(|&i| !self.agents[i].installed);
-                for i in order {
-                    let agent = &self.agents[i];
-                    starters = starters.push(list_row(
+                // Agents live in a dropdown: installed ones first, the rest dimmed.
+                let installed = self.agents.iter().filter(|a| a.installed).count();
+                let open = self.agent_menu;
+                starters = starters.push(
+                    button(
                         row![
-                            icon(Icon::Sparkle, 15.0, if agent.installed { theme::ACCENT } else { theme::TEXT_FAINT }),
-                            text(if agent.installed { agent.name.clone() } else { format!("{} · not installed", agent.name) })
-                                .size(13)
-                                .color(if agent.installed { theme::TEXT } else { theme::TEXT_FAINT }),
+                            icon(Icon::Sparkle, 15.0, theme::ACCENT),
+                            text("Start an agent").size(13),
+                            space::horizontal(),
+                            text(format!("{installed} installed")).size(11).color(theme::TEXT_FAINT),
+                            icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }, 11.0, theme::TEXT_DIM),
                         ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .padding([7, 10])
+                    .style(move |_: &Theme, status| button::Style {
+                        background: Some(theme::EDITOR_BG.into()),
+                        text_color: theme::TEXT,
+                        border: iced::Border {
+                            color: if open || matches!(status, button::Status::Hovered) { theme::ACCENT } else { theme::SELECTED },
+                            width: 1.0,
+                            radius: 3.0.into(),
+                        },
+                        ..button::Style::default()
+                    })
+                    .on_press(Message::AgentMenu(!open)),
+                );
+                if open {
+                    let mut order: Vec<usize> = (0..self.agents.len()).collect();
+                    order.sort_by_key(|&i| !self.agents[i].installed);
+                    let mut items = column![].spacing(1).padding(3);
+                    for i in order {
+                        let agent = &self.agents[i];
+                        items = items.push(list_row(
+                            row![
+                                icon(Icon::Sparkle, 14.0, if agent.installed { theme::ACCENT } else { theme::TEXT_FAINT }),
+                                text(agent.name.clone())
+                                    .size(13)
+                                    .color(if agent.installed { theme::TEXT } else { theme::TEXT_FAINT }),
+                                space::horizontal(),
+                                text(if agent.installed { "" } else { "not installed" }).size(11).color(theme::TEXT_FAINT),
+                            ]
                             .spacing(10)
                             .align_y(Alignment::Center)
                             .into(),
-                        false,
-                        Message::NewTerminal(Some(i)),
-                    ));
-                }
-                container(starters).center(Length::Fill).into()
+                            false,
+                            Message::NewTerminal(Some(i)),
+                        ));
+                    }
+                    starters = starters.push(container(items).style(|_: &Theme| container::Style {
+                        background: Some(theme::EDITOR_BG.into()),
+                        border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 3.0.into() },
+                        ..Default::default()
+                    }));
+                }                container(starters).center_x(Length::Fill).padding(iced::Padding { top: 120.0, ..iced::Padding::ZERO }).into()
             }
         };
 

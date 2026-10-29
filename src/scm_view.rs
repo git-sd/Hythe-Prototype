@@ -1,11 +1,11 @@
 //! Drawing for source control: the Changes view and the branch picker.
 
-use hythe_git::{Change, LineKind, Status};
+use hythe_git::{time_ago, Change, DiffLine, LineKind, Status};
 use iced::widget::{button, column, container, mouse_area, opaque, row, scrollable, space, stack, text, text_input};
 use iced::{Alignment, Color, Element, Font, Length, Padding, Theme};
 
 use crate::icons::{icon, Icon};
-use crate::scm::ScmMsg;
+use crate::scm::{ScmMsg, ScmTab};
 use crate::view::{divider_h, divider_v, icon_button, list_row, BAR_H, SIDEBAR_W, TAB_H};
 use crate::{theme, App, Message};
 
@@ -27,7 +27,12 @@ impl App {
     pub(crate) fn scm_view(&self) -> Element<'_, Message> {
         let header = container(
             row![
-                container(text("Changes").size(13)).padding([0, 14]),
+                row![
+                    tab_button("Changes", self.scm.tab == ScmTab::Changes, ScmTab::Changes),
+                    tab_button("History", self.scm.tab == ScmTab::History, ScmTab::History),
+                ]
+                .spacing(2)
+                .padding([0, 8]),
                 space::horizontal(),
                 icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::Hide)),
             ]
@@ -47,6 +52,9 @@ impl App {
     }
 
     fn scm_left(&self) -> Element<'_, Message> {
+        if self.scm.tab == ScmTab::History {
+            return self.history_left();
+        }
         let s = &self.scm;
         let dim = theme::TEXT_DIM;
         let branch = self.git.as_ref().map(|g| g.branch.clone()).unwrap_or_else(|| "—".into());
@@ -181,6 +189,9 @@ impl App {
     }
 
     fn scm_diff(&self) -> Element<'_, Message> {
+        if self.scm.tab == ScmTab::History {
+            return self.history_detail();
+        }
         let s = &self.scm;
         let Some((path, staged)) = &s.selected else {
             return container(text("Select a file to see its changes").size(13).color(theme::TEXT_FAINT))
@@ -206,49 +217,141 @@ impl App {
         .align_y(Alignment::Center)
         .width(Length::Fill);
 
-        let num = |n: Option<u32>| -> Element<'_, Message> {
-            text(n.map(|n| n.to_string()).unwrap_or_default())
-                .size(12)
-                .font(Font::MONOSPACE)
-                .color(theme::GUTTER)
-                .align_x(Alignment::End)
-                .width(Length::Fixed(44.0))
-                .into()
-        };
-        let mut lines = column![];
-        for l in s.diff.iter().take(MAX_DIFF_LINES) {
-            let (tint, color, marker) = match l.kind {
-                LineKind::Added => (Some(Color { a: 0.14, ..theme::ADDED }), theme::TEXT, "+"),
-                LineKind::Removed => (Some(Color { a: 0.16, ..theme::REMOVED }), theme::TEXT, "−"),
-                LineKind::Hunk => (Some(Color { a: 0.10, ..theme::ACCENT }), theme::ACCENT, " "),
-                LineKind::Header => (None, theme::TEXT_DIM, " "),
-                LineKind::Context => (None, theme::TEXT_DIM, " "),
-            };
-            let body = if l.kind == LineKind::Hunk {
-                row![text(l.text.clone()).size(12.5).font(Font::MONOSPACE).color(color)].padding([0, 12])
-            } else {
-                row![
-                    num(l.old),
-                    num(l.new),
-                    text(marker).size(12.5).font(Font::MONOSPACE).color(color).width(Length::Fixed(18.0)),
-                    text(l.text.clone()).size(12.5).font(Font::MONOSPACE).color(color),
-                ]
-                .spacing(4)
-            };
-            let row_el = container(body).width(Length::Fill).padding([1, 0]);
-            lines = lines.push(match tint {
-                Some(c) => row_el.style(theme::bg(c)),
-                None => row_el,
-            });
+        container(column![header, divider_h(), diff_body(&s.diff)])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    /// The commit list.
+    fn history_left(&self) -> Element<'_, Message> {
+        let s = &self.scm;
+        let dim = theme::TEXT_DIM;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let branch = self.git.as_ref().map(|g| g.branch.clone()).unwrap_or_else(|| "—".into());
+
+        let mut list = column![].spacing(1);
+        if s.commits.is_empty() {
+            list = list.push(container(text("No commits yet.").size(12).color(theme::TEXT_FAINT)).padding(10));
         }
-        if s.diff.len() > MAX_DIFF_LINES {
-            lines = lines.push(container(text(format!("… {} more lines not shown", s.diff.len() - MAX_DIFF_LINES)).size(12).color(theme::TEXT_FAINT)).padding(10));
-        }
-        if s.diff.is_empty() {
-            lines = lines.push(container(text("No textual changes to show.").size(12).color(theme::TEXT_FAINT)).padding(12));
+        for c in &s.commits {
+            let selected = s.selected_commit.as_deref() == Some(c.sha.as_str());
+            list = list.push(
+                button(
+                    column![
+                        container(text(c.subject.clone()).size(13).wrapping(text::Wrapping::None)).width(Length::Fill).clip(true),
+                        row![
+                            text(c.short.clone()).size(11).font(Font::MONOSPACE).color(theme::ACCENT),
+                            text(c.author.clone()).size(11).color(dim),
+                            text(time_ago(c.time, now)).size(11).color(theme::TEXT_FAINT),
+                        ]
+                        .spacing(8),
+                    ]
+                    .spacing(3),
+                )
+                .width(Length::Fill)
+                .padding([6, 8])
+                .style(theme::row(selected))
+                .on_press(scm(ScmMsg::SelectCommit(c.sha.clone()))),
+            );
         }
 
-        container(column![header, divider_h(), scrollable(lines).height(Length::Fill)])
+        let top = row![
+            icon(Icon::Branch, 14.0, dim),
+            text(branch).size(13),
+            space::horizontal(),
+            text(format!("{} commits", s.commits.len())).size(11).color(theme::TEXT_FAINT),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+
+        container(column![top, scrollable(list).height(Length::Fill)].spacing(8).padding(10))
+            .width(Length::Fixed(340.0))
+            .height(Length::Fill)
+            .style(theme::bg(theme::PANEL_BG))
+            .into()
+    }
+
+    /// Details of the selected commit: message, files, and the diff of one file.
+    fn history_detail(&self) -> Element<'_, Message> {
+        let s = &self.scm;
+        let dim = theme::TEXT_DIM;
+        let Some(commit) = s.selected_commit.as_ref().and_then(|sha| s.commits.iter().find(|c| &c.sha == sha)) else {
+            return container(text("Select a commit to see what it changed").size(13).color(theme::TEXT_FAINT))
+                .center(Length::Fill)
+                .into();
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let mut head = column![
+            text(commit.subject.clone()).size(15),
+            row![
+                text(commit.author.clone()).size(12).color(dim),
+                text(time_ago(commit.time, now)).size(12).color(theme::TEXT_FAINT),
+                text(commit.short.clone()).size(12).font(Font::MONOSPACE).color(theme::ACCENT),
+            ]
+            .spacing(10),
+        ]
+        .spacing(4);
+        // The full message sits under the file list, clipped, so the files stay in view.
+        let body: Element<'_, Message> = if commit.body.is_empty() {
+            space::vertical().height(Length::Fixed(0.0)).into()
+        } else {
+            container(text(commit.body.clone()).size(12).color(dim)).max_height(84.0).clip(true).into()
+        };
+
+        let mut files = column![].spacing(1);
+        for f in &s.commit_files {
+            let (name, dir) = match f.path.rsplit_once('/') {
+                Some((d, n)) => (n.to_string(), d.to_string()),
+                None => (f.path.clone(), String::new()),
+            };
+            let selected = s.commit_file.as_deref() == Some(f.path.as_str());
+            files = files.push(
+                button(
+                    row![
+                        text(f.status.letter().to_string()).size(12).color(status_color(f.status)).width(Length::Fixed(12.0)),
+                        text(name).size(13),
+                        text(dir).size(11).color(theme::TEXT_FAINT),
+                        space::horizontal(),
+                        text(format!("+{}", f.added)).size(11).color(theme::ADDED),
+                        text(format!("−{}", f.removed)).size(11).color(theme::REMOVED),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding([4, 8])
+                .style(theme::row(selected))
+                .on_press(scm(ScmMsg::SelectCommitFile(f.path.clone()))),
+            );
+        }
+        let files_label = text(format!(
+            "{} file{} changed",
+            s.commit_files.len(),
+            if s.commit_files.len() == 1 { "" } else { "s" }
+        ))
+        .size(11)
+        .color(theme::TEXT_FAINT);
+
+        let top = container(
+            column![
+                head,
+                files_label,
+                container(scrollable(files).height(Length::Shrink)).max_height(170.0),
+                body,
+            ]
+            .spacing(8)
+            .padding(12),
+        )
+        .width(Length::Fill);
+        container(column![top, divider_h(), diff_body(&s.commit_diff)])
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
@@ -306,4 +409,60 @@ impl App {
         ]
         .into()
     }
+}
+
+/// A diff as coloured, numbered lines in a scrollable area.
+fn diff_body(diff: &[DiffLine]) -> Element<'static, Message> {
+        let num = |n: Option<u32>| -> Element<'static, Message> {
+            text(n.map(|n| n.to_string()).unwrap_or_default())
+                .size(12)
+                .font(Font::MONOSPACE)
+                .color(theme::GUTTER)
+                .align_x(Alignment::End)
+                .width(Length::Fixed(44.0))
+                .into()
+        };
+        let mut lines = column![];
+        for l in diff.iter().take(MAX_DIFF_LINES) {
+            let (tint, color, marker) = match l.kind {
+                LineKind::Added => (Some(Color { a: 0.14, ..theme::ADDED }), theme::TEXT, "+"),
+                LineKind::Removed => (Some(Color { a: 0.16, ..theme::REMOVED }), theme::TEXT, "−"),
+                LineKind::Hunk => (Some(Color { a: 0.10, ..theme::ACCENT }), theme::ACCENT, " "),
+                LineKind::Header => (None, theme::TEXT_DIM, " "),
+                LineKind::Context => (None, theme::TEXT_DIM, " "),
+            };
+            let body = if l.kind == LineKind::Hunk {
+                row![text(l.text.clone()).size(12.5).font(Font::MONOSPACE).color(color)].padding([0, 12])
+            } else {
+                row![
+                    num(l.old),
+                    num(l.new),
+                    text(marker).size(12.5).font(Font::MONOSPACE).color(color).width(Length::Fixed(18.0)),
+                    text(l.text.clone()).size(12.5).font(Font::MONOSPACE).color(color),
+                ]
+                .spacing(4)
+            };
+            let row_el = container(body).width(Length::Fill).padding([1, 0]);
+            lines = lines.push(match tint {
+                Some(c) => row_el.style(theme::bg(c)),
+                None => row_el,
+            });
+        }
+        if diff.len() > MAX_DIFF_LINES {
+            lines = lines.push(container(text(format!("… {} more lines not shown", diff.len() - MAX_DIFF_LINES)).size(12).color(theme::TEXT_FAINT)).padding(10));
+        }
+        if diff.is_empty() {
+            lines = lines.push(container(text("No textual changes to show.").size(12).color(theme::TEXT_FAINT)).padding(12));
+        }
+
+    scrollable(lines).height(Length::Fill).into()
+}
+
+/// A tab in the Source Control header.
+fn tab_button(label: &'static str, selected: bool, tab: ScmTab) -> Element<'static, Message> {
+    button(text(label).size(13).color(if selected { theme::TEXT } else { theme::TEXT_DIM }))
+        .padding([6, 12])
+        .style(theme::flat(selected))
+        .on_press(scm(ScmMsg::Tab(tab)))
+        .into()
 }

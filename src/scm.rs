@@ -1,6 +1,6 @@
 //! Source control: state and message handling. Drawing lives in `scm_view.rs`.
 
-use hythe_git::{Branch, Change, DiffLine, Repo};
+use hythe_git::{Branch, Change, Commit, CommitFile, DiffLine, Repo};
 use iced::Task;
 
 use crate::{App, Message};
@@ -20,7 +20,25 @@ pub struct Scm {
     pub branch_menu: bool,
     pub new_branch: String,
     pub ahead_behind: Option<(u32, u32)>,
+    /// Which list the left side shows.
+    pub tab: ScmTab,
+    pub commits: Vec<Commit>,
+    /// Commit whose details are shown (by full hash).
+    pub selected_commit: Option<String>,
+    pub commit_files: Vec<CommitFile>,
+    pub commit_file: Option<String>,
+    pub commit_diff: Vec<DiffLine>,
 }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScmTab {
+    #[default]
+    Changes,
+    History,
+}
+
+/// How many commits the History tab loads.
+const HISTORY_LIMIT: usize = 200;
 
 impl Scm {
     pub fn staged(&self) -> impl Iterator<Item = &Change> {
@@ -45,6 +63,48 @@ impl Scm {
         if let Some((path, staged)) = self.selected.clone() {
             self.diff = repo.diff(&path, staged).unwrap_or_default();
         }
+        if self.tab == ScmTab::History {
+            self.load_history(repo);
+        }
+    }
+
+    /// Read the commit list, keeping the selected commit if it's still there.
+    pub fn load_history(&mut self, repo: &Repo) {
+        self.commits = repo.log(HISTORY_LIMIT).unwrap_or_default();
+        let keep = self
+            .selected_commit
+            .clone()
+            .filter(|sha| self.commits.iter().any(|c| &c.sha == sha))
+            .or_else(|| self.commits.first().map(|c| c.sha.clone()));
+        match keep {
+            Some(sha) => self.select_commit(repo, sha),
+            None => {
+                self.selected_commit = None;
+                self.commit_files.clear();
+                self.commit_file = None;
+                self.commit_diff.clear();
+            }
+        }
+    }
+
+    pub fn select_commit(&mut self, repo: &Repo, sha: String) {
+        self.commit_files = repo.commit_files(&sha).unwrap_or_default();
+        let first = self.commit_files.first().map(|f| f.path.clone());
+        self.selected_commit = Some(sha);
+        match first {
+            Some(path) => self.select_commit_file(repo, path),
+            None => {
+                self.commit_file = None;
+                self.commit_diff.clear();
+            }
+        }
+    }
+
+    pub fn select_commit_file(&mut self, repo: &Repo, path: String) {
+        if let Some(sha) = &self.selected_commit {
+            self.commit_diff = repo.commit_diff(sha, &path).unwrap_or_default();
+        }
+        self.commit_file = Some(path);
     }
 
     pub fn select(&mut self, repo: &Repo, path: String, staged: bool) {
@@ -76,6 +136,10 @@ pub enum ScmMsg {
     NewBranchText(String),
     CreateBranch,
     ToggleBlame,
+    /// Switch between current changes and commit history.
+    Tab(ScmTab),
+    SelectCommit(String),
+    SelectCommitFile(String),
 }
 
 /// Run a slow git command off the UI thread.
@@ -111,6 +175,14 @@ impl App {
                 self.scm.reload(&repo);
             }
             ScmMsg::Hide => self.scm.open = false,
+            ScmMsg::Tab(tab) => {
+                self.scm.tab = tab;
+                if tab == ScmTab::History {
+                    self.scm.load_history(&repo);
+                }
+            }
+            ScmMsg::SelectCommit(sha) => self.scm.select_commit(&repo, sha),
+            ScmMsg::SelectCommitFile(path) => self.scm.select_commit_file(&repo, path),
             ScmMsg::Refresh => {
                 self.refresh_git();
                 self.scm.reload(&repo);
