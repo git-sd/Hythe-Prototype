@@ -237,16 +237,16 @@ impl App {
         let repo_name = self.git.as_ref().map(|g| g.repo.clone()).unwrap_or_else(|| "chat".into());
 
         let status: Element<'_, Message> = match (c.busy, &c.note) {
-            (Some(b), _) => text(b).size(12).color(dim).into(),
-            (None, Some(n)) => text(n.clone()).size(12).color(theme::REMOVED).into(),
-            _ => text("Shared through git: pushed to the chat branch on origin").size(12).color(theme::TEXT_FAINT).into(),
+            (Some(b), _) => text(b).size(12).color(dim).wrapping(text::Wrapping::None).into(),
+            (None, Some(n)) => text(n.clone()).size(12).color(theme::REMOVED).wrapping(text::Wrapping::None).into(),
+            _ => text("Shared through git").size(12).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None).into(),
         };
         let header = container(
             row![
                 icon(Icon::Chat, 16.0, dim),
-                text(repo_name.clone()).size(14),
-                status,
-                space::horizontal(),
+                text(repo_name.clone()).size(14).wrapping(text::Wrapping::None),
+                // Long text is cut off rather than pushing Sync and the X out of view.
+                container(status).width(Length::Fill).clip(true),
                 button(text("Sync").size(12))
                     .padding([4, 10])
                     .style(theme::flat(false))
