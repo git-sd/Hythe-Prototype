@@ -1,0 +1,8 @@
+[package]
+name = "hythe-term"
+version = "0.1.0"
+edition = "2021"
+description = "Fast terminal backend and session manager for running shells and CLI agents"
+
+[dependencies]
+alacritty_terminal = "0.26"

@@ -5,6 +5,7 @@ mod explorer;
 mod highlight;
 mod palette;
 mod panes;
+mod terminal_view;
 mod theme;
 
 use std::path::PathBuf;
@@ -18,8 +19,10 @@ use doc::{Doc, TAB_WIDTH};
 use editor::EditorView;
 use explorer::Node;
 use highlight::RustHighlighter;
+use hythe_term::{Profile, SessionId, Snapshot, TerminalManager};
 use palette::Palette;
 use panes::{Axis, Panes};
+use terminal_view::TerminalView;
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
@@ -64,7 +67,14 @@ struct App {
     panes: Panes,
     root: Option<Node>,
     show_sidebar: bool,
-    show_ai: bool,
+    show_term: bool,
+    /// Keyboard focus is in the terminal panel rather than the editor.
+    focus_term: bool,
+    terms: TerminalManager,
+    term_active: Option<SessionId>,
+    term_snap: Option<Snapshot>,
+    /// CLI agents found on PATH, offered as terminal profiles.
+    agents: Vec<Profile>,
     status: String,
     palette: Option<Palette>,
     highlighter: RustHighlighter,
@@ -89,7 +99,17 @@ pub enum Message {
     FocusPane(usize),
     CloseRequested,
     ToggleSidebar,
-    ToggleAi,
+    ToggleTerminal,
+    /// New terminal running the default shell (`None`) or the n-th detected agent.
+    NewTerminal(Option<usize>),
+    CloseTerminal,
+    CloseTermTab(SessionId),
+    TermSelect(SessionId),
+    TermPress { row: usize, col: usize },
+    TermDrag { row: usize, col: usize },
+    TermScroll(i32),
+    TermPaste(Option<String>),
+    TermTick,
     Save,
     CloseActive,
     Undo,
@@ -107,7 +127,12 @@ impl App {
             panes: Panes::new(),
             root: None,
             show_sidebar: true,
-            show_ai: true,
+            show_term: false,
+            focus_term: false,
+            terms: TerminalManager::default(),
+            term_active: None,
+            term_snap: None,
+            agents: hythe_term::available_agents(),
             status: String::new(),
             palette: None,
             highlighter: RustHighlighter::new(),
@@ -214,6 +239,142 @@ impl App {
         }
     }
 
+    fn agent_names(&self) -> Vec<String> {
+        self.agents.iter().map(|a| a.name.clone()).collect()
+    }
+
+    fn refresh_term_snapshot(&mut self) {
+        self.term_snap = self.term_active.and_then(|id| self.terms.get(id)).map(|s| s.snapshot());
+    }
+
+    /// Start a shell (`None`) or the n-th detected agent in the project folder.
+    fn new_terminal(&mut self, profile: Option<usize>) {
+        let profile = match profile {
+            Some(i) => match self.agents.get(i) {
+                Some(p) => p.clone(),
+                None => return,
+            },
+            None => Profile::shell(),
+        };
+        let cwd = self.root.as_ref().map(|r| r.path.clone());
+        match self.terms.spawn_profile(&profile, cwd) {
+            Ok(id) => {
+                self.term_active = Some(id);
+                self.show_term = true;
+                self.focus_term = true;
+                self.refresh_term_snapshot();
+            }
+            Err(e) => self.status = format!("Could not start {}: {e}", profile.name),
+        }
+    }
+
+    fn close_terminal(&mut self, id: SessionId) {
+        self.terms.close(id);
+        if self.term_active == Some(id) {
+            self.term_active = self.terms.sessions().last().map(|s| s.id());
+            self.refresh_term_snapshot();
+        }
+        if self.terms.sessions().is_empty() {
+            self.term_snap = None;
+            self.focus_term = false;
+        }
+    }
+
+    /// Keys while the terminal has focus: almost everything goes to the
+    /// running program, so shell and agent shortcuts (Ctrl+C, Ctrl+W, …) work.
+    fn term_key(&mut self, key: Key, mods: keyboard::Modifiers, text: Option<&str>) -> Task<Message> {
+        use hythe_term as ht;
+        let shift = mods.shift();
+
+        if let Key::Character(c) = key.as_ref() {
+            let c = c.to_lowercase();
+            if mods.command() && shift {
+                match c.as_str() {
+                    "p" => return self.update(Message::OpenPalette),
+                    "c" => {
+                        let copied = self
+                            .term_active
+                            .and_then(|id| self.terms.get(id))
+                            .and_then(|s| s.selected_text());
+                        if let Some(t) = copied {
+                            return clipboard::write(t);
+                        }
+                        return Task::none();
+                    }
+                    "v" => return clipboard::read().map(Message::TermPaste),
+                    "w" => return self.update(Message::CloseTerminal),
+                    "`" | "~" => return self.update(Message::NewTerminal(None)),
+                    _ => {}
+                }
+            }
+            if mods.command() && !shift && c == "`" {
+                return self.update(Message::ToggleTerminal);
+            }
+        }
+
+        let Some(session) = self.term_active.and_then(|id| self.terms.get(id)) else {
+            return Task::none();
+        };
+        if !session.is_running() {
+            return Task::none();
+        }
+        let m = ht::Mods { ctrl: mods.control(), alt: mods.alt(), shift };
+
+        match key.as_ref() {
+            Key::Named(named) => {
+                let k = match named {
+                    Named::Enter => Some(ht::Key::Enter),
+                    Named::Tab => Some(ht::Key::Tab),
+                    Named::Backspace => Some(ht::Key::Backspace),
+                    Named::Escape => Some(ht::Key::Escape),
+                    Named::Space => Some(ht::Key::Char(' ')),
+                    Named::ArrowUp => Some(ht::Key::Up),
+                    Named::ArrowDown => Some(ht::Key::Down),
+                    Named::ArrowLeft => Some(ht::Key::Left),
+                    Named::ArrowRight => Some(ht::Key::Right),
+                    Named::Home => Some(ht::Key::Home),
+                    Named::End => Some(ht::Key::End),
+                    Named::PageUp => Some(ht::Key::PageUp),
+                    Named::PageDown => Some(ht::Key::PageDown),
+                    Named::Insert => Some(ht::Key::Insert),
+                    Named::Delete => Some(ht::Key::Delete),
+                    Named::F1 => Some(ht::Key::F(1)),
+                    Named::F2 => Some(ht::Key::F(2)),
+                    Named::F3 => Some(ht::Key::F(3)),
+                    Named::F4 => Some(ht::Key::F(4)),
+                    Named::F5 => Some(ht::Key::F(5)),
+                    Named::F6 => Some(ht::Key::F(6)),
+                    Named::F7 => Some(ht::Key::F(7)),
+                    Named::F8 => Some(ht::Key::F(8)),
+                    Named::F9 => Some(ht::Key::F(9)),
+                    Named::F10 => Some(ht::Key::F(10)),
+                    Named::F11 => Some(ht::Key::F(11)),
+                    Named::F12 => Some(ht::Key::F(12)),
+                    _ => None,
+                };
+                if let Some(k) = k {
+                    session.send_key(&k, m);
+                }
+            }
+            Key::Character(c) => {
+                // Ctrl+Alt together is AltGr on many layouts, so treat it as text.
+                if (m.ctrl || m.alt) && !(m.ctrl && m.alt) {
+                    if let Some(ch) = c.chars().next() {
+                        session.send_key(&ht::Key::Char(ch), m);
+                    }
+                } else if let Some(t) = text {
+                    let t: String = t.chars().filter(|c| !c.is_control()).collect();
+                    if !t.is_empty() {
+                        session.scroll_to_bottom();
+                        session.write(t.into_bytes());
+                    }
+                }
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
     /// Scroll the focused pane so the cursor is on screen.
     fn reveal_cursor(&mut self) {
         let Some(pane) = self.panes.list.get_mut(self.panes.focus) else {
@@ -241,6 +402,7 @@ impl App {
                 }
             }
             Message::Click { pane, line, col, select } => {
+                self.focus_term = false;
                 self.panes.focus_pane(pane);
                 if let Some(d) = self.docs.get_mut(self.panes.cur()) {
                     d.buffer.set_cursor(line, col, select);
@@ -257,6 +419,9 @@ impl App {
             Message::Key(keyboard::Event::KeyPressed { key, modifiers, text, .. }) => {
                 if self.palette.is_some() {
                     return self.palette_key(key, modifiers, text.as_deref());
+                }
+                if self.show_term && self.focus_term {
+                    return self.term_key(key, modifiers, text.as_deref());
                 }
                 let task = self.handle_key(key, modifiers, text.as_deref());
                 self.reveal_cursor();
@@ -316,7 +481,71 @@ impl App {
             Message::FocusNextPane => self.panes.focus_next(),
             Message::FocusPane(i) => self.panes.focus_pane(i),
             Message::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
-            Message::ToggleAi => self.show_ai = !self.show_ai,
+            Message::ToggleTerminal => {
+                if !self.show_term {
+                    self.show_term = true;
+                    self.focus_term = true;
+                    if self.terms.sessions().is_empty() {
+                        self.new_terminal(None);
+                    } else {
+                        self.refresh_term_snapshot();
+                    }
+                } else if self.focus_term {
+                    self.show_term = false;
+                    self.focus_term = false;
+                } else {
+                    self.focus_term = true;
+                }
+            }
+            Message::NewTerminal(profile) => self.new_terminal(profile),
+            Message::CloseTerminal => {
+                if let Some(id) = self.term_active {
+                    self.close_terminal(id);
+                }
+            }
+            Message::CloseTermTab(id) => self.close_terminal(id),
+            Message::TermSelect(id) => {
+                self.term_active = Some(id);
+                self.focus_term = true;
+                self.refresh_term_snapshot();
+            }
+            Message::TermPress { row, col } => {
+                self.focus_term = true;
+                if let Some(s) = self.term_active.and_then(|id| self.terms.get(id)) {
+                    s.clear_selection();
+                    s.start_selection(row, col);
+                }
+            }
+            Message::TermDrag { row, col } => {
+                if let Some(s) = self.term_active.and_then(|id| self.terms.get(id)) {
+                    s.update_selection(row, col);
+                }
+            }
+            Message::TermScroll(lines) => {
+                if let Some(s) = self.term_active.and_then(|id| self.terms.get(id)) {
+                    if self.term_snap.as_ref().is_some_and(|n| n.alt_screen) {
+                        // Full-screen apps have no scrollback; wheel moves their cursor.
+                        let key = if lines > 0 { hythe_term::Key::Up } else { hythe_term::Key::Down };
+                        for _ in 0..lines.unsigned_abs() {
+                            s.send_key(&key, hythe_term::Mods::default());
+                        }
+                    } else {
+                        s.scroll(lines);
+                    }
+                }
+            }
+            Message::TermPaste(Some(text)) => {
+                if let Some(s) = self.term_active.and_then(|id| self.terms.get(id)) {
+                    s.paste(&text);
+                }
+            }
+            Message::TermPaste(None) => {}
+            Message::TermTick => {
+                let dirty = self.terms.take_dirty();
+                if self.term_active.is_some_and(|a| dirty.contains(&a)) {
+                    self.refresh_term_snapshot();
+                }
+            }
             Message::Save => {
                 if let Some(d) = self.docs.get_mut(self.panes.cur()) {
                     self.status = match d.save() {
@@ -349,7 +578,7 @@ impl App {
             Message::ClosePalette => self.palette = None,
             Message::RunPalette(i) => {
                 let query = self.palette.take().map(|p| p.query).unwrap_or_default();
-                if let Some(cmd) = palette::filter(&query).into_iter().nth(i) {
+                if let Some(cmd) = palette::filter(&query, &self.agent_names()).into_iter().nth(i) {
                     return self.update(cmd.message);
                 }
             }
@@ -358,10 +587,11 @@ impl App {
     }
 
     fn palette_key(&mut self, key: Key, mods: keyboard::Modifiers, text: Option<&str>) -> Task<Message> {
+        let names = self.agent_names();
         let Some(p) = self.palette.as_mut() else {
             return Task::none();
         };
-        let count = palette::filter(&p.query).len();
+        let count = palette::filter(&p.query, &names).len();
         match key.as_ref() {
             Key::Named(Named::Escape) => self.palette = None,
             Key::Named(Named::Enter) => {
@@ -403,6 +633,8 @@ impl App {
                     ("o", true) => return self.update(Message::OpenFolderDialog),
                     ("p", true) => return self.update(Message::OpenPalette),
                     ("b", _) => return self.update(Message::ToggleSidebar),
+                    ("`", false) => return self.update(Message::ToggleTerminal),
+                    ("`", true) | ("~", _) => return self.update(Message::NewTerminal(None)),
                     ("\\", false) => return self.update(Message::Split(Axis::Horizontal)),
                     ("\\", true) => return self.update(Message::Split(Axis::Vertical)),
                     (n, false) if n.len() == 1 && n.as_bytes()[0].is_ascii_digit() && n != "0" => {
@@ -498,8 +730,8 @@ impl App {
             body = body.push(self.sidebar()).push(divider_v());
         }
         body = body.push(self.center());
-        if self.show_ai {
-            body = body.push(divider_v()).push(self.ai_panel());
+        if self.show_term {
+            body = body.push(divider_v()).push(self.terminal_panel());
         }
         let base = column![self.top_bar(), divider_h(), body, divider_h(), self.status_bar()];
         match &self.palette {
@@ -515,7 +747,7 @@ impl App {
     }
 
     fn palette_view(&self, p: &Palette) -> Element<'_, Message> {
-        let results = palette::filter(&p.query);
+        let results = palette::filter(&p.query, &self.agent_names());
         let list: Element<'_, Message> = if results.is_empty() {
             container(text("No matching commands").size(13).color(theme::TEXT_DIM))
                 .padding(12)
@@ -781,36 +1013,61 @@ impl App {
         .into()
     }
 
-    fn ai_panel(&self) -> Element<'_, Message> {
-        container(
-            column![
-                text("ASSISTANT").size(11).color(theme::TEXT_DIM),
-                space::vertical().height(Length::Fill),
-                text("Connect Claude or OpenAI to chat about your code.")
-                    .size(13)
-                    .color(theme::TEXT_DIM),
-                text("Coming in Phase 3.").size(12).color(theme::TEXT_DIM),
-                space::vertical().height(Length::Fill),
-                container(text("Ask anything…").size(13).color(theme::TEXT_DIM))
-                    .padding(10)
-                    .width(Length::Fill)
-                    .style(|_: &Theme| container::Style {
-                        background: Some(theme::EDITOR_BG.into()),
-                        border: iced::Border {
-                            color: theme::BORDER,
-                            width: 1.0,
-                            radius: 6.0.into(),
-                        },
-                        ..Default::default()
-                    }),
-            ]
-            .spacing(8)
-            .padding(12),
-        )
-        .width(Length::Fixed(320.0))
-        .height(Length::Fill)
-        .style(theme::bg(theme::PANEL_BG))
-        .into()
+    fn terminal_panel(&self) -> Element<'_, Message> {
+        let small = |label: String, selected: bool, msg: Message| {
+            button(text(label).size(12))
+                .padding([4, 8])
+                .style(theme::flat(selected))
+                .on_press(msg)
+        };
+
+        let mut header = row![].spacing(2).align_y(Alignment::Center).padding([2, 6]);
+        for info in self.terms.list() {
+            let active = self.term_active == Some(info.id);
+            let label = if info.running { info.name.clone() } else { format!("{} (exited)", info.name) };
+            header = header
+                .push(small(label, active, Message::TermSelect(info.id)))
+                .push(small("×".into(), false, Message::CloseTermTab(info.id)));
+        }
+        header = header.push(space::horizontal());
+        header = header.push(small("+ Shell".into(), false, Message::NewTerminal(None)));
+        for (i, agent) in self.agents.iter().enumerate() {
+            header = header.push(small(format!("▸ {}", agent.name), false, Message::NewTerminal(Some(i))));
+        }
+
+        let session = self.term_active.and_then(|id| self.terms.get(id));
+        let body: Element<'_, Message> = match (&self.term_snap, session) {
+            (Some(snap), Some(session)) => Canvas::new(TerminalView {
+                snap,
+                session,
+                focused: self.focus_term,
+            })
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+            _ => container(
+                column![
+                    text("No terminal running").size(14),
+                    button(text("New Terminal").size(13))
+                        .padding([6, 12])
+                        .style(theme::flat(false))
+                        .on_press(Message::NewTerminal(None)),
+                ]
+                .spacing(8)
+                .align_x(Alignment::Center),
+            )
+            .center(Length::Fill)
+            .into(),
+        };
+
+        let focus_line = container(space::vertical().height(Length::Fixed(2.0)))
+            .width(Length::Fill)
+            .style(theme::bg(if self.focus_term { theme::ACCENT } else { theme::PANEL_BG }));
+        container(column![focus_line, header, divider_h(), body])
+            .width(Length::Fixed(560.0))
+            .height(Length::Fill)
+            .style(theme::bg(theme::EDITOR_BG))
+            .into()
     }
 
     fn status_bar(&self) -> Element<'_, Message> {
@@ -835,7 +1092,7 @@ impl App {
                 space::horizontal(),
                 text(position).size(12).color(theme::TEXT_DIM),
                 toggle("Split", self.panes.list.len() > 1, Message::Split(Axis::Horizontal)),
-                toggle("Assistant", self.show_ai, Message::ToggleAi),
+                toggle("Terminal", self.show_term, Message::ToggleTerminal),
             ]
             .spacing(14)
             .align_y(Alignment::Center)
@@ -847,10 +1104,15 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::batch([
+        let mut subs = vec![
             keyboard::listen().map(Message::Key),
             window::close_requests().map(|_| Message::CloseRequested),
-        ])
+        ];
+        // Poll terminal output at ~60Hz, but only while it's on screen.
+        if self.show_term && !self.terms.sessions().is_empty() {
+            subs.push(iced::time::every(std::time::Duration::from_millis(16)).map(|_| Message::TermTick));
+        }
+        Subscription::batch(subs)
     }
 }
 

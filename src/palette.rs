@@ -17,14 +17,16 @@ impl Palette {
 
 #[derive(Clone)]
 pub struct Command {
-    pub label: &'static str,
+    pub label: String,
     pub shortcut: &'static str,
     pub message: Message,
 }
 
-fn all() -> Vec<Command> {
-    let c = |label, shortcut, message| Command { label, shortcut, message };
-    vec![
+/// All commands. `agents` are the names of installed CLI agents, each of
+/// which gets a "Run …" entry.
+fn all(agents: &[String]) -> Vec<Command> {
+    let c = |label: &str, shortcut, message| Command { label: label.to_string(), shortcut, message };
+    let mut commands = vec![
         c("New File", "Ctrl+N", Message::NewFile),
         c("Open File", "Ctrl+O", Message::OpenFileDialog),
         c("Open Folder", "Ctrl+Shift+O", Message::OpenFolderDialog),
@@ -38,8 +40,14 @@ fn all() -> Vec<Command> {
         c("Close Pane", "", Message::ClosePane),
         c("Focus Next Pane", "Ctrl+1-9", Message::FocusNextPane),
         c("Toggle Explorer", "Ctrl+B", Message::ToggleSidebar),
-        c("Toggle Assistant", "", Message::ToggleAi),
-    ]
+        c("Toggle Terminal", "Ctrl+`", Message::ToggleTerminal),
+        c("New Terminal", "Ctrl+Shift+`", Message::NewTerminal(None)),
+        c("Close Terminal", "Ctrl+Shift+W", Message::CloseTerminal),
+    ];
+    for (i, name) in agents.iter().enumerate() {
+        commands.push(c(&format!("Run {name}"), "", Message::NewTerminal(Some(i))));
+    }
+    commands
 }
 
 /// Subsequence match; lower score is better. `None` if `query` doesn't match.
@@ -60,10 +68,10 @@ fn fuzzy(query: &str, label: &str) -> Option<usize> {
 }
 
 /// Commands matching `query`, best match first.
-pub fn filter(query: &str) -> Vec<Command> {
-    let mut scored: Vec<(usize, Command)> = all()
+pub fn filter(query: &str, agents: &[String]) -> Vec<Command> {
+    let mut scored: Vec<(usize, Command)> = all(agents)
         .into_iter()
-        .filter_map(|c| fuzzy(query, c.label).map(|s| (s, c)))
+        .filter_map(|c| fuzzy(query, &c.label).map(|s| (s, c)))
         .collect();
     scored.sort_by_key(|(s, _)| *s);
     scored.into_iter().map(|(_, c)| c).collect()
@@ -75,9 +83,17 @@ mod tests {
 
     #[test]
     fn fuzzy_filters_and_ranks() {
-        assert_eq!(filter("").len(), all().len());
-        assert_eq!(filter("sav")[0].label, "Save File");
-        assert_eq!(filter("tgl exp")[0].label, "Toggle Explorer");
-        assert!(filter("zzz").is_empty());
+        assert_eq!(filter("", &[]).len(), all(&[]).len());
+        assert_eq!(filter("sav", &[])[0].label, "Save File");
+        assert_eq!(filter("tgl exp", &[])[0].label, "Toggle Explorer");
+        assert!(filter("zzz", &[]).is_empty());
+    }
+
+    #[test]
+    fn installed_agents_get_run_commands() {
+        let agents = vec!["Claude Code".to_string()];
+        let hit = filter("run claude", &agents);
+        assert_eq!(hit[0].label, "Run Claude Code");
+        assert!(matches!(hit[0].message, Message::NewTerminal(Some(0))));
     }
 }
