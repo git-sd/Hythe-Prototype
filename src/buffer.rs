@@ -7,6 +7,18 @@ pub struct Buffer {
     head: usize,
     anchor: usize,
     goal_col: Option<usize>,
+    undo: Vec<Edit>,
+    redo: Vec<Edit>,
+}
+
+/// One reversible change: `removed` was replaced by `inserted` at `pos`.
+/// `before`/`after` are (head, anchor) around the change.
+struct Edit {
+    pos: usize,
+    removed: String,
+    inserted: String,
+    before: (usize, usize),
+    after: (usize, usize),
 }
 
 impl Buffer {
@@ -16,6 +28,8 @@ impl Buffer {
             head: 0,
             anchor: 0,
             goal_col: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
         }
     }
 
@@ -75,23 +89,112 @@ impl Buffer {
 
     // --- editing ---
 
-    pub fn delete_selection(&mut self) -> bool {
-        if let Some((s, e)) = self.selection() {
-            self.rope.remove(s..e);
-            self.head = s;
-            self.anchor = s;
-            true
+    /// Replace `start..end` with `text`, leaving the caret after it and
+    /// recording the change for undo. Runs of typing or deleting coalesce.
+    fn replace(&mut self, start: usize, end: usize, text: &str) {
+        let removed = self.rope.slice(start..end).to_string();
+        let before = (self.head, self.anchor);
+        if end > start {
+            self.rope.remove(start..end);
+        }
+        if !text.is_empty() {
+            self.rope.insert(start, text);
+        }
+        let caret = start + text.chars().count();
+        self.head = caret;
+        self.anchor = caret;
+        self.goal_col = None;
+        self.redo.clear();
+
+        let edit = Edit {
+            pos: start,
+            removed,
+            inserted: text.to_string(),
+            before,
+            after: (caret, caret),
+        };
+        if !self.try_merge(&edit) {
+            self.undo.push(edit);
+        }
+    }
+
+    fn try_merge(&mut self, e: &Edit) -> bool {
+        let Some(last) = self.undo.last_mut() else {
+            return false;
+        };
+        if last.after != e.before || e.before.0 != e.before.1 {
+            return false;
+        }
+        let typing = last.removed.is_empty()
+            && e.removed.is_empty()
+            && e.inserted.chars().count() == 1
+            && e.inserted != "\n"
+            && !last.inserted.ends_with('\n');
+        let backspacing = last.inserted.is_empty()
+            && e.inserted.is_empty()
+            && e.pos + e.removed.chars().count() == last.pos;
+        let deleting = last.inserted.is_empty() && e.inserted.is_empty() && e.pos == last.pos;
+        if typing {
+            last.inserted.push_str(&e.inserted);
+        } else if backspacing {
+            last.pos = e.pos;
+            last.removed = format!("{}{}", e.removed, last.removed);
+        } else if deleting {
+            last.removed.push_str(&e.removed);
         } else {
-            false
+            return false;
+        }
+        last.after = e.after;
+        true
+    }
+
+    pub fn undo(&mut self) -> bool {
+        let Some(e) = self.undo.pop() else {
+            return false;
+        };
+        let n = e.inserted.chars().count();
+        if n > 0 {
+            self.rope.remove(e.pos..e.pos + n);
+        }
+        if !e.removed.is_empty() {
+            self.rope.insert(e.pos, &e.removed);
+        }
+        (self.head, self.anchor) = e.before;
+        self.goal_col = None;
+        self.redo.push(e);
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let Some(e) = self.redo.pop() else {
+            return false;
+        };
+        let n = e.removed.chars().count();
+        if n > 0 {
+            self.rope.remove(e.pos..e.pos + n);
+        }
+        if !e.inserted.is_empty() {
+            self.rope.insert(e.pos, &e.inserted);
+        }
+        (self.head, self.anchor) = e.after;
+        self.goal_col = None;
+        self.undo.push(e);
+        true
+    }
+
+    pub fn delete_selection(&mut self) -> bool {
+        match self.selection() {
+            Some((s, e)) => {
+                self.replace(s, e, "");
+                true
+            }
+            None => false,
         }
     }
 
     pub fn insert(&mut self, text: &str) {
-        self.delete_selection();
-        self.rope.insert(self.head, text);
-        self.head += text.chars().count();
-        self.anchor = self.head;
-        self.goal_col = None;
+        let (s, e) = self.selection().unwrap_or((self.head, self.head));
+        self.replace(s, e, text);
     }
 
     /// Newline that keeps the current line's indentation.
@@ -118,11 +221,8 @@ impl Buffer {
             } else {
                 self.head - 1
             };
-            self.rope.remove(start..self.head);
-            self.head = start;
-            self.anchor = start;
+            self.replace(start, self.head, "");
         }
-        self.goal_col = None;
     }
 
     pub fn delete(&mut self) {
@@ -138,9 +238,8 @@ impl Buffer {
             } else {
                 self.head + 1
             };
-            self.rope.remove(self.head..end);
+            self.replace(self.head, end, "");
         }
-        self.goal_col = None;
     }
 
     // --- movement ---
@@ -264,6 +363,43 @@ mod tests {
         assert_eq!(b.selection_on_line(1), Some((0, 2)));
         b.insert("X");
         assert_eq!(b.text(), "aXf");
+    }
+
+    #[test]
+    fn undo_redo_coalesces_typing() {
+        let mut b = Buffer::new("");
+        for c in ["a", "b", "c"] {
+            b.insert(c);
+        }
+        b.insert_newline();
+        b.insert("d");
+        assert_eq!(b.text(), "abc\nd");
+        assert!(b.undo()); // "d"
+        assert_eq!(b.text(), "abc\n");
+        assert!(b.undo()); // newline
+        assert!(b.undo()); // "abc" in one step
+        assert_eq!(b.text(), "");
+        assert!(!b.undo());
+        assert!(b.redo());
+        assert_eq!(b.text(), "abc");
+        b.insert("!");
+        assert!(!b.redo());
+    }
+
+    #[test]
+    fn undo_restores_deleted_selection() {
+        let mut b = Buffer::new("hello world");
+        b.set_cursor(0, 0, false);
+        b.set_cursor(0, 5, true);
+        b.insert("bye");
+        assert_eq!(b.text(), "bye world");
+        b.undo();
+        assert_eq!(b.text(), "hello world");
+        assert_eq!(b.selected_text().as_deref(), Some("hello"));
+        b.backspace();
+        b.backspace();
+        b.undo();
+        assert_eq!(b.text(), "hello world");
     }
 
     #[test]

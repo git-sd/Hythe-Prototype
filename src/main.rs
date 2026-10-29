@@ -3,6 +3,7 @@ mod doc;
 mod editor;
 mod explorer;
 mod highlight;
+mod palette;
 mod theme;
 
 use std::cell::Cell;
@@ -10,13 +11,14 @@ use std::path::PathBuf;
 
 use iced::keyboard::{self, key::Named, Key};
 use iced::widget::canvas::Canvas;
-use iced::widget::{button, column, container, row, scrollable, space, text};
+use iced::widget::{button, column, container, mouse_area, opaque, row, scrollable, space, stack, text};
 use iced::{clipboard, Alignment, Element, Length, Size, Subscription, Task, Theme};
 
 use doc::{Doc, TAB_WIDTH};
 use editor::EditorView;
 use explorer::Node;
 use highlight::RustHighlighter;
+use palette::Palette;
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
@@ -34,6 +36,7 @@ struct App {
     show_sidebar: bool,
     show_ai: bool,
     status: String,
+    palette: Option<Palette>,
     highlighter: RustHighlighter,
     viewport: Cell<Size>,
 }
@@ -53,6 +56,14 @@ pub enum Message {
     CloseTab(usize),
     ToggleSidebar,
     ToggleAi,
+    Save,
+    CloseActive,
+    Undo,
+    Redo,
+    SelectAll,
+    OpenPalette,
+    ClosePalette,
+    RunPalette(usize),
 }
 
 impl App {
@@ -64,6 +75,7 @@ impl App {
             show_sidebar: true,
             show_ai: true,
             status: String::new(),
+            palette: None,
             highlighter: RustHighlighter::new(),
             viewport: Cell::new(Size::new(800.0, 600.0)),
         };
@@ -92,6 +104,11 @@ impl App {
         }
         match Doc::open(path.clone(), &mut self.highlighter) {
             Ok(doc) => {
+                if self.root.is_none() {
+                    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                        self.root = Some(Node::root(parent.to_path_buf()));
+                    }
+                }
                 self.docs.push(doc);
                 self.active = self.docs.len() - 1;
                 self.status = format!("Opened {}", path.display());
@@ -132,6 +149,9 @@ impl App {
             }
             Message::Paste(None) => {}
             Message::Key(keyboard::Event::KeyPressed { key, modifiers, text, .. }) => {
+                if self.palette.is_some() {
+                    return self.palette_key(key, modifiers, text.as_deref());
+                }
                 let task = self.handle_key(key, modifiers, text.as_deref());
                 if let Some(d) = self.docs.get_mut(self.active) {
                     d.ensure_cursor_visible(vp);
@@ -164,6 +184,71 @@ impl App {
             Message::CloseTab(i) => self.close_tab(i),
             Message::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
             Message::ToggleAi => self.show_ai = !self.show_ai,
+            Message::Save => {
+                if let Some(d) = self.docs.get_mut(self.active) {
+                    self.status = match d.save() {
+                        Ok(p) => format!("Saved {}", p.display()),
+                        Err(e) => e,
+                    };
+                }
+            }
+            Message::CloseActive => self.close_tab(self.active),
+            Message::Undo | Message::Redo => {
+                let undo = matches!(message, Message::Undo);
+                if let Some(d) = self.docs.get_mut(self.active) {
+                    let changed = if undo { d.buffer.undo() } else { d.buffer.redo() };
+                    if changed {
+                        d.edited(&mut self.highlighter);
+                        d.ensure_cursor_visible(vp);
+                    }
+                }
+            }
+            Message::SelectAll => {
+                if let Some(d) = self.docs.get_mut(self.active) {
+                    d.buffer.select_all();
+                }
+            }
+            Message::OpenPalette => self.palette = Some(Palette::new()),
+            Message::ClosePalette => self.palette = None,
+            Message::RunPalette(i) => {
+                let query = self.palette.take().map(|p| p.query).unwrap_or_default();
+                if let Some(cmd) = palette::filter(&query).into_iter().nth(i) {
+                    return self.update(cmd.message);
+                }
+            }
+        }
+        Task::none()
+    }
+
+    fn palette_key(&mut self, key: Key, mods: keyboard::Modifiers, text: Option<&str>) -> Task<Message> {
+        let Some(p) = self.palette.as_mut() else {
+            return Task::none();
+        };
+        let count = palette::filter(&p.query).len();
+        match key.as_ref() {
+            Key::Named(Named::Escape) => self.palette = None,
+            Key::Named(Named::Enter) => {
+                let i = p.selected;
+                return self.update(Message::RunPalette(i));
+            }
+            Key::Named(Named::ArrowDown) => p.selected = (p.selected + 1).min(count.saturating_sub(1)),
+            Key::Named(Named::ArrowUp) => p.selected = p.selected.saturating_sub(1),
+            Key::Named(Named::Backspace) => {
+                p.query.pop();
+                p.selected = 0;
+            }
+            Key::Character(c) if mods.command() && mods.shift() && c.eq_ignore_ascii_case("p") => {
+                self.palette = None;
+            }
+            _ => {
+                if !mods.command() {
+                    let t: String = text.unwrap_or("").chars().filter(|c| !c.is_control()).collect();
+                    if !t.is_empty() {
+                        p.query.push_str(&t);
+                        p.selected = 0;
+                    }
+                }
+            }
         }
         Task::none()
     }
@@ -174,25 +259,20 @@ impl App {
 
         if ctrl {
             if let Key::Character(c) = key.as_ref() {
-                match (c, shift) {
+                let c = c.to_lowercase();
+                match (c.as_str(), shift) {
                     ("n", _) => return self.update(Message::NewFile),
                     ("o", false) => return self.update(Message::OpenFileDialog),
                     ("o", true) => return self.update(Message::OpenFolderDialog),
-                    ("b", _) => self.show_sidebar = !self.show_sidebar,
-                    ("w", _) => self.close_tab(self.active),
-                    ("s", _) => {
-                        if let Some(d) = self.docs.get_mut(self.active) {
-                            self.status = match d.save() {
-                                Ok(p) => format!("Saved {}", p.display()),
-                                Err(e) => e,
-                            };
-                        }
+                    ("p", true) => return self.update(Message::OpenPalette),
+                    ("b", _) => return self.update(Message::ToggleSidebar),
+                    ("w", _) => return self.update(Message::CloseActive),
+                    ("s", _) => return self.update(Message::Save),
+                    ("a", _) => return self.update(Message::SelectAll),
+                    ("z", false) | ("y", _) => {
+                        return self.update(if c == "z" { Message::Undo } else { Message::Redo })
                     }
-                    ("a", _) => {
-                        if let Some(d) = self.docs.get_mut(self.active) {
-                            d.buffer.select_all();
-                        }
-                    }
+                    ("z", true) => return self.update(Message::Redo),
                     ("c", _) => {
                         if let Some(t) = self.docs.get(self.active).and_then(|d| d.buffer.selected_text()) {
                             return clipboard::write(t);
@@ -279,7 +359,77 @@ impl App {
         if self.show_ai {
             body = body.push(divider_v()).push(self.ai_panel());
         }
-        column![self.top_bar(), divider_h(), body, divider_h(), self.status_bar()].into()
+        let base = column![self.top_bar(), divider_h(), body, divider_h(), self.status_bar()];
+        match &self.palette {
+            Some(p) => stack![
+                base,
+                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
+                    .on_press(Message::ClosePalette),
+                self.palette_view(p),
+            ]
+            .into(),
+            None => base.into(),
+        }
+    }
+
+    fn palette_view(&self, p: &Palette) -> Element<'_, Message> {
+        let results = palette::filter(&p.query);
+        let list: Element<'_, Message> = if results.is_empty() {
+            container(text("No matching commands").size(13).color(theme::TEXT_DIM))
+                .padding(12)
+                .into()
+        } else {
+            column(results.into_iter().enumerate().map(|(i, cmd)| {
+                button(
+                    row![
+                        text(cmd.label).size(14),
+                        space::horizontal(),
+                        text(cmd.shortcut).size(12).color(theme::TEXT_DIM),
+                    ]
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding([7, 12])
+                .style(theme::flat(i == p.selected))
+                .on_press(Message::RunPalette(i))
+                .into()
+            }))
+            .padding(4)
+            .into()
+        };
+        let input = container(
+            text(if p.query.is_empty() {
+                "Type a command…".to_string()
+            } else {
+                format!("{}▏", p.query)
+            })
+            .size(15)
+            .color(if p.query.is_empty() { theme::TEXT_DIM } else { theme::TEXT }),
+        )
+        .padding([10, 14])
+        .width(Length::Fill);
+        let panel = container(column![input, divider_h(), list])
+            .width(Length::Fixed(520.0))
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::PANEL_BG.into()),
+                border: iced::Border {
+                    color: theme::BORDER,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                shadow: iced::Shadow {
+                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 24.0,
+                },
+                ..Default::default()
+            });
+        container(opaque(panel))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .padding(iced::Padding::ZERO.top(70.0))
+            .into()
     }
 
     fn top_bar(&self) -> Element<'_, Message> {
