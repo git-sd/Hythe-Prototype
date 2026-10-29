@@ -968,15 +968,21 @@ impl App {
                 .into(),
             )
         });
-        let tabs = scrollable(row(tabs)).direction(scrollable::Direction::Horizontal(
-            scrollable::Scrollbar::new().width(0).scroller_width(0),
-        ));
+        // The strip takes the room left by the buttons and scrolls, so many tabs can never
+        // push the window buttons off the edge. A little empty space after the last tab
+        // drags the window.
+        let tabs = scrollable(
+            row(tabs).push(
+                mouse_area(space::horizontal().width(Length::Fixed(120.0)).height(Length::Fill))
+                    .on_press(Message::DragWindow)
+                    .on_double_click(Message::ToggleMaximize),
+            ),
+        )
+        .width(Length::Fill)
+        .direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(0).scroller_width(0)));
         let bar = container(
             row![
                 tabs,
-                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
-                    .on_press(Message::DragWindow)
-                    .on_double_click(Message::ToggleMaximize),
                 icon_button(Icon::Split, theme::TEXT_DIM, self.panes.list.len() > 1, Message::Split(Axis::Horizontal)),
                 icon_button(Icon::More, theme::TEXT_DIM, self.menu == Some(2), Message::OpenMenu(2)),
                 if edge { self.header_extra(Edge::Editor) } else { space::horizontal().width(Length::Shrink).into() },
