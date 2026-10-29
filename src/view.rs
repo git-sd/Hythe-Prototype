@@ -27,7 +27,7 @@ pub(crate) const RAIL_W: f32 = 52.0;
 pub(crate) const LIST_W: f32 = 232.0;
 pub(crate) const AGENT_W: f32 = 470.0;
 pub(crate) const SCM_W: f32 = 340.0;
-pub(crate) const CHAT_W: f32 = 270.0;
+pub(crate) const CHAT_W: f32 = 340.0;
 /// Width of a draggable divider (the visible line is 1px in the middle).
 pub(crate) const HANDLE_W: f32 = 5.0;
 

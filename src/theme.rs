@@ -74,6 +74,18 @@ pub fn row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 }
 
 /// Single-line text box.
+/// A text box with no frame, for typing straight into a feed.
+pub fn bare(_: &Theme, _: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border { radius: 0.0.into(), width: 0.0, color: Color::TRANSPARENT },
+        icon: TEXT_DIM,
+        placeholder: TEXT_FAINT,
+        value: TEXT,
+        selection: Color { a: 0.35, ..ACCENT },
+    }
+}
+
 pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
     let focused = matches!(status, text_input::Status::Focused { .. });
     text_input::Style {

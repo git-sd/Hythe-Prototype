@@ -311,7 +311,7 @@ impl App {
         .align_y(Alignment::Center);
 
         let now = now_secs();
-        let mut list = column![].spacing(9).padding(Padding { top: 8.0, right: 8.0, bottom: 8.0, left: 8.0 });
+        let mut list = column![].spacing(20).padding(Padding { top: 14.0, right: 14.0, bottom: 14.0, left: 14.0 });
         if c.messages.is_empty() {
             list = list.push(
                 container(
@@ -361,13 +361,14 @@ impl App {
         let composer = column![
             attached,
             row![
-                button(icon(Icon::Paperclip, 13.0, dim)).padding(3).style(theme::flat(false)).on_press(msg(ChatMsg::Attach)),
+                self.my_face(),
                 text_input("Message", &c.input)
                     .on_input(|s| Message::Chat(ChatMsg::Input(s)))
                     .on_submit(msg(ChatMsg::Send))
-                    .padding([4, 6])
-                    .size(12)
-                    .style(theme::input),
+                    .padding([4, 4])
+                    .size(14)
+                    .style(theme::bare),
+                button(icon(Icon::Paperclip, 13.0, theme::TEXT_FAINT)).padding(3).style(theme::flat(false)).on_press(msg(ChatMsg::Attach)),
                 button(icon(Icon::Send, 13.0, if can_send { theme::ACCENT } else { theme::TEXT_FAINT }))
                     .padding(3)
                     .style(theme::flat(false))
@@ -393,8 +394,8 @@ impl App {
             ]
             .align_y(Alignment::Center),
         ]
-        .spacing(4)
-        .padding(6);
+        .spacing(6)
+        .padding([10, 14]);
 
         container(column![header, divider_h(), strip, divider_h(), vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
             .width(Length::Fixed(self.chat_w))
@@ -403,77 +404,82 @@ impl App {
             .into()
     }
 
-    /// A commit in the feed: who, a heading, and the description under it. Click for its changes.
-    fn chat_commit<'a>(&'a self, k: &'a hythe_git::Commit, now: i64) -> Element<'a, Message> {
-        let hue = k.author.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
-        let handle = self
-            .members
-            .iter()
-            .find(|m| m.name == k.author)
-            .and_then(|m| m.login.as_ref())
-            .and_then(|l| self.member_avatars.get(l));
-        let avatar: Element<'a, Message> = match handle {
+    /// Your own picture, beside the message box.
+    fn my_face(&self) -> Element<'_, Message> {
+        match &self.avatar {
             Some(h) => iced::widget::image(h.clone()).width(Length::Fixed(22.0)).height(Length::Fixed(22.0)).border_radius(11.0).into(),
-            None => {
-                let color = crate::view::hsv(hue as f32);
-                container(text(k.author.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()).size(10).color(Color::WHITE))
-                    .center(Length::Fixed(22.0))
-                    .style(move |_: &Theme| container::Style {
-                        background: Some(color.into()),
-                        border: iced::Border { radius: 11.0.into(), ..Default::default() },
-                        ..Default::default()
-                    })
-                    .into()
-            }
-        };
-        let who = row![
-            text(k.author.clone()).size(11).color(theme::TEXT_DIM).wrapping(text::Wrapping::None),
-            text(hythe_git::time_ago(k.time, now)).size(9).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None),
-            text(k.short.clone()).size(9).font(iced::Font::MONOSPACE).color(theme::ACCENT),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center);
-        let mut body = column![who, text(k.subject.clone()).size(12).color(theme::TEXT)].spacing(1);
-        let detail = k.body.lines().filter(|l| !l.starts_with("Co-Authored-By:")).collect::<Vec<_>>().join(" ");
-        if !detail.trim().is_empty() {
-            body = body.push(container(text(detail.trim().to_string()).size(11).color(theme::TEXT_DIM)).max_height(48.0).clip(true));
+            None => self.chat_face(&self.user, None, None, 0),
         }
-        button(row![avatar, body.width(Length::Fill)].spacing(7))
-            .width(Length::Fill)
-            .padding([3, 4])
-            .style(theme::row(false))
-            .on_press(Message::Chat(ChatMsg::OpenCommit(k.sha.clone())))
-            .into()
     }
 
-    fn chat_message<'a>(&'a self, m: &'a ChatMessage, now: i64) -> Element<'a, Message> {
-        let c = &self.chat;
-        let hue = m.author.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
-        let avatar: Element<'a, Message> = match m.login.as_ref().and_then(|l| self.member_avatars.get(l)) {
-            Some(h) => iced::widget::image(h.clone()).width(Length::Fixed(22.0)).height(Length::Fixed(22.0)).border_radius(11.0).into(),
+    /// A round picture (or initial) for someone; hovering it names them.
+    fn chat_face<'a>(&'a self, name: &str, login: Option<&String>, when: Option<i64>, now: i64) -> Element<'a, Message> {
+        const SIZE: f32 = 22.0;
+        let hue = name.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
+        let face: Element<'a, Message> = match login.and_then(|l| self.member_avatars.get(l)) {
+            Some(h) => iced::widget::image(h.clone()).width(Length::Fixed(SIZE)).height(Length::Fixed(SIZE)).border_radius(SIZE / 2.0).into(),
             None => {
                 let color = crate::view::hsv(hue as f32);
-                container(text(m.author.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()).size(10).color(Color::WHITE))
-                    .center(Length::Fixed(22.0))
+                container(text(name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()).size(11).color(Color::WHITE))
+                    .center(Length::Fixed(SIZE))
                     .style(move |_: &Theme| container::Style {
                         background: Some(color.into()),
-                        border: iced::Border { radius: 11.0.into(), ..Default::default() },
+                        border: iced::Border { radius: (SIZE / 2.0).into(), ..Default::default() },
                         ..Default::default()
                     })
                     .into()
             }
         };
+        let label = match when {
+            Some(t) => format!("{name} · {}", hythe_git::time_ago(t, now)),
+            None => name.to_string(),
+        };
+        iced::widget::tooltip(
+            face,
+            container(text(label).size(11)).padding([3, 6]).style(|_: &Theme| container::Style {
+                background: Some(theme::BAR_BG.into()),
+                border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 2.0.into() },
+                ..Default::default()
+            }),
+            iced::widget::tooltip::Position::Right,
+        )
+        .gap(4)
+        .into()
+    }
 
-        let who = row![
-            text(m.author.clone()).size(12).wrapping(text::Wrapping::None),
-            text(hythe_git::time_ago(m.time_ms / 1000, now)).size(9).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center);
+    /// A commit in the feed: a heading, its description under it and the hash, in a
+    /// card like a code block. Click for its changes.
+    fn chat_commit<'a>(&'a self, k: &'a hythe_git::Commit, now: i64) -> Element<'a, Message> {
+        let login = self.members.iter().find(|m| m.name == k.author).and_then(|m| m.login.as_ref());
+        let avatar = self.chat_face(&k.author, login, Some(k.time), now);
+        let mut body = column![text(k.subject.clone()).size(14).color(theme::TEXT).line_height(1.4)].spacing(3);
+        let detail = k.body.lines().filter(|l| !l.starts_with("Co-Authored-By:")).collect::<Vec<_>>().join(" ");
+        if !detail.trim().is_empty() {
+            body = body.push(
+                container(text(detail.trim().to_string()).size(13).color(theme::TEXT_DIM).line_height(1.4)).max_height(72.0).clip(true),
+            );
+        }
+        body = body.push(text(k.short.clone()).size(11).font(iced::Font::MONOSPACE).color(theme::ACCENT));
+        let card = button(body)
+            .width(Length::Fill)
+            .padding([8, 10])
+            .style(|_: &Theme, status| button::Style {
+                background: Some(if matches!(status, button::Status::Hovered) { theme::HOVER } else { theme::BAR_BG }.into()),
+                text_color: theme::TEXT,
+                border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 4.0.into() },
+                ..button::Style::default()
+            })
+            .on_press(Message::Chat(ChatMsg::OpenCommit(k.sha.clone())));
+        row![avatar, card].spacing(12).into()
+    }
 
-        let mut body = column![who].spacing(1);
+    /// A message: plain text beside a small picture, no name line.
+    fn chat_message<'a>(&'a self, m: &'a ChatMessage, now: i64) -> Element<'a, Message> {
+        let c = &self.chat;
+        let avatar = self.chat_face(&m.author, m.login.as_ref(), Some(m.time_ms / 1000), now);
+        let mut body = column![].spacing(6);
         if !m.body.trim().is_empty() {
-            body = body.push(text(m.body.clone()).size(12));
+            body = body.push(text(m.body.clone()).size(14).line_height(1.45));
         }
         for att in &m.attachments {
             let save = Message::Chat(ChatMsg::Save(att.entry.clone(), att.name.clone()));
@@ -483,7 +489,7 @@ impl App {
                         button(
                             container(iced::widget::image(h.clone()).content_fit(iced::ContentFit::Contain))
                                 .width(Length::Fill)
-                                .height(Length::Fixed(100.0))
+                                .height(Length::Fixed(160.0))
                                 .align_x(Alignment::Start),
                         )
                         .padding(0)
@@ -494,17 +500,17 @@ impl App {
                 None => {
                     body = body.push(
                         button(
-                            row![icon(Icon::File, 12.0, theme::TEXT_DIM), text(att.name.clone()).size(11).wrapping(text::Wrapping::None)]
-                                .spacing(5)
+                            row![icon(Icon::File, 13.0, theme::TEXT_DIM), text(att.name.clone()).size(12).wrapping(text::Wrapping::None)]
+                                .spacing(6)
                                 .align_y(Alignment::Center),
                         )
-                        .padding([3, 6])
+                        .padding([4, 8])
                         .style(theme::flat(false))
                         .on_press(save),
                     );
                 }
             }
         }
-        row![avatar, body.width(Length::Fill)].spacing(7).into()
+        row![avatar, body.width(Length::Fill)].spacing(12).into()
     }
 }
