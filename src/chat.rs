@@ -5,10 +5,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use hythe_git::ChatMessage;
-use iced::widget::{button, column, container, mouse_area, row, text, text_input};
+use iced::widget::{button, column, container, mouse_area, row, space, text, text_input};
 use iced::{Alignment, Color, Element, Length, Padding, Task, Theme};
 
 use crate::icons::{icon, Icon};
+use crate::scm::ScmMsg;
 use crate::view::{divider_h, icon_button, vscroll, Edge, TAB_H};
 use crate::{theme, App, Handle, Message};
 
@@ -25,6 +26,8 @@ pub struct Chat {
     pub note: Option<String>,
     pub images: HashMap<String, iced::widget::image::Handle>,
     pub images_tried: HashSet<String>,
+    /// Recent commits, shown in the feed between the messages.
+    pub commits: Vec<hythe_git::Commit>,
     /// Repository whose messages were last loaded.
     pub loaded_for: Option<PathBuf>,
     /// Closed from the welcome area, which shows the welcome menu again.
@@ -45,7 +48,11 @@ pub enum ChatMsg {
     Sync,
     Posted(Result<(), String>),
     Synced(Result<String, String>),
-    Loaded(Result<Vec<ChatMessage>, String>),
+    Loaded(Result<(Vec<ChatMessage>, Vec<hythe_git::Commit>), String>),
+    /// Commit the text in the box (everything changed, if nothing is staged).
+    Commit,
+    /// Open a commit's changes.
+    OpenCommit(String),
     /// Save an uploaded file somewhere (entry name, file name).
     Save(String, String),
     Saved(Result<String, String>),
@@ -70,7 +77,14 @@ impl App {
     pub(crate) fn chat_load(&self) -> Task<Message> {
         let Some(repo) = self.repo.clone() else { return Task::none() };
         Task::perform(
-            async move { tokio::task::spawn_blocking(move || repo.chat_messages(HISTORY)).await.unwrap_or_else(|e| Err(e.to_string())) },
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let messages = repo.chat_messages(HISTORY)?;
+                    Ok((messages, repo.log(60).unwrap_or_default()))
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+            },
             |r| Message::Chat(ChatMsg::Loaded(r)),
         )
     }
@@ -161,7 +175,8 @@ impl App {
                 return self.chat_load();
             }
             ChatMsg::Loaded(result) => match result {
-                Ok(messages) => {
+                Ok((messages, commits)) => {
+                    self.chat.commits = commits;
                     let mut tasks = Vec::new();
                     if let Some(repo) = self.repo.clone() {
                         for att in messages.iter().flat_map(|m| &m.attachments).filter(|a| a.is_image()) {
@@ -191,6 +206,25 @@ impl App {
                 }
                 Err(e) => self.chat.note = Some(e),
             },
+            ChatMsg::Commit => {
+                let Some(repo) = self.repo.clone() else { return Task::none() };
+                let text = self.chat.input.trim().to_string();
+                if text.is_empty() {
+                    self.status = "Write a commit message first".into();
+                    return Task::none();
+                }
+                self.scm.reload(&repo);
+                self.scm.message = text;
+                if self.scm_commit(&repo) {
+                    self.chat.input.clear();
+                    return self.chat_load();
+                }
+            }
+            ChatMsg::OpenCommit(sha) => {
+                let shown = self.scm_update(ScmMsg::Show);
+                let selected = self.scm_update(ScmMsg::SelectCommit(sha));
+                return Task::batch([shown, selected]);
+            }
             ChatMsg::Image(entry, path) => {
                 if let Some(h) = path.and_then(|p| std::fs::read(p).ok()).map(iced::widget::image::Handle::from_bytes) {
                     self.chat.images.insert(entry, h);
@@ -257,6 +291,25 @@ impl App {
         .align_y(Alignment::Center);
         let header = mouse_area(header).on_press(Message::DragStart(Handle::ChatDock)).interaction(iced::mouse::Interaction::Grab);
 
+        let branch = self.git.as_ref().map(|g| g.branch.clone()).unwrap_or_else(|| "—".into());
+        let small = |label: &'static str, m: ScmMsg| {
+            button(text(label).size(10)).padding([2, 6]).style(theme::flat(false)).on_press(Message::Scm(m))
+        };
+        let strip = container(
+            row![
+                icon(Icon::Branch, 12.0, dim),
+                text(branch).size(11).wrapping(text::Wrapping::None),
+                space::horizontal(),
+                small("Pull", ScmMsg::Pull),
+                small("Push", ScmMsg::Push),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .padding([0, 8]),
+        )
+        .height(Length::Fixed(26.0))
+        .align_y(Alignment::Center);
+
         let now = now_secs();
         let mut list = column![].spacing(9).padding(Padding { top: 8.0, right: 8.0, bottom: 8.0, left: 8.0 });
         if c.messages.is_empty() {
@@ -273,8 +326,23 @@ impl App {
                 .padding([16, 0]),
             );
         }
-        for m in &c.messages {
-            list = list.push(self.chat_message(m, now));
+        // Messages and commits in one feed, oldest first.
+        enum Entry<'a> {
+            Msg(&'a ChatMessage),
+            Commit(&'a hythe_git::Commit),
+        }
+        let mut feed: Vec<(i64, Entry<'_>)> = c
+            .messages
+            .iter()
+            .map(|m| (m.time_ms / 1000, Entry::Msg(m)))
+            .chain(c.commits.iter().map(|k| (k.time, Entry::Commit(k))))
+            .collect();
+        feed.sort_by_key(|(t, _)| *t);
+        for (_, entry) in feed {
+            list = list.push(match entry {
+                Entry::Msg(m) => self.chat_message(m, now),
+                Entry::Commit(k) => self.chat_commit(k, now),
+            });
         }
 
         let mut attached = column![].spacing(3);
@@ -288,6 +356,8 @@ impl App {
             );
         }
         let can_send = !(c.input.trim().is_empty() && c.files.is_empty()) && c.busy != Some("Sending…");
+        let changed = self.git.as_ref().map(|g| g.added + g.removed).unwrap_or(0) > 0;
+        let can_commit = !c.input.trim().is_empty();
         let composer = column![
             attached,
             row![
@@ -305,14 +375,74 @@ impl App {
             ]
             .spacing(3)
             .align_y(Alignment::Center),
+            row![
+                button(
+                    text(if changed { "Uncommitted changes" } else { "Nothing to commit" })
+                        .size(10)
+                        .color(if changed { theme::ACCENT } else { theme::TEXT_FAINT })
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([2, 4])
+                .style(theme::flat(false))
+                .on_press_maybe(changed.then(|| Message::Scm(ScmMsg::Show))),
+                space::horizontal(),
+                button(text("Commit").size(10))
+                    .padding([2, 8])
+                    .style(theme::flat(false))
+                    .on_press_maybe(can_commit.then(|| msg(ChatMsg::Commit))),
+            ]
+            .align_y(Alignment::Center),
         ]
         .spacing(4)
         .padding(6);
 
-        container(column![header, divider_h(), vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
+        container(column![header, divider_h(), strip, divider_h(), vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
             .width(Length::Fixed(self.chat_w))
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))
+            .into()
+    }
+
+    /// A commit in the feed: who, a heading, and the description under it. Click for its changes.
+    fn chat_commit<'a>(&'a self, k: &'a hythe_git::Commit, now: i64) -> Element<'a, Message> {
+        let hue = k.author.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
+        let handle = self
+            .members
+            .iter()
+            .find(|m| m.name == k.author)
+            .and_then(|m| m.login.as_ref())
+            .and_then(|l| self.member_avatars.get(l));
+        let avatar: Element<'a, Message> = match handle {
+            Some(h) => iced::widget::image(h.clone()).width(Length::Fixed(22.0)).height(Length::Fixed(22.0)).border_radius(11.0).into(),
+            None => {
+                let color = crate::view::hsv(hue as f32);
+                container(text(k.author.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()).size(10).color(Color::WHITE))
+                    .center(Length::Fixed(22.0))
+                    .style(move |_: &Theme| container::Style {
+                        background: Some(color.into()),
+                        border: iced::Border { radius: 11.0.into(), ..Default::default() },
+                        ..Default::default()
+                    })
+                    .into()
+            }
+        };
+        let who = row![
+            text(k.author.clone()).size(11).color(theme::TEXT_DIM).wrapping(text::Wrapping::None),
+            text(hythe_git::time_ago(k.time, now)).size(9).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None),
+            text(k.short.clone()).size(9).font(iced::Font::MONOSPACE).color(theme::ACCENT),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        let mut body = column![who, text(k.subject.clone()).size(12).color(theme::TEXT)].spacing(1);
+        let detail = k.body.lines().filter(|l| !l.starts_with("Co-Authored-By:")).collect::<Vec<_>>().join(" ");
+        if !detail.trim().is_empty() {
+            body = body.push(container(text(detail.trim().to_string()).size(11).color(theme::TEXT_DIM)).max_height(48.0).clip(true));
+        }
+        button(row![avatar, body.width(Length::Fill)].spacing(7))
+            .width(Length::Fill)
+            .padding([3, 4])
+            .style(theme::row(false))
+            .on_press(Message::Chat(ChatMsg::OpenCommit(k.sha.clone())))
             .into()
     }
 

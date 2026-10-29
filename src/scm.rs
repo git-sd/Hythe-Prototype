@@ -161,7 +161,7 @@ impl App {
 
     /// Commit with the message in the box. With nothing staged, everything
     /// changed is committed, like VS Code's smart commit. True if it worked.
-    fn scm_commit(&mut self, repo: &Repo) -> bool {
+    pub(crate) fn scm_commit(&mut self, repo: &Repo) -> bool {
         if self.scm.message.trim().is_empty() {
             self.status = "Write a commit message first".into();
             return false;
