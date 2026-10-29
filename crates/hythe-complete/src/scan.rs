@@ -22,8 +22,8 @@ pub(crate) fn is_ident_start(c: char, dollar: bool) -> bool {
     c == '_' || c.is_alphabetic() || (dollar && c == '$')
 }
 
-pub(crate) fn is_ident_char(c: char, dollar: bool) -> bool {
-    c == '_' || c.is_alphanumeric() || (dollar && c == '$')
+pub(crate) fn is_ident_char(c: char, dollar: bool, dash: bool) -> bool {
+    c == '_' || c.is_alphanumeric() || (dollar && c == '$') || (dash && c == '-')
 }
 
 /// Kind guessed from spelling alone: `MAX_LEN` is a constant, `Widget` a type.
@@ -46,6 +46,7 @@ pub(crate) fn scan<'a>(text: &'a str, lang: Language, mut on_word: impl FnMut(Wo
     let bytes = text.as_bytes();
     let n = bytes.len();
     let dollar = d.dollar_idents;
+    let dash = lang.dash_idents();
     let line_comment = d.line_comment.as_bytes();
 
     let mut i = 0;
@@ -134,7 +135,7 @@ pub(crate) fn scan<'a>(text: &'a str, lang: Language, mut on_word: impl FnMut(Wo
             let start = i;
             let mut end = i;
             for ch in text[i..].chars() {
-                if is_ident_char(ch, dollar) {
+                if is_ident_char(ch, dollar, dash) {
                     end += ch.len_utf8();
                 } else {
                     break;

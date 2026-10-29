@@ -37,6 +37,10 @@ impl Buffer {
         self.rope.to_string()
     }
 
+    pub fn byte_len(&self) -> usize {
+        self.rope.len_bytes()
+    }
+
     pub fn line_count(&self) -> usize {
         self.rope.len_lines()
     }

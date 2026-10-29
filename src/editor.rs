@@ -19,19 +19,22 @@ fn class_color(class: u8) -> Color {
     };
     match *name {
         "comment" => Color::from_rgb8(0x5f, 0x69, 0x78),
-        "string" | "escape" => Color::from_rgb8(0xa5, 0xc2, 0x61),
+        "string" | "string.escape" | "string.regexp" | "string.special" | "escape" => {
+            Color::from_rgb8(0xa5, 0xc2, 0x61)
+        }
         "keyword" => Color::from_rgb8(0xc7, 0x92, 0xea),
         "function" | "function.builtin" | "function.macro" => Color::from_rgb8(0x6c, 0xb6, 0xff),
-        "type" | "type.builtin" | "constructor" => Color::from_rgb8(0xf0, 0xc6, 0x74),
-        "constant" | "constant.builtin" => Color::from_rgb8(0xf2, 0x8b, 0x6b),
+        "type" | "type.builtin" | "constructor" | "module" | "namespace" => {
+            Color::from_rgb8(0xf0, 0xc6, 0x74)
+        }
+        "constant" | "constant.builtin" | "number" | "boolean" => Color::from_rgb8(0xf2, 0x8b, 0x6b),
         "attribute" | "label" => Color::from_rgb8(0xd9, 0xa4, 0x86),
         "property" => Color::from_rgb8(0x7f, 0xd6, 0xd0),
+        "tag" => Color::from_rgb8(0xe8, 0x7a, 0x8a),
         "variable.builtin" | "variable.parameter" => Color::from_rgb8(0xe8, 0x7a, 0x8a),
         "operator" => Color::from_rgb8(0x7f, 0xd6, 0xd0),
-        "punctuation" | "punctuation.bracket" | "punctuation.delimiter" => {
-            Color::from_rgb8(0x9a, 0xa3, 0xb2)
-        }
-        _ => theme::TEXT,
+        "punctuation" | "punctuation.bracket" | "punctuation.delimiter" | "punctuation.special"
+        | "tag.delimiter" => Color::from_rgb8(0x9a, 0xa3, 0xb2),        _ => theme::TEXT,
     }
 }
 

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use iced::Size;
 
 use crate::buffer::Buffer;
-use crate::highlight::RustHighlighter;
+use crate::highlight::{Highlighter, Syntax, MAX_HIGHLIGHT_BYTES};
 
 pub const FONT_SIZE: f32 = 15.0;
 pub const LINE_H: f32 = 20.0;
@@ -25,7 +25,7 @@ impl Doc {
         Self::from_text("", None)
     }
 
-    pub fn open(path: PathBuf, hl: &mut RustHighlighter) -> std::io::Result<Self> {
+    pub fn open(path: PathBuf, hl: &mut Highlighter) -> std::io::Result<Self> {
         let text = std::fs::read_to_string(&path)?;
         let mut doc = Self::from_text(&text, Some(path));
         doc.rehighlight(hl);
@@ -65,22 +65,23 @@ impl Doc {
         }
     }
 
-    pub fn language(&self) -> &'static str {
-        match self.path.as_ref().and_then(|p| p.extension()).and_then(|e| e.to_str()) {
-            Some("rs") | None => "Rust",
-            _ => "Plain Text",
+    /// Grammar used to colour this file. An unsaved new file is treated as Rust.
+    pub fn syntax(&self) -> Option<Syntax> {
+        match &self.path {
+            Some(p) => Syntax::for_file(self.lang(), Some(p)),
+            None => Some(Syntax::Rust),
         }
     }
 
-    pub fn rehighlight(&mut self, hl: &mut RustHighlighter) {
-        self.classes = if self.language() == "Rust" {
-            hl.highlight(&self.buffer.text())
-        } else {
-            Vec::new()
+    pub fn rehighlight(&mut self, hl: &mut Highlighter) {
+        self.classes = match self.syntax() {
+            Some(syntax) if self.buffer.byte_len() <= MAX_HIGHLIGHT_BYTES => {
+                hl.highlight(syntax, &self.buffer.text())
+            }
+            _ => Vec::new(),
         };
     }
-
-    pub fn edited(&mut self, hl: &mut RustHighlighter) {
+    pub fn edited(&mut self, hl: &mut Highlighter) {
         self.dirty = true;
         self.rehighlight(hl);
     }

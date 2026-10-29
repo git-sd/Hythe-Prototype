@@ -21,7 +21,7 @@ use doc::{Doc, TAB_WIDTH};
 use editor::EditorView;
 use explorer::Node;
 use completion_ui::CompletionUi;
-use highlight::RustHighlighter;
+use highlight::Highlighter;
 use hythe_term::{Profile, SessionId, Snapshot, TerminalManager};
 use palette::Palette;
 use panes::{Axis, Panes};
@@ -89,7 +89,7 @@ struct App {
     menu: Option<usize>,
     /// Open completion popup in the focused editor.
     completion: Option<CompletionUi>,
-    highlighter: RustHighlighter,
+    highlighter: Highlighter,
 }
 
 #[derive(Debug, Clone)]
@@ -157,7 +157,7 @@ impl App {
             palette: None,
             menu: None,
             completion: None,
-            highlighter: RustHighlighter::new(),
+            highlighter: Highlighter::new(),
         };
         if let Some(arg) = std::env::args().nth(1) {
             let path = PathBuf::from(arg);

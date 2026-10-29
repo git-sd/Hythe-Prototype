@@ -13,6 +13,7 @@
 //! Anything else falls back to words from the open files.
 
 mod lang;
+mod lang_extra;
 mod rank;
 mod scan;
 
@@ -168,7 +169,7 @@ pub fn complete(req: &Request) -> Completions {
     // The identifier being typed.
     let mut start = cursor;
     for (i, c) in text[..cursor].char_indices().rev() {
-        if scan::is_ident_char(c, d.dollar_idents) {
+        if scan::is_ident_char(c, d.dollar_idents, lang.dash_idents()) {
             start = i;
         } else {
             break;
@@ -663,6 +664,146 @@ mod tests {
         let src = "let größe = 1;\ngrö|";
         let c = at(Language::Rust, src);
         assert_eq!(c.items[0].label, "größe");
+    }
+
+    const ALL: [Language; 17] = [
+        Language::Rust,
+        Language::Python,
+        Language::JavaScript,
+        Language::TypeScript,
+        Language::Go,
+        Language::C,
+        Language::Cpp,
+        Language::Java,
+        Language::CSharp,
+        Language::Ruby,
+        Language::Php,
+        Language::Shell,
+        Language::Html,
+        Language::Css,
+        Language::Json,
+        Language::Toml,
+        Language::Plain,
+    ];
+
+    #[test]
+    fn every_language_has_well_formed_data() {
+        for lang in ALL {
+            let d = lang.data();
+            let mut triggers = HashSet::new();
+            for (trigger, detail, body) in d.snippets {
+                assert!(triggers.insert(*trigger), "{lang:?}: duplicate snippet `{trigger}`");
+                assert!(!detail.is_empty() && !body.is_empty(), "{lang:?}: empty snippet `{trigger}`");
+                // Placeholders must be closed and the expansion must not be empty.
+                assert_eq!(body.matches("${").count(), body.matches('}').count().min(body.matches("${").count()),
+                    "{lang:?}: unbalanced placeholder in `{trigger}`");
+                let item = Item { label: trigger.to_string(), insert: body.to_string(), kind: Kind::Snippet, detail: String::new() };
+                let e = item.expand("  ");
+                assert!(!e.text.is_empty(), "{lang:?}: `{trigger}` expands to nothing");
+                assert!(e.select.0 <= e.select.1 && e.select.1 <= e.text.chars().count(), "{lang:?}: bad selection for `{trigger}`");
+                assert!(!e.text.contains("${") && !e.text.contains("$0"), "{lang:?}: unresolved marker in `{trigger}`");
+            }
+            for (label, insert, _) in d.builtins.iter().chain(d.members) {
+                assert!(!label.is_empty(), "{lang:?}: empty label");
+                let _ = insert;
+            }
+            for kw in d.keywords {
+                assert!(!kw.is_empty() && !kw.contains(' '), "{lang:?}: odd keyword `{kw}`");
+            }
+        }
+    }
+
+    #[test]
+    fn every_programming_language_has_snippets_and_names() {
+        for lang in ALL {
+            if lang == Language::Plain {
+                continue;
+            }
+            assert!(lang.data().snippets.len() >= 4, "{lang:?} has too few snippets");
+            assert!(!lang.name().is_empty());
+        }
+        // Names that show in the status bar.
+        assert_eq!(Language::CSharp.name(), "C#");
+        assert_eq!(Language::Php.name(), "PHP");
+    }
+
+    #[test]
+    fn extensions_map_to_the_new_languages() {
+        for (ext, lang) in [
+            ("cs", Language::CSharp),
+            ("rb", Language::Ruby),
+            ("php", Language::Php),
+            ("sh", Language::Shell),
+            ("bash", Language::Shell),
+            ("html", Language::Html),
+            ("css", Language::Css),
+            ("json", Language::Json),
+            ("toml", Language::Toml),
+        ] {
+            assert_eq!(Language::from_extension(ext), lang, ".{ext}");
+        }
+    }
+
+    #[test]
+    fn new_languages_complete() {
+        let c = at(Language::CSharp, "Console.Wri|");
+        assert!(labels(&c).contains(&"WriteLine"), "{:?}", labels(&c));
+        let c = at(Language::CSharp, "cw|");
+        assert_eq!(c.items[0].label, "cw");
+        let c = at(Language::Ruby, "list.each_w|");
+        assert_eq!(c.items[0].label, "each_with_index");
+        let c = at(Language::Ruby, "attr_acc|");
+        assert_eq!(c.items[0].label, "attr_accessor");
+        let c = at(Language::Php, "<?php\n$user = 1;\n$us|");
+        assert_eq!(c.items[0].label, "$user");
+        let c = at(Language::Php, "array_ma|");
+        assert_eq!(c.items[0].label, "array_map");
+        let c = at(Language::Shell, "shebang|");
+        assert_eq!(c.items[0].label, "shebang");
+        // Variables are written with their `$`, so that is the word.
+        let c = at(Language::Shell, "echo $FILE_COUNT\necho $FILE_C|");
+        assert_eq!(c.items[0].label, "$FILE_COUNT");
+    }
+
+    #[test]
+    fn html_css_json_toml() {
+        let c = at(Language::Html, "html5|");
+        assert_eq!(c.items[0].label, "html5");
+        let c = at(Language::Html, "<div clas|");
+        assert_eq!(c.items[0].label, "class");
+        // Hyphenated names are one word in CSS.
+        let c = at(Language::Css, "a { background-c| }");
+        assert_eq!(c.items[0].label, "background-color");
+        assert_eq!(c.start, "a { ".len());
+        let c = at(Language::Css, "flexc|");
+        assert_eq!(c.items[0].label, "flexc");
+        let c = at(Language::Json, "tru|");
+        assert_eq!(c.items[0].label, "true");
+        let c = at(Language::Toml, "[dep|");
+        assert_eq!(c.items[0].label, "dep");
+        assert!(labels(&c).contains(&"deps"));
+    }
+
+    #[test]
+    fn new_snippets_for_the_original_languages() {
+        for (lang, trigger) in [
+            (Language::Rust, "impltrait"),
+            (Language::Rust, "display"),
+            (Language::Python, "listc"),
+            (Language::Python, "argparse"),
+            (Language::JavaScript, "usestate"),
+            (Language::TypeScript, "props"),
+            (Language::Go, "tbl"),
+            (Language::Go, "http"),
+            (Language::C, "malloc"),
+            (Language::Cpp, "uptr"),
+            (Language::Java, "stream"),
+        ] {
+            let src = format!("{trigger}|");
+            let c = at(lang, &src);
+            assert_eq!(c.items[0].label, trigger, "{lang:?}");
+            assert_eq!(c.items[0].kind, Kind::Snippet, "{lang:?} {trigger}");
+        }
     }
 
     #[test]
