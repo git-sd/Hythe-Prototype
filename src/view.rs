@@ -71,7 +71,7 @@ impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let mut main = row![].height(Length::Fill);
         // Source Control wants the width for diffs, so the thread column steps aside.
-        if self.show_term && !self.scm.open {
+        if self.show_term {
             main = main.push(self.agent_panel()).push(divider_v());
         }
         main = main.push(self.editor_area());
@@ -576,7 +576,12 @@ impl App {
 
     fn editor_area(&self) -> Element<'_, Message> {
         if self.scm.open {
-            return self.scm_view();
+            // Source Control is one more tab: the file tabs stay in view above it.
+            return container(column![self.tab_bar(0), self.scm_view()])
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(theme::bg(theme::EDITOR_BG))
+                .into();
         }
         if self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty() {
             return container(self.welcome())
@@ -663,7 +668,8 @@ impl App {
         let pane = &self.panes.list[pane_index];
         let tabs = pane.tabs.iter().enumerate().filter_map(|(i, t)| {
             let d = self.docs.get(t.doc)?;
-            let active = i == pane.active;
+            // No file tab is "current" while the Changes tab is.
+            let active = i == pane.active && !(self.scm.open && pane_index == 0);
             let end: Element<'_, Message> = if d.dirty {
                 button(container(dot(theme::TEXT_DIM)).center(Length::Shrink))
                     .padding([8, 8])
@@ -697,15 +703,15 @@ impl App {
             let n = self.scm.changes.len();
             button(
                 row![
-                    text("Changes").size(13).color(theme::TEXT_DIM),
+                    text("Changes").size(13).color(if self.scm.open { theme::TEXT } else { theme::TEXT_DIM }),
                     text(if n > 0 { n.to_string() } else { String::new() }).size(11).color(theme::ACCENT),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
             )
             .padding([8, 12])
-            .style(theme::flat(false))
-            .on_press(Message::Scm(ScmMsg::Show))
+            .style(theme::flat(self.scm.open))
+            .on_press(Message::Scm(if self.scm.open { ScmMsg::Hide } else { ScmMsg::Show }))
             .into()
         } else {
             space::horizontal().width(Length::Shrink).into()

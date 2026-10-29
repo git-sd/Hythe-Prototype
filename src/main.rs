@@ -271,6 +271,8 @@ impl App {
     }
 
     fn open_file(&mut self, path: PathBuf) {
+        // Opening a file always brings you back to the code.
+        self.scm.open = false;
         if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
             self.panes.open_doc(i);
             return;
@@ -535,6 +537,7 @@ impl App {
             if mods.command() && shift {
                 match c.as_str() {
                     "p" => return self.update(Message::OpenPalette),
+                    "g" => return self.update(Message::Scm(ScmMsg::Show)),
                     "c" => {
                         let copied = self
                             .term_active
@@ -718,6 +721,7 @@ impl App {
             }
             Message::Key(_) => {}
             Message::NewFile => {
+                self.scm.open = false;
                 self.docs.push(Doc::empty());
                 self.panes.open_doc(self.docs.len() - 1);
             }
@@ -765,6 +769,7 @@ impl App {
                 }
             }
             Message::SelectTab { pane, tab } => {
+                self.scm.open = false;
                 self.panes.focus_pane(pane);
                 if let Some(p) = self.panes.list.get_mut(pane) {
                     if tab < p.tabs.len() {
