@@ -128,9 +128,16 @@ impl App {
                 icon_button(Icon::Sidebar, dim, self.show_sidebar, Message::ToggleSidebar),
                 icon_button(Icon::Search, dim, false, Message::OpenPalette),
                 icon_button(Icon::History, dim, false, Message::Unavailable("History")),
-                space::horizontal(),
-                text(doc_name).size(13).color(theme::TEXT_DIM),
-                space::horizontal(),
+                // The empty stretch of the bar drags the window; double-click maximises.
+                mouse_area(
+                    container(text(doc_name).size(13).color(theme::TEXT_DIM))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .center_x(Length::Fill)
+                        .align_y(Alignment::Center),
+                )
+                .on_press(Message::DragWindow)
+                .on_double_click(Message::ToggleMaximize),
                 icon_button(Icon::Eye, dim, false, Message::Unavailable("Follow mode")),
                 self.peer_dots(),
                 icon_button(Icon::Branch, dim, false, Message::GitRefresh),
@@ -142,6 +149,9 @@ impl App {
                 .padding([5, 10])
                 .style(theme::flat(false))
                 .on_press(Message::Collab(CollabMsg::Panel(true))),
+                icon_button(Icon::Minus, dim, false, Message::MinimizeWindow),
+                icon_button(Icon::Expand, dim, false, Message::ToggleMaximize),
+                icon_button(Icon::Close, dim, false, Message::CloseRequested),
             ]
             .spacing(2)
             .align_y(Alignment::Center)

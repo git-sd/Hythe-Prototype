@@ -48,6 +48,7 @@ fn main() -> iced::Result {
             min_size: Some(iced::Size::new(860.0, 520.0)),
             position: window::Position::Centered,
             resizable: true,
+            decorations: false,
             ..window::Settings::default()
         })
         .exit_on_close_request(false)
@@ -193,6 +194,8 @@ pub enum Message {
     /// Shrink and centre the window to fit the monitor (None: size unknown).
     FitWindow(window::Id, Option<iced::Size>),
     ResetWindow,
+    DragWindow,
+    MinimizeWindow,
     ToggleMaximize,
     AvatarReady(Option<PathBuf>),
     Save,
@@ -825,9 +828,11 @@ impl App {
                     window::move_to(id, iced::Point::new(((mw - w) / 2.0).max(0.0), ((mh - h) / 2.0).max(0.0))),
                 ]);
             }
+            Message::DragWindow => return window::oldest().and_then(window::drag),
+            Message::MinimizeWindow => return window::oldest().and_then(|id| window::minimize(id, true)),
             Message::ResetWindow => return self.fit_window_task(),
             Message::ToggleMaximize => return window::oldest().and_then(window::toggle_maximize),
-            Message::AvatarReady(path) => self.avatar = path.map(iced::widget::image::Handle::from_path),
+            Message::AvatarReady(path) => self.avatar = path.and_then(|p| std::fs::read(p).ok()).map(iced::widget::image::Handle::from_bytes),
             Message::Unavailable(what) => self.status = format!("{what} isn't available yet"),
             Message::OpenFile(p) => self.open_file(p),
             Message::ToggleDir(p) => {
