@@ -60,6 +60,9 @@ pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
             item("Split Down", "Ctrl+Shift+\\", Message::Split(Axis::Vertical)),
             item("Close Pane", "", Message::ClosePane),
             item("Focus Next Pane", "Ctrl+1-9", Message::FocusNextPane),
+            Separator,
+            item("Reset Window Size", "Ctrl+Shift+0", Message::ResetWindow),
+            item("Maximize / Restore Window", "", Message::ToggleMaximize),
         ],
         _ => {
             let mut v = vec![

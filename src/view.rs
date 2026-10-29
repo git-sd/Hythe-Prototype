@@ -154,15 +154,9 @@ impl App {
         .into()
     }
 
-    fn menu_dropdown(&self) -> Element<'_, Message> {
-        let kind = self.menu.unwrap_or(0);
-        let entries = match kind {
-            1 => menus::thread_entries(&self.agent_names()),
-            2 => menus::editor_entries(),
-            4 => menus::project_entries(),
-            _ => menus::all_entries(&self.agent_names()),
-        };
-        let rows = entries.into_iter().map(|entry| match entry {
+    /// The row for one menu entry, shared by the flat and cascading menus.
+    fn menu_row(entry: menus::Entry) -> Element<'static, Message> {
+        match entry {
             menus::Entry::Separator => container(divider_h()).padding([4, 6]).into(),
             menus::Entry::Header(title) => container(text(title).size(11).color(theme::TEXT_FAINT))
                 .padding(Padding { top: 6.0, right: 12.0, bottom: 2.0, left: 12.0 })
@@ -181,15 +175,61 @@ impl App {
             .style(theme::row(false))
             .on_press(Message::MenuPick(Box::new(it.message)))
             .into(),
-        });
-        let panel = container(scrollable(column(rows).padding(4)).height(Length::Shrink))
-            .width(Length::Fixed(300.0))
-            .max_height(560.0)
+        }
+    }
+
+    fn menu_panel(rows: Vec<Element<'static, Message>>, width: f32) -> Element<'static, Message> {
+        container(column(rows).padding(4))
+            .width(Length::Fixed(width))
             .style(|_: &Theme| container::Style {
                 background: Some(theme::PANEL_BG.into()),
                 border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 4.0.into() },
                 ..Default::default()
+            })
+            .into()
+    }
+
+    fn menu_dropdown(&self) -> Element<'_, Message> {
+        let kind = self.menu.unwrap_or(0);
+        let panel: Element<'_, Message> = if kind == 0 || kind == 3 {
+            // VS Code style: File / Edit / View / Terminal, each opening a list beside it.
+            let top = menus::MENUS.iter().enumerate().map(|(i, title)| {
+                mouse_area(
+                    button(
+                        row![text(*title).size(13), space::horizontal(), text("›").size(13).color(theme::TEXT_DIM)]
+                            .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .padding([5, 12])
+                    .style(theme::row(self.submenu == i))
+                    .on_press(Message::Submenu(i)),
+                )
+                .on_enter(Message::Submenu(i))
+                .into()
             });
+            let top_panel = Self::menu_panel(top.collect(), 150.0);
+            let sub_rows = menus::entries(self.submenu, &self.agent_names()).into_iter().map(Self::menu_row);
+            let sub_panel = Self::menu_panel(sub_rows.collect(), 280.0);
+            // Line the list up with the entry that opened it.
+            let offset = if kind == 0 { self.submenu as f32 * 29.0 } else { 0.0 };
+            let side = column![space::vertical().height(Length::Fixed(offset)), sub_panel];
+            row![top_panel, side].spacing(2).align_y(if kind == 0 { Alignment::Start } else { Alignment::End }).into()
+        } else {
+            let entries = match kind {
+                1 => menus::thread_entries(&self.agent_names()),
+                2 => menus::editor_entries(),
+                _ => menus::project_entries(),
+            };
+            container(scrollable(column(entries.into_iter().map(Self::menu_row)).padding(4)).height(Length::Shrink))
+                .width(Length::Fixed(300.0))
+                .max_height(560.0)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::PANEL_BG.into()),
+                    border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 4.0.into() },
+                    ..Default::default()
+                })
+                .into()
+        };
         // Each menu opens beside the button that asked for it.
         let sidebar_left = if self.show_sidebar { SIDEBAR_W + 1.0 } else { 0.0 };
         let (align_x, align_y, pad) = match kind {
@@ -454,13 +494,21 @@ impl App {
     fn account_chip(&self) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
         let initial = self.user.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
-        let avatar = container(text(initial).size(13).color(Color::WHITE))
-            .center(Length::Fixed(32.0))
-            .style(|_: &Theme| container::Style {
-                background: Some(Color::from_rgb8(0x5a, 0x7f, 0xb8).into()),
-                border: iced::Border { radius: 16.0.into(), ..Default::default() },
-                ..Default::default()
-            });
+        let avatar: Element<'_, Message> = match &self.avatar {
+            Some(handle) => iced::widget::image(handle.clone())
+                .width(Length::Fixed(32.0))
+                .height(Length::Fixed(32.0))
+                .border_radius(16.0)
+                .into(),
+            None => container(text(initial).size(13).color(Color::WHITE))
+                .center(Length::Fixed(32.0))
+                .style(|_: &Theme| container::Style {
+                    background: Some(Color::from_rgb8(0x5a, 0x7f, 0xb8).into()),
+                    border: iced::Border { radius: 16.0.into(), ..Default::default() },
+                    ..Default::default()
+                })
+                .into(),
+        };
         let subtitle = self
             .git
             .as_ref()
@@ -727,18 +775,27 @@ impl App {
         ));
         let changes_tab: Element<'_, Message> = if pane_index == 0 {
             let n = self.scm.changes.len();
-            button(
-                row![
-                    text("Changes").size(13).color(if self.scm.open { theme::TEXT } else { theme::TEXT_DIM }),
-                    text(if n > 0 { n.to_string() } else { String::new() }).size(11).color(theme::ACCENT),
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center),
-            )
-            .padding([8, 12])
-            .style(theme::flat(self.scm.open))
-            .on_press(Message::Scm(if self.scm.open { ScmMsg::Hide } else { ScmMsg::Show }))
-            .into()
+            let open = self.scm.open;
+            let label = row![
+                text("Changes").size(13).color(if open { theme::TEXT } else { theme::TEXT_DIM }),
+                text(if n > 0 { n.to_string() } else { String::new() }).size(11).color(theme::ACCENT),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center);
+            let mut tab = row![button(label)
+                .padding([8, 6])
+                .style(theme::flat(false))
+                .on_press(Message::Scm(if open { ScmMsg::Hide } else { ScmMsg::Show }))]
+            .align_y(Alignment::Center)
+            .padding([0, 4]);
+            if open {
+                tab = tab.push(icon_button(Icon::Close, theme::TEXT_FAINT, false, Message::Scm(ScmMsg::Hide)));
+            }
+            container(tab)
+                .height(Length::Fixed(TAB_H))
+                .align_y(Alignment::Center)
+                .style(theme::bg(if open { theme::EDITOR_BG } else { theme::TAB_BAR_BG }))
+                .into()
         } else {
             space::horizontal().width(Length::Shrink).into()
         };

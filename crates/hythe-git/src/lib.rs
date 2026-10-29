@@ -342,6 +342,19 @@ impl Repo {
         Ok(parse_blame(&out))
     }
 
+    /// The GitHub username for this repository's owner, for fetching their profile
+    /// picture: `github.user` if set, else a `user.name` that looks like a login,
+    /// else the owner in the `origin` remote.
+    pub fn github_user(&self) -> Option<String> {
+        let config = |key: &str| {
+            self.git(&["config", "--get", key]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        };
+        config("github.user")
+            .filter(|u| is_github_login(u))
+            .or_else(|| config("user.name").filter(|u| is_github_login(u)))
+            .or_else(|| self.git(&["remote", "get-url", "origin"]).ok().and_then(|u| github_owner(u.trim())))
+    }
+
     /// The most recent `limit` commits on the current branch, newest first.
     pub fn log(&self, limit: usize) -> Result<Vec<Commit>> {
         let n = limit.to_string();
@@ -426,6 +439,26 @@ pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
     let name = dest.file_name().ok_or("choose a folder to clone into")?.to_string_lossy().into_owned();
     run(parent, &["clone", "--", url, &name]).map(|_| ())
 }
+/// Whether `s` could be a GitHub username (letters, digits and inner hyphens).
+pub fn is_github_login(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 39
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// The owner in a GitHub remote URL (`https://github.com/owner/repo.git`,
+/// `git@github.com:owner/repo.git`, `ssh://git@github.com/owner/repo`).
+pub fn github_owner(url: &str) -> Option<String> {
+    let rest = url
+        .split_once("github.com/")
+        .or_else(|| url.split_once("github.com:"))
+        .map(|(_, r)| r)?;
+    let owner = rest.split('/').next()?;
+    is_github_login(owner).then(|| owner.to_string())
+}
+
 /// Parse `git log` output made with the separators used by [`Repo::log`].
 pub fn parse_log(text: &str) -> Vec<Commit> {
     text.split('\u{1e}')
@@ -816,6 +849,25 @@ mod tests {
         let diff = f.repo.commit_diff(&log[0].sha, "a.txt").unwrap();
         assert!(diff.iter().any(|l| l.kind == LineKind::Added && l.text == "TWO"));
         assert!(diff.iter().any(|l| l.kind == LineKind::Removed && l.text == "two"));
+    }
+
+    #[test]
+    fn github_usernames_come_from_config_or_the_remote() {
+        assert_eq!(github_owner("https://github.com/git-sd/Hythe-Prototype.git").as_deref(), Some("git-sd"));
+        assert_eq!(github_owner("git@github.com:rust-lang/rust.git").as_deref(), Some("rust-lang"));
+        assert_eq!(github_owner("ssh://git@github.com/a1/b").as_deref(), Some("a1"));
+        assert_eq!(github_owner("https://gitlab.com/x/y.git"), None);
+        assert!(is_github_login("git-sd") && !is_github_login("Shreyan Das") && !is_github_login("-x") && !is_github_login(""));
+
+        let f = Fixture::new();
+        // "Test User" isn't a login and there's no remote yet.
+        assert_eq!(f.repo.github_user(), None);
+        run(&f.dir, &["remote", "add", "origin", "https://github.com/someone/proj.git"]).unwrap();
+        assert_eq!(f.repo.github_user().as_deref(), Some("someone"));
+        run(&f.dir, &["config", "user.name", "octocat"]).unwrap();
+        assert_eq!(f.repo.github_user().as_deref(), Some("octocat"));
+        run(&f.dir, &["config", "github.user", "preferred"]).unwrap();
+        assert_eq!(f.repo.github_user().as_deref(), Some("preferred"));
     }
 
     #[test]

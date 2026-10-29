@@ -6,7 +6,7 @@ use iced::{Alignment, Color, Element, Font, Length, Padding, Theme};
 
 use crate::icons::{icon, Icon};
 use crate::scm::{ScmMsg, ScmTab};
-use crate::view::{divider_h, divider_v, icon_button, list_row, BAR_H, SIDEBAR_W, TAB_H};
+use crate::view::{divider_h, divider_v, icon_button, list_row, BAR_H, SIDEBAR_W};
 use crate::{theme, App, Message};
 
 const MAX_DIFF_LINES: usize = 3000;
@@ -25,32 +25,26 @@ fn status_color(s: Status) -> Color {
 
 impl App {
     pub(crate) fn scm_view(&self) -> Element<'_, Message> {
-        let header = container(
-            row![
-                row![
-                    tab_button("Changes", self.scm.tab == ScmTab::Changes, ScmTab::Changes),
-                    tab_button("History", self.scm.tab == ScmTab::History, ScmTab::History),
-                ]
-                .spacing(2)
-                .padding([0, 8]),
-                space::horizontal(),
-                icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::Hide)),
-            ]
-            .align_y(Alignment::Center)
-            .padding([0, 6]),
-        )
-        .width(Length::Fill)
-        .height(Length::Fixed(TAB_H))
-        .align_y(Alignment::Center)
-        .style(theme::bg(theme::TAB_BAR_BG));
-
-        container(column![header, divider_h(), row![self.scm_left(), divider_v(), self.scm_diff()]])
+        container(row![self.scm_left(), divider_v(), self.scm_diff()])
             .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::bg(theme::EDITOR_BG))
             .into()
     }
 
+    /// Changes | History, as one compact switch at the top of the left column.
+    fn mode_switch(&self) -> Element<'static, Message> {
+        container(row![
+            tab_button("Changes", self.scm.tab == ScmTab::Changes, ScmTab::Changes),
+            tab_button("History", self.scm.tab == ScmTab::History, ScmTab::History),
+        ])
+        .padding(2)
+        .style(|_: &Theme| container::Style {
+            border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 3.0.into() },
+            ..Default::default()
+        })
+        .into()
+    }
     fn scm_left(&self) -> Element<'_, Message> {
         if self.scm.tab == ScmTab::History {
             return self.history_left();
@@ -71,6 +65,7 @@ impl App {
         };
 
         let top = column![
+            self.mode_switch(),
             row![
                 button(
                     row![icon(Icon::Branch, 14.0, dim), text(branch).size(13), icon(Icon::ChevronDown, 11.0, dim)]
@@ -268,7 +263,7 @@ impl App {
         .spacing(8)
         .align_y(Alignment::Center);
 
-        container(column![top, scrollable(list).height(Length::Fill)].spacing(8).padding(10))
+        container(column![self.mode_switch(), top, scrollable(list).height(Length::Fill)].spacing(8).padding(10))
             .width(Length::Fixed(340.0))
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))
@@ -460,8 +455,9 @@ fn diff_body(diff: &[DiffLine]) -> Element<'static, Message> {
 
 /// A tab in the Source Control header.
 fn tab_button(label: &'static str, selected: bool, tab: ScmTab) -> Element<'static, Message> {
-    button(text(label).size(13).color(if selected { theme::TEXT } else { theme::TEXT_DIM }))
-        .padding([6, 12])
+    button(text(label).size(12).color(if selected { theme::TEXT } else { theme::TEXT_DIM }).center().width(Length::Fill))
+        .width(Length::Fill)
+        .padding([4, 12])
         .style(theme::flat(selected))
         .on_press(scm(ScmMsg::Tab(tab)))
         .into()

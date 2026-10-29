@@ -45,6 +45,8 @@ fn all(agents: &[String]) -> Vec<Command> {
         c("Focus Next Pane", "Ctrl+1-9", Message::FocusNextPane),
         c("Close Repository", "", Message::CloseProject),
         c("Source Control", "Ctrl+Shift+G", Message::Scm(ScmMsg::Show)),
+        c("Reset Window Size", "Ctrl+Shift+0", Message::ResetWindow),
+        c("Maximize / Restore Window", "", Message::ToggleMaximize),
         c("Git: Push", "", Message::Scm(ScmMsg::Push)),
         c("Git: Pull", "", Message::Scm(ScmMsg::Pull)),
         c("Git: Fetch", "", Message::Scm(ScmMsg::Fetch)),

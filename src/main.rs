@@ -1,4 +1,5 @@
 mod add_repo;
+mod avatar;
 mod buffer;
 mod collab;
 mod completion_ui;
@@ -41,7 +42,14 @@ fn main() -> iced::Result {
         .title(App::title)
         .subscription(App::subscription)
         .theme(|_: &App| Theme::Dark)
-        .window_size((1360.0, 820.0))
+        // Start modest and centred; `FitWindow` then shrinks it to the monitor if needed.
+        .window(window::Settings {
+            size: iced::Size::new(1280.0, 780.0),
+            min_size: Some(iced::Size::new(860.0, 520.0)),
+            position: window::Position::Centered,
+            resizable: true,
+            ..window::Settings::default()
+        })
         .exit_on_close_request(false)
         .run()
 }
@@ -115,6 +123,11 @@ struct App {
     add_repo: AddRepo,
     /// The agent dropdown in the empty thread panel is open.
     agent_menu: bool,
+    /// Open submenu in the cascading main menu (index into `menus::MENUS`).
+    submenu: usize,
+    /// GitHub profile picture for the account chip.
+    avatar: Option<iced::widget::image::Handle>,
+    avatar_tried: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -175,6 +188,13 @@ pub enum Message {
     GitRefresh,
     /// A button for a feature that isn't built yet.
     Unavailable(&'static str),
+    /// Hover or click on a top-level entry of the cascading menu.
+    Submenu(usize),
+    /// Shrink and centre the window to fit the monitor (None: size unknown).
+    FitWindow(window::Id, Option<iced::Size>),
+    ResetWindow,
+    ToggleMaximize,
+    AvatarReady(Option<PathBuf>),
     Save,
     CloseActive,
     Undo,
@@ -186,7 +206,7 @@ pub enum Message {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new() -> (Self, Task<Message>) {
         let mut app = App {
             docs: Vec::new(),
             panes: Panes::new(),
@@ -216,6 +236,9 @@ impl App {
             collab_ui: CollabUi::default(),
             add_repo: AddRepo::default(),
             agent_menu: false,
+            submenu: 0,
+            avatar: None,
+            avatar_tried: false,
         };
         app.projects = app.persisted.projects.iter().map(|p| Project { path: p.clone(), ws: None }).collect();
         // Scripted runs: HYTHE_COLLAB="ws://host:port|room|name" joins a room on startup.
@@ -242,7 +265,28 @@ impl App {
                 let _ = app.collab_update(CollabMsg::Connect);
             }
         }
-        app
+        let task = Task::batch([app.fit_window_task(), app.avatar_task()]);
+        (app, task)
+    }
+
+    fn fit_window_task(&self) -> Task<Message> {
+        window::oldest().and_then(|id| window::monitor_size(id).map(move |s| Message::FitWindow(id, s)))
+    }
+
+    /// Fetch the GitHub profile picture once a repository (and so a username) is known.
+    fn avatar_task(&mut self) -> Task<Message> {
+        if self.avatar.is_some() || self.avatar_tried {
+            return Task::none();
+        }
+        let user = self.repo.as_ref().and_then(|r| r.github_user()).or_else(|| {
+            Some(self.user.clone()).filter(|u| hythe_git::is_github_login(u))
+        });
+        let Some(user) = user else { return Task::none() };
+        self.avatar_tried = true;
+        Task::perform(
+            async move { tokio::task::spawn_blocking(move || avatar::fetch(&user)).await.ok().flatten() },
+            Message::AvatarReady,
+        )
     }
 
     fn refresh_git(&mut self) {
@@ -538,6 +582,7 @@ impl App {
                 match c.as_str() {
                     "p" => return self.update(Message::OpenPalette),
                     "g" => return self.update(Message::Scm(ScmMsg::Show)),
+                    "0" | ")" => return self.update(Message::ResetWindow),
                     "c" => {
                         let copied = self
                             .term_active
@@ -736,7 +781,10 @@ impl App {
                 }
             }
             Message::OpenRecent(p) => self.open_folder(p),
-            Message::SwitchProject(i) => self.switch_project(i),
+            Message::SwitchProject(i) => {
+                self.switch_project(i);
+                return self.avatar_task();
+            }
             Message::CloseProject => {
                 if let Some(i) = self.active_project {
                     self.close_project(i);
@@ -756,11 +804,30 @@ impl App {
                     None => self.status = "Save the file before pinning it".into(),
                 }
             }
-            Message::GitRefresh => self.refresh_git(),
+            Message::GitRefresh => {
+                self.refresh_git();
+                return self.avatar_task();
+            }
             Message::Scm(m) => return self.scm_update(m),
             Message::Collab(m) => return self.collab_update(m),
             Message::AddRepo(m) => return self.add_repo_update(m),
             Message::AgentMenu(open) => self.agent_menu = open,
+            Message::Submenu(i) => self.submenu = i,
+            Message::FitWindow(id, size) => {
+                let (w, h) = match size {
+                    Some(m) => ((m.width * 0.9).min(1280.0), (m.height * 0.85).min(780.0)),
+                    None => (1100.0, 700.0),
+                };
+                let (mw, mh) = size.map(|m| (m.width, m.height)).unwrap_or((w, h));
+                return Task::batch([
+                    window::maximize(id, false),
+                    window::resize(id, iced::Size::new(w, h)),
+                    window::move_to(id, iced::Point::new(((mw - w) / 2.0).max(0.0), ((mh - h) / 2.0).max(0.0))),
+                ]);
+            }
+            Message::ResetWindow => return self.fit_window_task(),
+            Message::ToggleMaximize => return window::oldest().and_then(window::toggle_maximize),
+            Message::AvatarReady(path) => self.avatar = path.map(iced::widget::image::Handle::from_path),
             Message::Unavailable(what) => self.status = format!("{what} isn't available yet"),
             Message::OpenFile(p) => self.open_file(p),
             Message::ToggleDir(p) => {
@@ -823,6 +890,7 @@ impl App {
             Message::OpenMenu(i) => {
                 // Clicking the open menu's button again closes it.
                 self.menu = if self.menu == Some(i) { None } else { Some(i) };
+                self.submenu = 0;
             }
             Message::CloseMenu => self.menu = None,
             Message::MenuPick(inner) => {
@@ -984,6 +1052,7 @@ impl App {
                     ("p", true) => return self.update(Message::OpenPalette),
                     ("b", _) => return self.update(Message::ToggleSidebar),
                     ("g", true) => return self.update(Message::Scm(ScmMsg::Show)),
+                    ("0", true) | (")", _) => return self.update(Message::ResetWindow),
                     ("`", false) => return self.update(Message::ToggleTerminal),
                     ("`", true) | ("~", _) => return self.update(Message::NewTerminal(None)),
                     ("\\", false) => return self.update(Message::Split(Axis::Horizontal)),
