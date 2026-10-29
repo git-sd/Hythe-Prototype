@@ -221,7 +221,6 @@ impl App {
         match msg {
             ScmMsg::Show => {
                 self.scm.open = true;
-                self.chat.open = false;
                 self.focus_term = false;
                 self.scm.reload(&repo);
             }

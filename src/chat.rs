@@ -5,18 +5,17 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use hythe_git::ChatMessage;
-use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, space, text, text_input};
 use iced::{Alignment, Color, Element, Length, Padding, Task, Theme};
 
 use crate::icons::{icon, Icon};
 use crate::view::{divider_h, icon_button, TAB_H};
-use crate::{theme, App, Message};
+use crate::{theme, App, Handle, Message};
 
 const HISTORY: usize = 300;
 
 #[derive(Default)]
 pub struct Chat {
-    pub open: bool,
     pub messages: Vec<ChatMessage>,
     pub input: String,
     /// Files chosen to go with the next message.
@@ -100,14 +99,12 @@ impl App {
                     self.status = "This folder isn't a git repository".into();
                     return Task::none();
                 }
-                self.chat.open = true;
                 self.chat.dismissed = false;
                 self.scm.open = false;
                 self.focus_term = false;
                 return Task::batch([self.chat_load(), self.chat_sync()]);
             }
-            ChatMsg::Hide => self.chat.open = false,
-            ChatMsg::Dismiss => self.chat.dismissed = true,
+            ChatMsg::Hide | ChatMsg::Dismiss => self.chat.dismissed = true,
             ChatMsg::Input(s) => self.chat.input = s,
             ChatMsg::Attach => {
                 if let Some(files) = rfd::FileDialog::new().set_title("Attach files").pick_files() {
@@ -219,18 +216,13 @@ impl App {
         Task::none()
     }
 
-    /// The chat fills the editor area when asked for, and also stands in for the
-    /// welcome screen while no file is open.
+    /// The chat is a side panel, on for every repository until closed.
     pub(crate) fn chat_visible(&self) -> bool {
-        self.chat.open || self.chat_in_welcome()
+        self.repo.is_some() && !self.chat.dismissed
     }
 
-    pub(crate) fn chat_in_welcome(&self) -> bool {
-        self.repo.is_some() && !self.chat.dismissed && !self.scm.open && self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty()
-    }
-
-    /// `embedded`: shown in place of the welcome screen; its close button brings the welcome menu back.
-    pub(crate) fn chat_view(&self, embedded: bool) -> Element<'_, Message> {
+    /// The chat panel. Drag its header to dock it on the other side.
+    pub(crate) fn chat_view(&self) -> Element<'_, Message> {
         let c = &self.chat;
         let dim = theme::TEXT_DIM;
         let msg = |m: ChatMsg| Message::Chat(m);
@@ -251,7 +243,7 @@ impl App {
                     .padding([4, 10])
                     .style(theme::flat(false))
                     .on_press_maybe(c.busy.is_none().then(|| msg(ChatMsg::Sync))),
-                icon_button(Icon::Close, theme::TEXT_FAINT, false, msg(if embedded { ChatMsg::Dismiss } else { ChatMsg::Hide })),
+                icon_button(Icon::Close, theme::TEXT_FAINT, false, msg(ChatMsg::Hide)),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -260,9 +252,10 @@ impl App {
         .height(Length::Fixed(TAB_H))
         .width(Length::Fill)
         .align_y(Alignment::Center);
+        let header = mouse_area(header).on_press(Message::DragStart(Handle::ChatDock)).interaction(iced::mouse::Interaction::Grab);
 
         let now = now_secs();
-        let mut list = column![].spacing(14).padding(Padding { top: 12.0, right: 16.0, bottom: 12.0, left: 16.0 });
+        let mut list = column![].spacing(14).padding(Padding { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 });
         if c.messages.is_empty() {
             list = list.push(
                 container(
@@ -315,9 +308,9 @@ impl App {
 
         // The 2px matches the focus line above the thread column, so the rules line up.
         container(column![space::vertical().height(Length::Fixed(2.0)), header, divider_h(), scrollable(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
-            .width(Length::Fill)
+            .width(Length::Fixed(self.chat_w))
             .height(Length::Fill)
-            .style(theme::bg(theme::EDITOR_BG))
+            .style(theme::bg(theme::PANEL_BG))
             .into()
     }
 
@@ -325,14 +318,14 @@ impl App {
         let c = &self.chat;
         let hue = m.author.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
         let avatar: Element<'a, Message> = match m.login.as_ref().and_then(|l| self.member_avatars.get(l)) {
-            Some(h) => iced::widget::image(h.clone()).width(Length::Fixed(38.0)).height(Length::Fixed(38.0)).border_radius(19.0).into(),
+            Some(h) => iced::widget::image(h.clone()).width(Length::Fixed(30.0)).height(Length::Fixed(30.0)).border_radius(15.0).into(),
             None => {
                 let color = crate::view::hsv(hue as f32);
-                container(text(m.author.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()).size(15).color(Color::WHITE))
-                    .center(Length::Fixed(38.0))
+                container(text(m.author.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()).size(13).color(Color::WHITE))
+                    .center(Length::Fixed(30.0))
                     .style(move |_: &Theme| container::Style {
                         background: Some(color.into()),
-                        border: iced::Border { radius: 19.0.into(), ..Default::default() },
+                        border: iced::Border { radius: 15.0.into(), ..Default::default() },
                         ..Default::default()
                     })
                     .into()
@@ -347,7 +340,7 @@ impl App {
 
         let mut body = column![who].spacing(3);
         if !m.body.trim().is_empty() {
-            body = body.push(text(m.body.clone()).size(14));
+            body = body.push(text(m.body.clone()).size(13));
         }
         for att in &m.attachments {
             let save = Message::Chat(ChatMsg::Save(att.entry.clone(), att.name.clone()));
@@ -356,8 +349,8 @@ impl App {
                     body = body.push(
                         button(
                             container(iced::widget::image(h.clone()).content_fit(iced::ContentFit::Contain))
-                                .width(Length::Fixed(320.0))
-                                .height(Length::Fixed(220.0))
+                                .width(Length::Fill)
+                                .height(Length::Fixed(170.0))
                                 .align_x(Alignment::Start),
                         )
                         .padding(0)
@@ -379,6 +372,6 @@ impl App {
                 }
             }
         }
-        row![avatar, body.width(Length::Fill)].spacing(12).into()
+        row![avatar, body.width(Length::Fill)].spacing(10).into()
     }
 }

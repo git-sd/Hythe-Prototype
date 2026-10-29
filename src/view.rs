@@ -26,6 +26,7 @@ pub(crate) const LIST_W: f32 = 232.0;
 pub(crate) const AGENT_W: f32 = 470.0;
 pub(crate) const SCM_W: f32 = 340.0;
 pub(crate) const MEMBERS_W: f32 = 220.0;
+pub(crate) const CHAT_W: f32 = 300.0;
 /// Width of a draggable divider (the visible line is 1px in the middle).
 pub(crate) const HANDLE_W: f32 = 5.0;
 
@@ -110,6 +111,10 @@ impl App {
         let mut main = row![].height(Length::Fill);
         // Source Control wants the width for diffs, so the thread column steps aside.
         let agent_right = self.show_term && self.agent_right;
+        let chat_on = self.chat_visible();
+        if chat_on && !self.chat_right {
+            main = main.push(self.chat_view()).push(self.handle(Handle::Chat, true));
+        }
         if self.show_term && !agent_right {
             main = main.push(self.agent_panel()).push(self.handle(Handle::Agent, true));
         }
@@ -119,6 +124,9 @@ impl App {
         }
         if agent_right {
             main = main.push(self.handle(Handle::Agent, true)).push(self.agent_panel());
+        }
+        if chat_on && self.chat_right {
+            main = main.push(self.handle(Handle::Chat, true)).push(self.chat_view());
         }
         let right = column![main, divider_h(), self.bottom_bar()].width(Length::Fill);
 
@@ -188,8 +196,8 @@ impl App {
                 icon_button(
                     Icon::Chat,
                     dim,
-                    self.chat.open,
-                    Message::Chat(if self.chat.open { ChatMsg::Hide } else { ChatMsg::Show }),
+                    self.chat_visible(),
+                    Message::Chat(if self.chat_visible() { ChatMsg::Hide } else { ChatMsg::Show }),
                 ),
                 icon_button(Icon::Branch, dim, false, Message::GitRefresh),
                 button(
@@ -298,7 +306,14 @@ impl App {
             1 => (
                 Alignment::Start,
                 Alignment::Start,
-                Padding { top: TITLE_H + 42.0, left: if self.agent_right { (self.win.width - 300.0 - 8.0).max(8.0) } else { (sidebar_left + self.agent_w - 300.0 - 8.0).max(8.0) }, ..Padding::ZERO },
+                Padding { top: TITLE_H + 42.0, left: {
+                    let chat = if self.chat_visible() { self.chat_w + HANDLE_W } else { 0.0 };
+                    if self.agent_right {
+                        (self.win.width - if self.chat_right { chat } else { 0.0 } - 300.0 - 8.0).max(8.0)
+                    } else {
+                        (sidebar_left + if self.chat_right { 0.0 } else { chat } + self.agent_w - 300.0 - 8.0).max(8.0)
+                    }
+                }, ..Padding::ZERO },
             ),
             // Editor tabs "…": right edge of the window, under the tab bar.
             2 => (Alignment::End, Alignment::Start, Padding { top: TITLE_H + 40.0, right: 8.0, ..Padding::ZERO }),
@@ -722,9 +737,6 @@ impl App {
     // --- editor area ---
 
     fn editor_area(&self) -> Element<'_, Message> {
-        if self.chat.open {
-            return self.chat_view(false);
-        }
         if self.scm.open {
             // Source Control is one more tab: the file tabs stay in view above it.
             return container(column![self.tab_bar(0), self.scm_view()])
@@ -734,9 +746,6 @@ impl App {
                 .into();
         }
         if self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty() {
-            if self.chat_in_welcome() {
-                return self.chat_view(true);
-            }
             return container(self.welcome())
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -980,7 +989,7 @@ impl App {
             icon_button(Icon::Bug, dim, false, Message::Unavailable("The debugger")),
             icon_button(Icon::Outline, dim, false, Message::Unavailable("Outline")),
             icon_button(Icon::Users, dim, self.collab.is_some(), Message::Collab(CollabMsg::Panel(true))),
-            icon_button(Icon::Chat, dim, self.chat.open, Message::Chat(if self.chat.open { ChatMsg::Hide } else { ChatMsg::Show })),
+            icon_button(Icon::Chat, dim, self.chat_visible(), Message::Chat(if self.chat_visible() { ChatMsg::Hide } else { ChatMsg::Show })),
             icon_button(Icon::Branch, dim, self.scm.open, Message::Scm(ScmMsg::Show)),
             icon_button(Icon::Panels, dim, self.show_sidebar, Message::ToggleSidebar),
         ]

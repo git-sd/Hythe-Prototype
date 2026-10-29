@@ -170,6 +170,9 @@ struct App {
     item_drag: Option<Item>,
     /// The thread column is docked on the right instead of the left.
     agent_right: bool,
+    chat_w: f32,
+    /// The chat panel is docked on the right (otherwise the left).
+    chat_right: bool,
 }
 
 /// Something in a list that can be dragged to a new place in it.
@@ -199,6 +202,9 @@ pub enum Handle {
     Members,
     /// The thread column's header: drag it to the other side of the window.
     Dock,
+    Chat,
+    /// The chat header: drag it to the other side of the window.
+    ChatDock,
     /// Between editor pane `n` and `n + 1`.
     Panes(usize),
 }
@@ -367,6 +373,8 @@ impl App {
             tab_drag: None,
             item_drag: None,
             agent_right: false,
+            chat_w: view::CHAT_W,
+            chat_right: true,
         };
         app.projects = app.persisted.projects.iter().map(|p| Project { path: p.clone(), ws: None }).collect();
         // Scripted runs: HYTHE_COLLAB="ws://host:port|room|name" joins a room on startup.
@@ -496,7 +504,6 @@ impl App {
     fn open_file(&mut self, path: PathBuf) {
         // Opening a file always brings you back to the code.
         self.scm.open = false;
-        self.chat.open = false;
         if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
             self.panes.open_doc(i);
             return;
@@ -947,7 +954,6 @@ impl App {
             Message::Key(_) => {}
             Message::NewFile => {
                 self.scm.open = false;
-                self.chat.open = false;
                 self.docs.push(Doc::empty());
                 self.panes.open_doc(self.docs.len() - 1);
             }
@@ -1083,7 +1089,6 @@ impl App {
             }
             Message::SelectTab { pane, tab } => {
                 self.scm.open = false;
-                self.chat.open = false;
                 self.panes.focus_pane(pane);
                 if let Some(p) = self.panes.list.get_mut(pane) {
                     if tab < p.tabs.len() {
@@ -1461,17 +1466,30 @@ impl App {
     fn drag_to(&mut self, p: iced::Point) {
         let Some(mut drag) = self.drag else { return };
         let sidebar = if self.show_sidebar { view::RAIL_W + self.list_w + view::HANDLE_W } else { 0.0 };
-        let left = sidebar + if self.show_term && !self.agent_right { self.agent_w + view::HANDLE_W } else { 0.0 };
         let win = self.win;
+        // What is docked beside the editor on each side, handles included.
+        let chat_on = self.chat_visible();
+        let chat_l = if chat_on && !self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
+        let chat_r = if chat_on && self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
+        let agent_l = if self.show_term && !self.agent_right { self.agent_w + view::HANDLE_W } else { 0.0 };
+        let agent_r = if self.show_term && self.agent_right { self.agent_w + view::HANDLE_W } else { 0.0 };
+        let left = sidebar + chat_l + agent_l;
         match drag.handle {
             Handle::List => self.list_w = (p.x - view::RAIL_W).clamp(140.0, (win.width - 300.0).clamp(140.0, 480.0)),
             Handle::Agent if self.agent_right => {
-                self.agent_w = (win.width - p.x).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
+                self.agent_w = (win.width - chat_r - p.x).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
             }
-            Handle::Agent => self.agent_w = (p.x - sidebar).clamp(220.0, (win.width - sidebar - 300.0).max(220.0)),
+            Handle::Agent => {
+                self.agent_w = (p.x - sidebar - chat_l).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
+            }
+            Handle::Chat if self.chat_right => {
+                self.chat_w = (win.width - p.x).clamp(220.0, (win.width - sidebar - 300.0).clamp(220.0, 600.0))
+            }
+            Handle::Chat => self.chat_w = (p.x - sidebar).clamp(220.0, (win.width - sidebar - 300.0).clamp(220.0, 600.0)),
             Handle::Dock => self.agent_right = p.x > win.width / 2.0,
+            Handle::ChatDock => self.chat_right = p.x > win.width / 2.0,
             Handle::Scm => self.scm_w = (p.x - left).clamp(220.0, (win.width - left - 300.0).clamp(220.0, 700.0)),
-            Handle::Members => self.members_w = (win.width - p.x).clamp(150.0, 420.0),
+            Handle::Members => self.members_w = (win.width - chat_r - agent_r - p.x).clamp(150.0, 420.0),
             Handle::Panes(i) => {
                 let pos = match self.panes.axis {
                     Axis::Horizontal => p.x,

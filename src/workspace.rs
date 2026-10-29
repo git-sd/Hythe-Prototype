@@ -106,7 +106,8 @@ impl App {
         self.menu = None;
         self.palette = None;
         // Chat belongs to one repository.
-        self.chat = crate::chat::Chat::default();
+        let hidden = self.chat.dismissed;
+        self.chat = crate::chat::Chat { dismissed: hidden, ..Default::default() };
 
         let parked = self.take_workspace();
         match self.active_project {
