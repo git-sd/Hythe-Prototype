@@ -1,0 +1,22 @@
+[package]
+name = "hythe-relay"
+version = "0.1.0"
+edition = "2021"
+description = "Self-hostable relay for real-time collaborative editing: WebSocket server, client, and CRDT-backed shared documents"
+
+[lib]
+name = "hythe_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hythe-relay"
+path = "src/main.rs"
+
+[dependencies]
+yrs = { version = "0.25", features = ["sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util"] }
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
