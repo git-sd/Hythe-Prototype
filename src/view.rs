@@ -821,35 +821,8 @@ impl App {
         let tabs = scrollable(row(tabs)).direction(scrollable::Direction::Horizontal(
             scrollable::Scrollbar::new().width(0).scroller_width(0),
         ));
-        let changes_tab: Element<'_, Message> = if pane_index == 0 {
-            let n = self.scm.changes.len();
-            let open = self.scm.open;
-            let label = row![
-                text("Changes").size(13).color(if open { theme::TEXT } else { theme::TEXT_DIM }),
-                text(if n > 0 { n.to_string() } else { String::new() }).size(11).color(theme::ACCENT),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center);
-            let mut tab = row![button(label)
-                .padding([8, 6])
-                .style(theme::flat(false))
-                .on_press(Message::Scm(if open { ScmMsg::Hide } else { ScmMsg::Show }))]
-            .align_y(Alignment::Center)
-            .padding([0, 4]);
-            if open {
-                tab = tab.push(icon_button(Icon::Close, theme::TEXT_FAINT, false, Message::Scm(ScmMsg::Hide)));
-            }
-            container(tab)
-                .height(Length::Fixed(TAB_H))
-                .align_y(Alignment::Center)
-                .style(theme::bg(if open { theme::EDITOR_BG } else { theme::TAB_BAR_BG }))
-                .into()
-        } else {
-            space::horizontal().width(Length::Shrink).into()
-        };
         container(
             row![
-                changes_tab,
                 tabs,
                 space::horizontal(),
                 icon_button(Icon::Split, theme::TEXT_DIM, self.panes.list.len() > 1, Message::Split(Axis::Horizontal)),
@@ -900,6 +873,21 @@ impl App {
     }
 
     // --- bottom bar ---
+
+    /// A one-line box in the bottom bar: Enter sends the text to the repository chat.
+    fn message_bar(&self) -> Element<'_, Message> {
+        if self.repo.is_none() {
+            return space::horizontal().width(Length::Shrink).into();
+        }
+        iced::widget::text_input("Message the team…", &self.chat.input)
+            .on_input(|s| Message::Chat(ChatMsg::Input(s)))
+            .on_submit(Message::Chat(ChatMsg::Send))
+            .padding([3, 8])
+            .size(12)
+            .width(Length::Fixed(260.0))
+            .style(theme::input)
+            .into()
+    }
 
     fn bottom_bar(&self) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
@@ -959,6 +947,7 @@ impl App {
         container(
             row![
                 git,
+                self.message_bar(),
                 container(text(self.status.clone()).size(12).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None))
                     .width(Length::Fill)
                     .clip(true)

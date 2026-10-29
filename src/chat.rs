@@ -134,8 +134,16 @@ impl App {
                 self.chat.busy = None;
                 match result {
                     // Show it at once, then share it.
-                    Ok(()) => return Task::batch([self.chat_load(), self.chat_sync()]),
-                    Err(e) => self.chat.note = Some(e),
+                    Ok(()) => {
+                        if !self.chat.open {
+                            self.status = "Message sent to chat".into();
+                        }
+                        return Task::batch([self.chat_load(), self.chat_sync()]);
+                    }
+                    Err(e) => {
+                        self.status = e.lines().next().unwrap_or("send failed").to_string();
+                        self.chat.note = Some(e);
+                    }
                 }
             }
             ChatMsg::Sync => return self.chat_sync(),

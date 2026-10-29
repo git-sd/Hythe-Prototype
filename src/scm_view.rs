@@ -35,7 +35,7 @@ impl App {
 
     /// Changes | History, as one compact switch at the top of the left column.
     fn mode_switch(&self) -> Element<'static, Message> {
-        container(row![
+        let switch = container(row![
             tab_button("Changes", self.scm.tab == ScmTab::Changes, ScmTab::Changes),
             tab_button("History", self.scm.tab == ScmTab::History, ScmTab::History),
         ])
@@ -43,8 +43,10 @@ impl App {
         .style(|_: &Theme| container::Style {
             border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 3.0.into() },
             ..Default::default()
-        })
-        .into()
+        });
+        row![switch, space::horizontal(), icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::Hide))]
+            .align_y(Alignment::Center)
+            .into()
     }
     fn scm_left(&self) -> Element<'_, Message> {
         if self.scm.tab == ScmTab::History {
