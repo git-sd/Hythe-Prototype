@@ -1094,16 +1094,12 @@ pub(crate) fn hsv(h: f32) -> Color {
     Color::from_rgb(r + m, g + m, b + m)
 }
 
-/// Letters for a repository tile: "Hythe-Prototype" becomes "HP".
+/// Letters for a repository tile: the first two of its name, "Hythe-Prototype" becomes "Hy".
 pub(crate) fn initials(name: &str) -> String {
-    let letters: String = name
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .filter_map(|w| w.chars().next())
-        .take(2)
-        .flat_map(char::to_uppercase)
-        .collect();
-    if letters.is_empty() { "?".into() } else { letters }
+    let mut letters = name.chars().filter(|c| c.is_alphanumeric()).take(2);
+    let first: String = letters.next().into_iter().flat_map(char::to_uppercase).collect();
+    let rest: String = letters.flat_map(char::to_lowercase).collect();
+    if first.is_empty() { "?".into() } else { first + &rest }
 }
 
 enum RailFace {
