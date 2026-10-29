@@ -35,6 +35,7 @@ fn all(agents: &[String]) -> Vec<Command> {
         c("Undo", "Ctrl+Z", Message::Undo),
         c("Redo", "Ctrl+Y", Message::Redo),
         c("Select All", "Ctrl+A", Message::SelectAll),
+        c("Show Suggestions", "Ctrl+Space", Message::TriggerCompletion),
         c("Split Right", "Ctrl+\\", Message::Split(Axis::Horizontal)),
         c("Split Down", "Ctrl+Shift+\\", Message::Split(Axis::Vertical)),
         c("Close Pane", "", Message::ClosePane),

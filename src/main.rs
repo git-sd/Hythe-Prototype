@@ -1,4 +1,5 @@
 mod buffer;
+mod completion_ui;
 mod doc;
 mod editor;
 mod explorer;
@@ -19,6 +20,7 @@ use iced::{clipboard, window, Alignment, Element, Length, Subscription, Task, Th
 use doc::{Doc, TAB_WIDTH};
 use editor::EditorView;
 use explorer::Node;
+use completion_ui::CompletionUi;
 use highlight::RustHighlighter;
 use hythe_term::{Profile, SessionId, Snapshot, TerminalManager};
 use palette::Palette;
@@ -85,6 +87,8 @@ struct App {
     palette: Option<Palette>,
     /// Open top-bar dropdown (index into `menus::MENUS`).
     menu: Option<usize>,
+    /// Open completion popup in the focused editor.
+    completion: Option<CompletionUi>,
     highlighter: RustHighlighter,
 }
 
@@ -106,6 +110,10 @@ pub enum Message {
     FocusNextPane,
     FocusPane(usize),
     CloseRequested,
+    /// Pick entry `n` of the open completion popup (mouse click).
+    CompletionPick(usize),
+    /// Ctrl+Space: show suggestions now.
+    TriggerCompletion,
     ToggleSidebar,
     OpenMenu(usize),
     CloseMenu,
@@ -148,6 +156,7 @@ impl App {
             status: String::new(),
             palette: None,
             menu: None,
+            completion: None,
             highlighter: RustHighlighter::new(),
         };
         if let Some(arg) = std::env::args().nth(1) {
@@ -249,6 +258,127 @@ impl App {
                 self.docs.remove(d);
                 self.panes.forget_doc(d);
             }
+        }
+    }
+
+    /// Recompute suggestions at the cursor. `explicit` is a request (Ctrl+Space)
+    /// rather than a side effect of typing.
+    fn refresh_completion(&mut self, explicit: bool) {
+        self.completion = None;
+        let idx = self.panes.cur();
+        let Some(doc) = self.docs.get(idx) else {
+            return;
+        };
+        if doc.buffer.has_selection() {
+            return;
+        }
+        let text = doc.buffer.text();
+        let char_cursor = doc.buffer.cursor_index();
+        let cursor = doc.buffer.char_to_byte(char_cursor);
+
+        // Symbols from other open files, bounded so typing stays instant.
+        let others: Vec<String> = self
+            .docs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != idx)
+            .take(8)
+            .map(|(_, d)| d.buffer.text())
+            .filter(|t| t.len() < 400_000)
+            .collect();
+        let other_refs: Vec<&str> = others.iter().map(String::as_str).collect();
+
+        let result = hythe_complete::complete(&hythe_complete::Request {
+            language: doc.lang(),
+            text: &text,
+            cursor,
+            explicit,
+            others: &other_refs,
+        });
+        if result.items.is_empty() {
+            return;
+        }
+        // Already fully typed and nothing else to offer: stay out of the way.
+        if result.items.len() == 1 && result.items[0].label == text[result.start..cursor] {
+            return;
+        }
+        self.completion = Some(CompletionUi {
+            items: result.items,
+            selected: 0,
+            navigated: false,
+            start_char: doc.buffer.byte_to_char(result.start),
+        });
+    }
+
+    fn accept_completion(&mut self) {
+        let Some(ui) = self.completion.take() else {
+            return;
+        };
+        let Some(item) = ui.items.get(ui.selected) else {
+            return;
+        };
+        let Some(d) = self.docs.get_mut(self.panes.cur()) else {
+            return;
+        };
+        let (line, _) = d.buffer.cursor();
+        let indent: String = d
+            .buffer
+            .line_text(line)
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect();
+        let expanded = item.expand(&indent);
+        d.buffer.apply_completion(ui.start_char, &expanded.text, expanded.select);
+        d.edited(&mut self.highlighter);
+        self.reveal_cursor();
+    }
+
+    /// Keys that drive the popup. Returns true if the key was consumed.
+    fn completion_key(&mut self, key: &Key, mods: keyboard::Modifiers) -> bool {
+        if mods.command() && matches!(key, Key::Named(Named::Space)) {
+            self.refresh_completion(true);
+            return true;
+        }
+        let Some(ui) = self.completion.as_mut() else {
+            return false;
+        };
+        match key {
+            Key::Named(Named::ArrowDown) => {
+                ui.selected = (ui.selected + 1).min(ui.items.len() - 1);
+                ui.navigated = true;
+                true
+            }
+            Key::Named(Named::ArrowUp) => {
+                ui.selected = ui.selected.saturating_sub(1);
+                ui.navigated = true;
+                true
+            }
+            Key::Named(Named::Tab) if !mods.shift() => {
+                self.accept_completion();
+                true
+            }
+            // Enter only accepts once the user has chosen an entry, so
+            // typing a word and pressing Enter still starts a new line.
+            Key::Named(Named::Enter) => {
+                if ui.navigated {
+                    self.accept_completion();
+                    true
+                } else {
+                    self.completion = None;
+                    false
+                }
+            }
+            Key::Named(Named::Escape) => {
+                self.completion = None;
+                true
+            }
+            Key::Named(
+                Named::ArrowLeft | Named::ArrowRight | Named::Home | Named::End | Named::PageUp | Named::PageDown,
+            ) => {
+                self.completion = None;
+                false
+            }
+            _ => false,
         }
     }
 
@@ -402,7 +532,27 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        // The completion popup belongs to one cursor position; almost anything
+        // other than typing, scrolling or picking an entry invalidates it.
+        if !matches!(
+            message,
+            Message::Key(_)
+                | Message::TermTick
+                | Message::Scroll { .. }
+                | Message::TermScroll(_)
+                | Message::TermDrag { .. }
+                | Message::CompletionPick(_)
+        ) {
+            self.completion = None;
+        }
         match message {
+            Message::CompletionPick(i) => {
+                if let Some(ui) = self.completion.as_mut() {
+                    ui.selected = i.min(ui.items.len().saturating_sub(1));
+                }
+                self.accept_completion();
+            }
+            Message::TriggerCompletion => self.refresh_completion(true),
             Message::Scroll { pane, dy } => {
                 if let Some(p) = self.panes.list.get_mut(pane) {
                     let vp = p.viewport.get();
@@ -440,8 +590,21 @@ impl App {
                 if self.show_term && self.focus_term {
                     return self.term_key(key, modifiers, text.as_deref());
                 }
+                if self.completion_key(&key, modifiers) {
+                    self.reveal_cursor();
+                    return Task::none();
+                }
+                // Typing (or backspacing) a word is what brings suggestions up.
+                let typed = match &key {
+                    Key::Character(_) => !modifiers.command(),
+                    Key::Named(Named::Backspace | Named::Space) => !modifiers.command(),
+                    _ => false,
+                };
                 let task = self.handle_key(key, modifiers, text.as_deref());
                 self.reveal_cursor();
+                if typed {
+                    self.refresh_completion(false);
+                }
                 return task;
             }
             Message::Key(_) => {}
@@ -1053,6 +1216,7 @@ impl App {
                 pane: index,
                 focused,
                 viewport: &pane.viewport,
+                popup: if focused && !self.focus_term { self.completion.as_ref() } else { None },
             })
             .width(Length::Fill)
             .height(Length::Fill)
@@ -1201,7 +1365,7 @@ impl App {
             .get(self.panes.cur())
             .map(|d| {
                 let (l, c) = d.buffer.cursor();
-                format!("Ln {}, Col {}    {}", l + 1, c + 1, d.language())
+                format!("Ln {}, Col {}    {}", l + 1, c + 1, d.language_name())
             })
             .unwrap_or_default();
         container(

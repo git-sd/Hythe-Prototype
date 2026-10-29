@@ -83,6 +83,42 @@ impl Buffer {
         (sc < ec).then_some((sc, ec))
     }
 
+    /// Cursor as a character index into the whole document.
+    pub fn cursor_index(&self) -> usize {
+        self.head
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.head != self.anchor
+    }
+
+    pub fn char_to_byte(&self, char_idx: usize) -> usize {
+        self.rope.char_to_byte(char_idx.min(self.rope.len_chars()))
+    }
+
+    pub fn byte_to_char(&self, byte_idx: usize) -> usize {
+        self.rope.byte_to_char(byte_idx.min(self.rope.len_bytes()))
+    }
+
+    /// (line, column) of a character index.
+    pub fn line_col(&self, char_idx: usize) -> (usize, usize) {
+        let idx = char_idx.min(self.rope.len_chars());
+        let line = self.rope.char_to_line(idx);
+        (line, idx - self.rope.line_to_char(line))
+    }
+
+    /// Replace `start..cursor` with `text` as one undoable edit, then select
+    /// `select` (character offsets within `text`). Used to accept a completion.
+    pub fn apply_completion(&mut self, start: usize, text: &str, select: (usize, usize)) {
+        let start = start.min(self.head);
+        self.replace(start, self.head, text);
+        self.anchor = start + select.0;
+        self.head = start + select.1;
+        if let Some(last) = self.undo.last_mut() {
+            last.after = (self.head, self.anchor);
+        }
+    }
+
     pub fn selected_text(&self) -> Option<String> {
         self.selection().map(|(s, e)| self.rope.slice(s..e).to_string())
     }
@@ -400,6 +436,25 @@ mod tests {
         b.backspace();
         b.undo();
         assert_eq!(b.text(), "hello world");
+    }
+
+    #[test]
+    fn completion_is_one_undo_step_and_selects_placeholder() {
+        let mut b = Buffer::new("");
+        for c in ["f", "o", "r"] {
+            b.insert(c);
+        }
+        let start = 0;
+        b.apply_completion(start, "for x in  {}", (4, 5));
+        assert_eq!(b.text(), "for x in  {}");
+        assert_eq!(b.selected_text().as_deref(), Some("x"));
+        // Typing replaces the selected placeholder.
+        b.insert("item");
+        assert_eq!(b.text(), "for item in  {}");
+        b.undo();
+        b.undo();
+        assert_eq!(b.text(), "for");
+        assert_eq!(b.line_col(2), (0, 2));
     }
 
     #[test]

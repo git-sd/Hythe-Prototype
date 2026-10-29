@@ -4,6 +4,7 @@ use iced::mouse;
 use iced::widget::canvas;
 use iced::{Color, Event, Font, Pixels, Point, Rectangle, Renderer, Size, Theme};
 
+use crate::completion_ui::CompletionUi;
 use crate::doc::*;
 use crate::highlight;
 use crate::theme;
@@ -40,6 +41,8 @@ pub struct EditorView<'a> {
     pub pane: usize,
     pub focused: bool,
     pub viewport: &'a Cell<Size>,
+    /// Completion popup, when this pane has one open.
+    pub popup: Option<&'a CompletionUi>,
 }
 
 #[derive(Default)]
@@ -48,6 +51,16 @@ pub struct DragState {
 }
 
 impl EditorView<'_> {
+    /// Popup rectangle in canvas coordinates, anchored under the typed prefix.
+    fn popup_rect(&self, ui: &CompletionUi, bounds_size: Size) -> Rectangle {
+        let buf = &self.doc.buffer;
+        let scroll = self.scroll.clamped(buf, bounds_size);
+        let (line, col) = buf.line_col(ui.start_char);
+        let x = TEXT_X - scroll.x + visual_col(&buf.line_text(line), col) as f32 * CHAR_W;
+        let y = line as f32 * LINE_H - scroll.y;
+        ui.rect(Point::new(x, y), bounds_size)
+    }
+
     fn hit(&self, p: Point) -> (usize, usize) {
         let doc = self.doc;
         let scroll = self.scroll.clamped(&doc.buffer, self.viewport.get());
@@ -72,6 +85,13 @@ impl canvas::Program<Message> for EditorView<'_> {
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_in(bounds)?;
+                // A click on the completion popup picks that entry.
+                if let Some(ui) = self.popup {
+                    let rect = self.popup_rect(ui, bounds.size());
+                    if let Some(i) = ui.item_at(rect, p) {
+                        return Some(canvas::Action::publish(Message::CompletionPick(i)).and_capture());
+                    }
+                }
                 state.dragging = true;
                 let (line, col) = self.hit(p);
                 let pane = self.pane;
@@ -188,6 +208,11 @@ impl canvas::Program<Message> for EditorView<'_> {
         frame.fill_rectangle(Point::new(cx, cy + 1.0), Size::new(2.0, LINE_H - 2.0),
             if self.focused { theme::ACCENT } else { theme::TEXT_DIM },
         );
+
+        if let Some(ui) = self.popup {
+            let rect = self.popup_rect(ui, bounds.size());
+            ui.draw(&mut frame, rect);
+        }
 
         vec![frame.into_geometry()]
     }

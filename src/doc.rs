@@ -49,6 +49,22 @@ impl Doc {
             .unwrap_or_else(|| "untitled".into())
     }
 
+    /// Language for completion, from the file extension.
+    pub fn lang(&self) -> hythe_complete::Language {
+        self.path
+            .as_deref()
+            .map(hythe_complete::Language::from_path)
+            .unwrap_or(hythe_complete::Language::Plain)
+    }
+
+    /// Name shown in the status bar.
+    pub fn language_name(&self) -> &'static str {
+        match self.path {
+            Some(_) => self.lang().name(),
+            None => "Plain Text",
+        }
+    }
+
     pub fn language(&self) -> &'static str {
         match self.path.as_ref().and_then(|p| p.extension()).and_then(|e| e.to_str()) {
             Some("rs") | None => "Rust",

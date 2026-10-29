@@ -40,6 +40,8 @@ pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
             item("Redo", "Ctrl+Y", Message::Redo),
             Separator,
             item("Select All", "Ctrl+A", Message::SelectAll),
+            Separator,
+            item("Show Suggestions", "Ctrl+Space", Message::TriggerCompletion),
         ],
         2 => vec![
             item("Command Palette…", "Ctrl+Shift+P", Message::OpenPalette),
