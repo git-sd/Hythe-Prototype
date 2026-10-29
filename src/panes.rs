@@ -133,6 +133,19 @@ impl Panes {
         }
     }
 
+    /// Number of tabs, across all panes, showing `doc`.
+    pub fn refs(&self, doc: usize) -> usize {
+        self.list.iter().flat_map(|p| &p.tabs).filter(|t| t.doc == doc).count()
+    }
+
+    /// Number of tabs showing `doc` in panes other than `pane`.
+    pub fn refs_outside(&self, doc: usize, pane: usize) -> usize {
+        (0..self.list.len())
+            .filter(|&i| i != pane)
+            .map(|i| self.list[i].tabs.iter().filter(|t| t.doc == doc).count())
+            .sum()
+    }
+
     pub fn uses_doc(&self, doc: usize) -> bool {
         self.list.iter().any(|p| p.tabs.iter().any(|t| t.doc == doc))
     }
@@ -166,6 +179,9 @@ mod tests {
         assert_eq!(p.list.len(), 1);
         assert_eq!(p.focus, 0);
         assert!(p.uses_doc(1)); // still open in the first pane
+        assert_eq!(p.refs(1), 1);
+        assert_eq!(p.refs_outside(1, 0), 0);
+        assert_eq!(p.refs_outside(1, 1), 1);
 
         p.close_tab(0, 1);
         assert!(!p.uses_doc(1));

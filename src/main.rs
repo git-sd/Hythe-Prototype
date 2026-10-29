@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use iced::keyboard::{self, key::Named, Key};
 use iced::widget::canvas::Canvas;
 use iced::widget::{button, column, container, mouse_area, opaque, row, scrollable, space, stack, text};
-use iced::{clipboard, Alignment, Element, Length, Subscription, Task, Theme};
+use iced::{clipboard, window, Alignment, Element, Length, Subscription, Task, Theme};
 
 use doc::{Doc, TAB_WIDTH};
 use editor::EditorView;
@@ -27,7 +27,36 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .theme(|_: &App| Theme::Dark)
         .window_size((1200.0, 760.0))
+        .exit_on_close_request(false)
         .run()
+}
+
+enum Unsaved {
+    Save,
+    Discard,
+    Cancel,
+}
+
+fn ask_unsaved(body: &str, save_label: &str) -> Unsaved {
+    use rfd::{MessageButtons, MessageDialog, MessageDialogResult as R, MessageLevel};
+    const DISCARD: &str = "Don't Save";
+    let result = MessageDialog::new()
+        .set_level(MessageLevel::Warning)
+        .set_title("Unsaved changes")
+        .set_description(body)
+        .set_buttons(MessageButtons::YesNoCancelCustom(
+            save_label.into(),
+            DISCARD.into(),
+            "Cancel".into(),
+        ))
+        .show();
+    match result {
+        R::Yes => Unsaved::Save,
+        R::No => Unsaved::Discard,
+        R::Custom(s) if s == save_label => Unsaved::Save,
+        R::Custom(s) if s == DISCARD => Unsaved::Discard,
+        _ => Unsaved::Cancel,
+    }
 }
 
 struct App {
@@ -58,6 +87,7 @@ pub enum Message {
     ClosePane,
     FocusNextPane,
     FocusPane(usize),
+    CloseRequested,
     ToggleSidebar,
     ToggleAi,
     Save,
@@ -121,8 +151,54 @@ impl App {
     }
 
     fn close_tab(&mut self, pane: usize, tab: usize) {
+        let Some(doc) = self.panes.list.get(pane).and_then(|p| p.tabs.get(tab)).map(|t| t.doc) else {
+            return;
+        };
+        // Only the last view of a document can lose its edits.
+        if self.panes.refs(doc) == 1 && !self.confirm_discard(&[doc]) {
+            return;
+        }
         if let Some(doc) = self.panes.close_tab(pane, tab) {
             self.prune_docs(vec![doc]);
+        }
+    }
+
+    /// Ask what to do with unsaved edits in `docs`. Returns false if the
+    /// user cancelled (or a save failed), meaning the close should not happen.
+    fn confirm_discard(&mut self, docs: &[usize]) -> bool {
+        let dirty: Vec<usize> = docs
+            .iter()
+            .copied()
+            .filter(|&d| self.docs.get(d).is_some_and(|doc| doc.dirty))
+            .collect();
+        if dirty.is_empty() {
+            return true;
+        }
+        let names: Vec<String> = dirty.iter().map(|&d| self.docs[d].name()).collect();
+        let (body, save_label) = if names.len() == 1 {
+            (format!("Do you want to save the changes to {}?", names[0]), "Save")
+        } else {
+            (
+                format!(
+                    "{} files have unsaved changes:\n{}\n\nYes saves all of them, No discards the changes.",
+                    names.len(),
+                    names.join("\n")
+                ),
+                "Save All",
+            )
+        };
+        match ask_unsaved(&body, save_label) {
+            Unsaved::Discard => true,
+            Unsaved::Cancel => false,
+            Unsaved::Save => {
+                for d in dirty {
+                    if let Err(e) = self.docs[d].save() {
+                        self.status = e;
+                        return false;
+                    }
+                }
+                true
+            }
         }
     }
 
@@ -219,8 +295,23 @@ impl App {
             Message::CloseTab { pane, tab } => self.close_tab(pane, tab),
             Message::Split(axis) => self.panes.split(axis),
             Message::ClosePane => {
-                let docs = self.panes.close_pane(self.panes.focus);
-                self.prune_docs(docs);
+                let focus = self.panes.focus;
+                let at_risk: Vec<usize> = self.panes.list[focus]
+                    .tabs
+                    .iter()
+                    .map(|t| t.doc)
+                    .filter(|&d| self.panes.refs_outside(d, focus) == 0)
+                    .collect();
+                if self.panes.list.len() > 1 && self.confirm_discard(&at_risk) {
+                    let docs = self.panes.close_pane(focus);
+                    self.prune_docs(docs);
+                }
+            }
+            Message::CloseRequested => {
+                let all: Vec<usize> = (0..self.docs.len()).collect();
+                if self.confirm_discard(&all) {
+                    return iced::exit();
+                }
             }
             Message::FocusNextPane => self.panes.focus_next(),
             Message::FocusPane(i) => self.panes.focus_pane(i),
@@ -756,7 +847,10 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        keyboard::listen().map(Message::Key)
+        Subscription::batch([
+            keyboard::listen().map(Message::Key),
+            window::close_requests().map(|_| Message::CloseRequested),
+        ])
     }
 }
 
