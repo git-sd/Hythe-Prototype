@@ -6,6 +6,14 @@ use std::process::Command;
 
 const MAX_PROJECTS: usize = 24;
 
+/// Move the element at `from` to index `to`, shifting those between.
+pub fn reorder<T>(items: &mut Vec<T>, from: usize, to: usize) {
+    if from < items.len() && to < items.len() && from != to {
+        let item = items.remove(from);
+        items.insert(to, item);
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Persisted {
     /// Repositories shown in the rail, in the order they were added.
@@ -133,6 +141,18 @@ pub fn git_user() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reorder_moves_one_item_and_ignores_bad_indexes() {
+        let mut v = vec!['a', 'b', 'c', 'd'];
+        reorder(&mut v, 0, 2);
+        assert_eq!(v, ['b', 'c', 'a', 'd']);
+        reorder(&mut v, 3, 0);
+        assert_eq!(v, ['d', 'b', 'c', 'a']);
+        reorder(&mut v, 1, 9);
+        reorder(&mut v, 2, 2);
+        assert_eq!(v, ['d', 'b', 'c', 'a']);
+    }
 
     #[test]
     fn projects_keep_their_order_and_round_trip() {

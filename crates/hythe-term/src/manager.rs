@@ -85,6 +85,14 @@ impl TerminalManager {
             .collect()
     }
 
+    /// Move session `id` to where session `target` is, shifting the ones between.
+    pub fn move_session(&mut self, id: SessionId, target: SessionId) {
+        let pos = |id: SessionId| self.sessions.iter().position(|s| s.id() == id);
+        let (Some(from), Some(to)) = (pos(id), pos(target)) else { return };
+        let session = self.sessions.remove(from);
+        self.sessions.insert(to, session);
+    }
+
     /// Remove a session, terminating its process. Returns false if `id` is unknown.
     pub fn close(&mut self, id: SessionId) -> bool {
         match self.sessions.iter().position(|s| s.id() == id) {

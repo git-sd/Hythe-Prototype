@@ -16,7 +16,7 @@ use crate::collab::CollabMsg;
 use crate::panes::Axis;
 use crate::scm::ScmMsg;
 use crate::terminal_view::TerminalView;
-use crate::{menus, theme, App, Handle, Message};
+use crate::{menus, theme, App, Handle, Item, Message};
 
 pub(crate) const TITLE_H: f32 = 38.0;
 pub(crate) const BAR_H: f32 = 32.0;
@@ -52,6 +52,20 @@ pub(crate) fn list_row<'a>(content: Element<'a, Message>, selected: bool, msg: M
         .style(theme::row(selected))
         .on_press(msg)
         .into()
+}
+
+/// A list row that starts a drag when pressed (a button only acts on release)
+/// and takes the dragged row's place when the pointer enters it.
+pub(crate) fn drag_row<'a>(content: Element<'a, Message>, selected: bool, item: Item) -> Element<'a, Message> {
+    mouse_area(container(content).width(Length::Fill).padding([5, 8]).style(move |_: &Theme| container::Style {
+        background: selected.then(|| theme::SELECTED.into()),
+        border: iced::Border { radius: 3.0.into(), ..Default::default() },
+        ..Default::default()
+    }))
+    .on_press(Message::ItemPress(item.clone()))
+    .on_enter(Message::ItemEnter(item))
+    .interaction(iced::mouse::Interaction::Pointer)
+    .into()
 }
 
 pub(crate) fn dot<'a>(color: Color) -> Element<'a, Message> {
@@ -95,12 +109,16 @@ impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let mut main = row![].height(Length::Fill);
         // Source Control wants the width for diffs, so the thread column steps aside.
-        if self.show_term {
+        let agent_right = self.show_term && self.agent_right;
+        if self.show_term && !agent_right {
             main = main.push(self.agent_panel()).push(self.handle(Handle::Agent, true));
         }
         main = main.push(self.editor_area());
         if self.show_members() {
             main = main.push(self.handle(Handle::Members, true)).push(self.members_panel());
+        }
+        if agent_right {
+            main = main.push(self.handle(Handle::Agent, true)).push(self.agent_panel());
         }
         let right = column![main, divider_h(), self.bottom_bar()].width(Length::Fill);
 
@@ -280,7 +298,7 @@ impl App {
             1 => (
                 Alignment::Start,
                 Alignment::Start,
-                Padding { top: TITLE_H + 42.0, left: (sidebar_left + self.agent_w - 300.0 - 8.0).max(8.0), ..Padding::ZERO },
+                Padding { top: TITLE_H + 42.0, left: if self.agent_right { (self.win.width - 300.0 - 8.0).max(8.0) } else { (sidebar_left + self.agent_w - 300.0 - 8.0).max(8.0) }, ..Padding::ZERO },
             ),
             // Editor tabs "…": right edge of the window, under the tab bar.
             2 => (Alignment::End, Alignment::Start, Padding { top: TITLE_H + 40.0, right: 8.0, ..Padding::ZERO }),
@@ -379,10 +397,11 @@ impl App {
                 self.active_project == Some(i),
                 busy,
                 project.path.display().to_string(),
-                Message::SwitchProject(Some(i)),
+                Message::ItemPress(Item::Rail(i)),
+                Some(Message::ItemEnter(Item::Rail(i))),
             ));
         }
-        rail = rail.push(rail_tile(RailFace::Plus, false, false, "Add a repository".into(), Message::AddRepo(AddRepoMsg::Open)));
+        rail = rail.push(rail_tile(RailFace::Plus, false, false, "Add a repository".into(), Message::AddRepo(AddRepoMsg::Open), None));
 
         container(scrollable(rail).height(Length::Fill))
             .width(Length::Fixed(RAIL_W))
@@ -438,7 +457,7 @@ impl App {
         list = list.push(category("Terminals", None, Some(Message::NewTerminal(None))).with_plus());
         for info in self.terms.list() {
             let glyph = if self.agents.iter().any(|a| a.name == info.name) { Icon::Sparkle } else { Icon::Terminal };
-            list = list.push(list_row(
+            list = list.push(drag_row(
                 row![
                     icon(glyph, 15.0, dim),
                     text(info.name.clone()).size(14),
@@ -450,7 +469,7 @@ impl App {
                 .padding([0, 0])
                 .into(),
                 self.term_active == Some(info.id),
-                Message::TermSelect(info.id),
+                Item::Term(info.id),
             ));
         }
         if self.root.is_some() {
@@ -494,7 +513,14 @@ impl App {
                     list = list.push(category("Pinned", None, None));
                     for path in pinned {
                         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        list = list.push(channel_row(Icon::Pin, name, 0, active_path == Some(path), Message::OpenFile(path.clone())));
+                        list = list.push(drag_row(
+                            row![icon(Icon::Pin, 14.0, theme::TEXT_FAINT), text(name).size(14)]
+                                .spacing(8)
+                                .align_y(Alignment::Center)
+                                .into(),
+                            active_path == Some(path),
+                            Item::Pin(path.clone()),
+                        ));
                     }
                 }
 
@@ -597,6 +623,10 @@ impl App {
         .width(Length::Fill)
         .height(Length::Fixed(TAB_H))
         .align_y(Alignment::Center);
+        // Grab the header and drag it across the window to dock the column on the other side.
+        let header = mouse_area(header)
+            .on_press(Message::DragStart(Handle::Dock))
+            .interaction(iced::mouse::Interaction::Grab);
 
         let body: Element<'_, Message> = match (&self.term_snap, session) {
             (Some(snap), Some(session)) => Canvas::new(TerminalView { snap, session, focused: self.focus_term })
@@ -1106,7 +1136,7 @@ enum RailFace {
 
 /// One tile in the rail: a small square, brighter when it's the open repository,
 /// with a thin marker on its left edge when open (tall) or busy (short).
-fn rail_tile<'a>(face: RailFace, active: bool, busy: bool, tip: String, msg: Message) -> Element<'a, Message> {
+fn rail_tile<'a>(face: RailFace, active: bool, busy: bool, tip: String, msg: Message, enter: Option<Message>) -> Element<'a, Message> {
     let bg = if active { theme::TILE_ACTIVE } else { theme::TILE_BG };
     let fg = if active { Color::WHITE } else { theme::TEXT_DIM };
     let inner: Element<'a, Message> = match face {
@@ -1123,11 +1153,15 @@ fn rail_tile<'a>(face: RailFace, active: bool, busy: bool, tip: String, msg: Mes
     let marker_height = if active { 18.0 } else if busy { 6.0 } else { 0.0 };
     let marker = container(space::vertical().height(Length::Fixed(marker_height)).width(Length::Fixed(3.0)))
         .style(|_: &Theme| container::Style { background: Some(theme::ACCENT.into()), ..Default::default() });
-    let button = button(tile).padding(0).style(|_: &Theme, _| button::Style::default()).on_press(msg);
+    let button = mouse_area(tile).on_press(msg).interaction(iced::mouse::Interaction::Pointer);
     let content = container(row![marker, space::horizontal().width(Length::Fixed(6.0)), button].align_y(Alignment::Center))
         .width(Length::Fixed(RAIL_W))
         .height(Length::Fixed(36.0))
         .align_y(Alignment::Center);
+    let content: Element<'a, Message> = match enter {
+        Some(m) => mouse_area(content).on_enter(m).into(),
+        None => content.into(),
+    };
     iced::widget::tooltip(
         content,
         container(text(tip).size(12)).padding([3, 7]).style(|_: &Theme| container::Style {

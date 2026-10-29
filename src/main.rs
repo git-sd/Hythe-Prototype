@@ -166,6 +166,18 @@ struct App {
     chat: Chat,
     /// A tab being dragged: (pane, tab).
     tab_drag: Option<(usize, usize)>,
+    /// A rail tile, terminal or pinned file being dragged.
+    item_drag: Option<Item>,
+    /// The thread column is docked on the right instead of the left.
+    agent_right: bool,
+}
+
+/// Something in a list that can be dragged to a new place in it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Item {
+    Rail(usize),
+    Term(SessionId),
+    Pin(PathBuf),
 }
 
 /// What a background git read found.
@@ -185,6 +197,8 @@ pub enum Handle {
     Agent,
     Scm,
     Members,
+    /// The thread column's header: drag it to the other side of the window.
+    Dock,
     /// Between editor pane `n` and `n + 1`.
     Panes(usize),
 }
@@ -284,6 +298,9 @@ pub enum Message {
     DiskTick,
     /// Mouse pressed on a file tab: select it and start dragging it.
     TabPress { pane: usize, tab: usize },
+    /// Mouse pressed on a rail tile, terminal or pinned file: select it and start dragging.
+    ItemPress(Item),
+    ItemEnter(Item),
     /// The pointer moved onto a tab; while dragging, the dragged tab takes its place.
     TabEnter { pane: usize, tab: usize },
     /// Repository chat.
@@ -348,6 +365,8 @@ impl App {
             git_busy: false,
             chat: Chat::default(),
             tab_drag: None,
+            item_drag: None,
+            agent_right: false,
         };
         app.projects = app.persisted.projects.iter().map(|p| Project { path: p.clone(), ws: None }).collect();
         // Scripted runs: HYTHE_COLLAB="ws://host:port|room|name" joins a room on startup.
@@ -1031,7 +1050,18 @@ impl App {
             Message::PointerUp => {
                 self.drag = None;
                 self.tab_drag = None;
+                self.item_drag = None;
             }
+            Message::ItemPress(item) => {
+                let task = match &item {
+                    Item::Rail(i) => self.update_inner(Message::SwitchProject(Some(*i))),
+                    Item::Term(id) => self.update_inner(Message::TermSelect(*id)),
+                    Item::Pin(p) => self.update_inner(Message::OpenFile(p.clone())),
+                };
+                self.item_drag = Some(item);
+                return task;
+            }
+            Message::ItemEnter(target) => self.item_enter(target),
             Message::TabPress { pane, tab } => {
                 let task = self.update_inner(Message::SelectTab { pane, tab });
                 self.tab_drag = Some((pane, tab));
@@ -1391,6 +1421,29 @@ impl App {
         }
     }
 
+    /// While dragging a list item, the pointer reached another one: take its place.
+    fn item_enter(&mut self, target: Item) {
+        match (self.item_drag.clone(), target) {
+            (Some(Item::Rail(from)), Item::Rail(to)) if from != to && from.max(to) < self.projects.len() => {
+                let active = self.active_project.map(|i| self.projects[i].path.clone());
+                state::reorder(&mut self.projects, from, to);
+                self.active_project = active.and_then(|a| self.projects.iter().position(|p| p.path == a));
+                self.persisted.projects = self.projects.iter().map(|p| p.path.clone()).collect();
+                self.persisted.save();
+                self.item_drag = Some(Item::Rail(to));
+            }
+            (Some(Item::Term(a)), Item::Term(b)) if a != b => self.terms.move_session(a, b),
+            (Some(Item::Pin(a)), Item::Pin(b)) if a != b => {
+                let pins = &mut self.persisted.pinned;
+                if let (Some(from), Some(to)) = (pins.iter().position(|p| *p == a), pins.iter().position(|p| *p == b)) {
+                    state::reorder(pins, from, to);
+                    self.persisted.save();
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn start_drag(&mut self, handle: Handle) {
         let mut base = (1.0, 1.0, 1.0);
         if let Handle::Panes(i) = handle {
@@ -1408,11 +1461,15 @@ impl App {
     fn drag_to(&mut self, p: iced::Point) {
         let Some(mut drag) = self.drag else { return };
         let sidebar = if self.show_sidebar { view::RAIL_W + self.list_w + view::HANDLE_W } else { 0.0 };
-        let left = sidebar + if self.show_term { self.agent_w + view::HANDLE_W } else { 0.0 };
+        let left = sidebar + if self.show_term && !self.agent_right { self.agent_w + view::HANDLE_W } else { 0.0 };
         let win = self.win;
         match drag.handle {
             Handle::List => self.list_w = (p.x - view::RAIL_W).clamp(140.0, (win.width - 300.0).clamp(140.0, 480.0)),
+            Handle::Agent if self.agent_right => {
+                self.agent_w = (win.width - p.x).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
+            }
             Handle::Agent => self.agent_w = (p.x - sidebar).clamp(220.0, (win.width - sidebar - 300.0).max(220.0)),
+            Handle::Dock => self.agent_right = p.x > win.width / 2.0,
             Handle::Scm => self.scm_w = (p.x - left).clamp(220.0, (win.width - left - 300.0).clamp(220.0, 700.0)),
             Handle::Members => self.members_w = (win.width - p.x).clamp(150.0, 420.0),
             Handle::Panes(i) => {
@@ -1450,7 +1507,7 @@ impl App {
         if self.root.is_some() {
             subs.push(iced::time::every(std::time::Duration::from_secs(2)).map(|_| Message::TreeTick));
         }
-        if self.drag.is_some() || self.tab_drag.is_some() {
+        if self.drag.is_some() || self.tab_drag.is_some() || self.item_drag.is_some() {
             subs.push(iced::event::listen_with(|event, _status, _window| match event {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::PointerMoved(position)),
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::PointerUp),
