@@ -28,12 +28,16 @@ pub struct Chat {
     pub images_tried: HashSet<String>,
     /// Repository whose messages were last loaded.
     pub loaded_for: Option<PathBuf>,
+    /// Closed from the welcome area, which shows the welcome menu again.
+    pub dismissed: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum ChatMsg {
     Show,
     Hide,
+    /// Close the chat shown in place of the welcome screen.
+    Dismiss,
     Input(String),
     Attach,
     Unattach(usize),
@@ -97,11 +101,13 @@ impl App {
                     return Task::none();
                 }
                 self.chat.open = true;
+                self.chat.dismissed = false;
                 self.scm.open = false;
                 self.focus_term = false;
                 return Task::batch([self.chat_load(), self.chat_sync()]);
             }
             ChatMsg::Hide => self.chat.open = false,
+            ChatMsg::Dismiss => self.chat.dismissed = true,
             ChatMsg::Input(s) => self.chat.input = s,
             ChatMsg::Attach => {
                 if let Some(files) = rfd::FileDialog::new().set_title("Attach files").pick_files() {
@@ -220,10 +226,10 @@ impl App {
     }
 
     pub(crate) fn chat_in_welcome(&self) -> bool {
-        self.repo.is_some() && !self.scm.open && self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty()
+        self.repo.is_some() && !self.chat.dismissed && !self.scm.open && self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty()
     }
 
-    /// `embedded`: shown in place of the welcome screen, so it has no close button.
+    /// `embedded`: shown in place of the welcome screen; its close button brings the welcome menu back.
     pub(crate) fn chat_view(&self, embedded: bool) -> Element<'_, Message> {
         let c = &self.chat;
         let dim = theme::TEXT_DIM;
@@ -245,11 +251,7 @@ impl App {
                     .padding([4, 10])
                     .style(theme::flat(false))
                     .on_press_maybe(c.busy.is_none().then(|| msg(ChatMsg::Sync))),
-                if embedded {
-                    space::horizontal().width(Length::Shrink).into()
-                } else {
-                    icon_button(Icon::Close, theme::TEXT_FAINT, false, msg(ChatMsg::Hide))
-                },
+                icon_button(Icon::Close, theme::TEXT_FAINT, false, msg(if embedded { ChatMsg::Dismiss } else { ChatMsg::Hide })),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
