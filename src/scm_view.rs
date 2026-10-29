@@ -293,12 +293,7 @@ impl App {
             .max_height(420.0)
             .style(|_: &Theme| container::Style {
                 background: Some(theme::PANEL_BG.into()),
-                border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 8.0.into() },
-                shadow: iced::Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                    offset: iced::Vector::new(0.0, -6.0),
-                    blur_radius: 24.0,
-                },
+                border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 4.0.into() },
                 ..Default::default()
             });
         stack![

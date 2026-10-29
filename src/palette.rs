@@ -1,3 +1,4 @@
+use crate::add_repo::AddRepoMsg;
 use crate::panes::Axis;
 use crate::scm::ScmMsg;
 use crate::Message;
@@ -31,6 +32,7 @@ fn all(agents: &[String]) -> Vec<Command> {
         c("New File", "Ctrl+N", Message::NewFile),
         c("Open File", "Ctrl+O", Message::OpenFileDialog),
         c("Open Folder", "Ctrl+Shift+O", Message::OpenFolderDialog),
+        c("Add Repository", "", Message::AddRepo(AddRepoMsg::Open)),
         c("Save File", "Ctrl+S", Message::Save),
         c("Close Tab", "Ctrl+W", Message::CloseActive),
         c("Undo", "Ctrl+Z", Message::Undo),

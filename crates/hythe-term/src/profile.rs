@@ -64,6 +64,8 @@ pub struct Profile {
     pub program: String,
     pub args: Vec<String>,
     pub kind: ProfileKind,
+    /// The program was found on PATH when the profile list was built.
+    pub installed: bool,
 }
 
 impl Profile {
@@ -73,13 +75,14 @@ impl Profile {
             program: program.into(),
             args: args.iter().map(|s| s.to_string()).collect(),
             kind: ProfileKind::Agent,
+            installed: false,
         }
     }
 
     /// The user's default shell.
     pub fn shell() -> Self {
         let program = default_shell();
-        Self { name: "Shell".into(), program, args: Vec::new(), kind: ProfileKind::Shell }
+        Self { name: "Shell".into(), program, args: Vec::new(), kind: ProfileKind::Shell, installed: true }
     }
 
     /// Whether the program can be found on `PATH`.
@@ -97,23 +100,36 @@ impl Profile {
     }
 }
 
-/// CLI coding agents this crate knows how to launch.
+/// CLI coding agents this crate knows how to launch, installed or not.
+/// `installed` says whether each one was found on `PATH`.
 pub fn known_agents() -> Vec<Profile> {
-    vec![
-        Profile::agent("Claude Code", "claude", &[]),
-        Profile::agent("Codex", "codex", &[]),
-        Profile::agent("Gemini CLI", "gemini", &[]),
-        Profile::agent("Aider", "aider", &[]),
-        Profile::agent("OpenCode", "opencode", &[]),
-        Profile::agent("Cursor Agent", "cursor-agent", &[]),
+    [
+        ("Claude Code", "claude"),
+        ("Codex", "codex"),
+        ("Gemini CLI", "gemini"),
+        ("Cursor Agent", "cursor-agent"),
+        ("Antigravity", "antigravity"),
+        ("GitHub Copilot", "copilot"),
+        ("Aider", "aider"),
+        ("OpenCode", "opencode"),
+        ("Qwen Code", "qwen"),
+        ("Amp", "amp"),
+        ("Goose", "goose"),
+        ("Crush", "crush"),
     ]
+    .into_iter()
+    .map(|(name, program)| {
+        let mut p = Profile::agent(name, program, &[]);
+        p.installed = p.is_available();
+        p
+    })
+    .collect()
 }
 
 /// The subset of [`known_agents`] installed on this machine.
 pub fn available_agents() -> Vec<Profile> {
-    known_agents().into_iter().filter(Profile::is_available).collect()
+    known_agents().into_iter().filter(|p| p.installed).collect()
 }
-
 fn default_shell() -> String {
     #[cfg(windows)]
     {
@@ -171,6 +187,20 @@ mod tests {
     fn missing_programs_are_not_available() {
         assert!(find_in_path("definitely-not-a-real-program-xyz").is_none());
         assert!(!Profile::agent("x", "definitely-not-a-real-program-xyz", &[]).is_available());
+    }
+
+    #[test]
+    fn known_agents_are_unique_and_flag_what_is_installed() {
+        let agents = known_agents();
+        assert!(agents.len() >= 10);
+        let names: std::collections::HashSet<_> = agents.iter().map(|a| a.name.clone()).collect();
+        let programs: std::collections::HashSet<_> = agents.iter().map(|a| a.program.clone()).collect();
+        assert_eq!(names.len(), agents.len());
+        assert_eq!(programs.len(), agents.len());
+        for a in &agents {
+            assert_eq!(a.installed, a.is_available(), "{}", a.name);
+        }
+        assert!(agents.iter().any(|a| a.name == "Antigravity") && agents.iter().any(|a| a.name == "Codex"));
     }
 
     #[test]

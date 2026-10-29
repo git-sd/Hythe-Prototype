@@ -339,6 +339,40 @@ impl Repo {
     }
 }
 
+/// What to pass to `git clone` for what a person typed: `owner/name` and
+/// `github.com/owner/name` become GitHub URLs; anything else is used as given.
+pub fn clone_url(input: &str) -> String {
+    let s = input.trim();
+    let is_name = |seg: &str| !seg.is_empty() && seg != "." && seg != ".." && seg.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if s.contains("://") || s.starts_with("git@") || s.contains(':') || s.contains('\\') {
+        return s.to_string();
+    }
+    let path = s.strip_prefix("github.com/").unwrap_or(s);
+    let segs: Vec<&str> = path.trim_end_matches('/').split('/').collect();
+    if segs.len() == 2 && segs.iter().all(|seg| is_name(seg)) {
+        let repo = segs[1].trim_end_matches(".git");
+        return format!("https://github.com/{}/{}.git", segs[0], repo);
+    }
+    s.to_string()
+}
+
+/// Folder name `git clone` would pick for `url`: the last segment without `.git`.
+pub fn repo_dir_name(url: &str) -> String {
+    let u = url.trim().trim_end_matches(['/', '\\']);
+    let last = u.rsplit(['/', '\\', ':']).next().unwrap_or(u);
+    last.strip_suffix(".git").unwrap_or(last).to_string()
+}
+
+/// Clone `url` into `dest` (which must not exist yet, or be empty).
+pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
+    if dest.exists() && std::fs::read_dir(dest).map(|mut d| d.next().is_some()).unwrap_or(true) {
+        return Err(format!("{} already exists and isn't empty", dest.display()));
+    }
+    let parent = dest.parent().ok_or("choose a folder to clone into")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let name = dest.file_name().ok_or("choose a folder to clone into")?.to_string_lossy().into_owned();
+    run(parent, &["clone", "--", url, &name]).map(|_| ())
+}
 /// Parse `git status --porcelain=v1 -z` output.
 pub fn parse_status(raw: &str) -> Vec<Change> {
     let mut out = Vec::new();
@@ -625,6 +659,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    #[test]
+    fn clone_urls_are_expanded_from_shorthand() {
+        assert_eq!(clone_url("rust-lang/rust"), "https://github.com/rust-lang/rust.git");
+        assert_eq!(clone_url("  github.com/git-sd/Hythe-Prototype/ "), "https://github.com/git-sd/Hythe-Prototype.git");
+        assert_eq!(clone_url("https://github.com/a/b"), "https://github.com/a/b");
+        assert_eq!(clone_url("git@github.com:a/b.git"), "git@github.com:a/b.git");
+        assert_eq!(clone_url("C:\\work\\repo"), "C:\\work\\repo");
+        assert_eq!(clone_url("single"), "single");
+        assert_eq!(repo_dir_name("https://github.com/a/b.git"), "b");
+        assert_eq!(repo_dir_name("git@github.com:a/b.git"), "b");
+        assert_eq!(repo_dir_name("C:\\work\\repo\\"), "repo");
+    }
+
+    #[test]
+    fn cloning_a_repository_copies_its_files_and_refuses_to_overwrite() {
+        let f = Fixture::new();
+        let dest = f.dir.with_extension("clone");
+        let _ = std::fs::remove_dir_all(&dest);
+        clone_repo(f.dir.to_str().unwrap(), &dest).expect("clone");
+        assert_eq!(std::fs::read_to_string(dest.join("a.txt")).unwrap().replace("\r\n", "\n"), "one\ntwo\nthree\n");
+        assert!(Repo::open(&dest).is_some());
+        let again = clone_repo(f.dir.to_str().unwrap(), &dest);
+        assert!(again.is_err(), "must not clone over an existing folder");
+        let _ = std::fs::remove_dir_all(&dest);
+    }
     #[test]
     fn time_ago_reads_naturally() {
         assert_eq!(time_ago(100, 130), "just now");

@@ -1,3 +1,4 @@
+use crate::add_repo::AddRepoMsg;
 use crate::panes::Axis;
 use crate::scm::ScmMsg;
 use crate::Message;
@@ -30,6 +31,7 @@ pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
             item("New File", "Ctrl+N", Message::NewFile),
             item("Open File…", "Ctrl+O", Message::OpenFileDialog),
             item("Open Folder…", "Ctrl+Shift+O", Message::OpenFolderDialog),
+            item("Add Repository…", "", Message::AddRepo(AddRepoMsg::Open)),
             Separator,
             item("Save", "Ctrl+S", Message::Save),
             item("Close Tab", "Ctrl+W", Message::CloseActive),

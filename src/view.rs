@@ -10,6 +10,7 @@ use iced::{Alignment, Color, Element, Length, Padding, Theme};
 use crate::editor::EditorView;
 use crate::icons::{icon, Icon};
 use crate::palette::{self, Palette};
+use crate::add_repo::AddRepoMsg;
 use crate::collab::CollabMsg;
 use crate::panes::Axis;
 use crate::scm::ScmMsg;
@@ -19,8 +20,8 @@ use crate::{menus, theme, App, Message};
 pub(crate) const TITLE_H: f32 = 38.0;
 pub(crate) const BAR_H: f32 = 32.0;
 pub(crate) const TAB_H: f32 = 36.0;
-pub(crate) const RAIL_W: f32 = 72.0;
-pub(crate) const LIST_W: f32 = 240.0;
+pub(crate) const RAIL_W: f32 = 52.0;
+pub(crate) const LIST_W: f32 = 232.0;
 pub(crate) const SIDEBAR_W: f32 = RAIL_W + LIST_W;
 const AGENT_W: f32 = 470.0;
 
@@ -99,6 +100,9 @@ impl App {
             ]
             .into();
         }
+        if self.add_repo.open {
+            return stack![base, self.add_repo_dialog()].into();
+        }
         if self.collab_ui.open {
             return stack![base, self.collab_panel()].into();
         }
@@ -175,12 +179,7 @@ impl App {
             .max_height(560.0)
             .style(|_: &Theme| container::Style {
                 background: Some(theme::PANEL_BG.into()),
-                border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 8.0.into() },
-                shadow: iced::Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                    offset: iced::Vector::new(0.0, 8.0),
-                    blur_radius: 24.0,
-                },
+                border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 4.0.into() },
                 ..Default::default()
             });
         container(opaque(panel))
@@ -233,12 +232,7 @@ impl App {
                 border: iced::Border {
                     color: theme::BORDER,
                     width: 1.0,
-                    radius: 8.0.into(),
-                },
-                shadow: iced::Shadow {
-                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                    offset: iced::Vector::new(0.0, 8.0),
-                    blur_radius: 24.0,
+                    radius: 4.0.into(),
                 },
                 ..Default::default()
             });
@@ -262,48 +256,23 @@ impl App {
         .into()
     }
 
-    /// The far-left strip: one square per repository, like servers in Discord.
+    /// The far-left strip: one small tile per repository.
     fn rail(&self) -> Element<'_, Message> {
-        let mut rail = column![].spacing(8).align_x(Alignment::Start).padding([10, 0]);
-
-        rail = rail.push(rail_item(
-            "H".into(),
-            theme::ACCENT,
-            self.active_project.is_none(),
-            false,
-            "Home".into(),
-            Message::SwitchProject(None),
-        ));
-        rail = rail.push(
-            container(space::vertical().height(Length::Fixed(2.0)).width(Length::Fixed(32.0)))
-                .style(theme::bg(theme::SELECTED))
-                .padding([0, 0]),
-        );
-        let rail = rail.align_x(Alignment::Center);
-        let mut rail = rail;
-
+        let mut rail = column![].spacing(6).padding([8, 0]).align_x(Alignment::Start);
         for (i, project) in self.projects.iter().enumerate() {
             let name = self.project_name(i);
-            // Unread-style marker: something is still running or unsaved in a repo you're not looking at.
+            // Marker for a repo you're not looking at that still has something running or unsaved.
             let busy = self.active_project != Some(i)
                 && project.ws.as_ref().is_some_and(|w| w.has_running_terminal() || w.has_dirty_docs());
-            rail = rail.push(rail_item(
-                initials(&name),
-                project_color(&name),
+            rail = rail.push(rail_tile(
+                RailFace::Text(initials(&name)),
                 self.active_project == Some(i),
                 busy,
                 project.path.display().to_string(),
                 Message::SwitchProject(Some(i)),
             ));
         }
-        rail = rail.push(rail_item(
-            "+".into(),
-            Color::from_rgb8(0x3b, 0xa5, 0x5d),
-            false,
-            false,
-            "Add a repository".into(),
-            Message::OpenFolderDialog,
-        ));
+        rail = rail.push(rail_tile(RailFace::Plus, false, false, "Add a repository".into(), Message::AddRepo(AddRepoMsg::Open)));
 
         container(scrollable(rail).height(Length::Fill))
             .width(Length::Fixed(RAIL_W))
@@ -311,7 +280,6 @@ impl App {
             .style(theme::bg(theme::RAIL_BG))
             .into()
     }
-
     /// The repository's files as channels: folders are categories, files are rows.
     fn channel_list(&self) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
@@ -376,7 +344,7 @@ impl App {
             ));
         }
         if self.root.is_some() {
-            for (i, agent) in self.agents.iter().enumerate() {
+            for (i, agent) in self.agents.iter().enumerate().filter(|(_, a)| a.installed) {
                 list = list.push(list_row(
                     row![
                         icon(Icon::Sparkle, 15.0, theme::TEXT_FAINT),
@@ -533,9 +501,17 @@ impl App {
                 ]
                 .spacing(4)
                 .width(Length::Fixed(280.0));
-                for (i, agent) in self.agents.iter().enumerate() {
+                let mut order: Vec<usize> = (0..self.agents.len()).collect();
+                order.sort_by_key(|&i| !self.agents[i].installed);
+                for i in order {
+                    let agent = &self.agents[i];
                     starters = starters.push(list_row(
-                        row![icon(Icon::Sparkle, 15.0, theme::ACCENT), text(agent.name.clone()).size(13)]
+                        row![
+                            icon(Icon::Sparkle, 15.0, if agent.installed { theme::ACCENT } else { theme::TEXT_FAINT }),
+                            text(if agent.installed { agent.name.clone() } else { format!("{} · not installed", agent.name) })
+                                .size(13)
+                                .color(if agent.installed { theme::TEXT } else { theme::TEXT_FAINT }),
+                        ]
                             .spacing(10)
                             .align_y(Alignment::Center)
                             .into(),
@@ -858,53 +834,47 @@ pub(crate) fn initials(name: &str) -> String {
     if letters.is_empty() { "?".into() } else { letters }
 }
 
-/// A stable colour per repository name.
-pub(crate) fn project_color(name: &str) -> Color {
-    const COLORS: [(u8, u8, u8); 6] = [
-        (0x5a, 0x7f, 0xb8),
-        (0x7a, 0x6b, 0xb8),
-        (0xb8, 0x78, 0x5a),
-        (0x4f, 0x9e, 0x82),
-        (0xb8, 0x5a, 0x8c),
-        (0xa8, 0x94, 0x4a),
-    ];
-    let hash = name.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-    let (r, g, b) = COLORS[hash as usize % COLORS.len()];
-    Color::from_rgb8(r, g, b)
+enum RailFace {
+    Text(String),
+    Plus,
 }
 
-/// One tile in the rail: a rounded square (rounder when selected) with a pill
-/// at its left edge when selected or busy.
-fn rail_item<'a>(label: String, color: Color, active: bool, busy: bool, tip: String, msg: Message) -> Element<'a, Message> {
-    let radius = if active { 16.0 } else { 24.0 };
-    let face = container(text(label).size(17).color(Color::WHITE).center())
-        .center(Length::Fixed(48.0))
+/// One tile in the rail: a small square, brighter when it's the open repository,
+/// with a thin marker on its left edge when open (tall) or busy (short).
+fn rail_tile<'a>(face: RailFace, active: bool, busy: bool, tip: String, msg: Message) -> Element<'a, Message> {
+    let bg = if active { theme::TILE_ACTIVE } else { theme::TILE_BG };
+    let fg = if active { Color::WHITE } else { theme::TEXT_DIM };
+    let inner: Element<'a, Message> = match face {
+        RailFace::Text(label) => text(label).size(12).color(fg).center().into(),
+        RailFace::Plus => icon(Icon::Plus, 14.0, theme::TEXT_DIM),
+    };
+    let tile = container(inner)
+        .center(Length::Fixed(34.0))
         .style(move |_: &Theme| container::Style {
-            background: Some(color.into()),
-            border: iced::Border { radius: radius.into(), ..Default::default() },
+            background: Some(bg.into()),
+            border: iced::Border { radius: 4.0.into(), ..Default::default() },
             ..Default::default()
         });
-    let pill_height = if active { 36.0 } else if busy { 10.0 } else { 0.0 };
-    let pill = container(space::vertical().height(Length::Fixed(pill_height)).width(Length::Fixed(4.0)))
-        .style(|_: &Theme| container::Style {
-            background: Some(Color::WHITE.into()),
-            border: iced::Border { radius: 2.0.into(), ..Default::default() },
-            ..Default::default()
-        });
-    let tile = button(face).padding(0).style(|_: &Theme, _| button::Style::default()).on_press(msg);
-    let content = container(row![pill, space::horizontal().width(Length::Fixed(10.0)), tile].align_y(Alignment::Center))
+    let marker_height = if active { 18.0 } else if busy { 6.0 } else { 0.0 };
+    let marker = container(space::vertical().height(Length::Fixed(marker_height)).width(Length::Fixed(3.0)))
+        .style(|_: &Theme| container::Style { background: Some(theme::ACCENT.into()), ..Default::default() });
+    let button = button(tile).padding(0).style(|_: &Theme, _| button::Style::default()).on_press(msg);
+    let content = container(row![marker, space::horizontal().width(Length::Fixed(6.0)), button].align_y(Alignment::Center))
         .width(Length::Fixed(RAIL_W))
-        .height(Length::Fixed(50.0))
+        .height(Length::Fixed(36.0))
         .align_y(Alignment::Center);
-    iced::widget::tooltip(content, container(text(tip).size(12)).padding([4, 8]).style(|_: &Theme| container::Style {
-        background: Some(theme::BAR_BG.into()),
-        border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 6.0.into() },
-        ..Default::default()
-    }), iced::widget::tooltip::Position::Right)
-    .gap(6)
+    iced::widget::tooltip(
+        content,
+        container(text(tip).size(12)).padding([3, 7]).style(|_: &Theme| container::Style {
+            background: Some(theme::BAR_BG.into()),
+            border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 2.0.into() },
+            ..Default::default()
+        }),
+        iced::widget::tooltip::Position::Right,
+    )
+    .gap(4)
     .into()
 }
-
 /// A category header: small caps title with an open/closed chevron. `indent`
 /// nests sub-folders; `with_plus` adds a "+" button on the right.
 pub(crate) struct Category<'a> {

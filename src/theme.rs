@@ -12,6 +12,9 @@ pub const AGENT_BG: Color = Color::from_rgb8(0x26, 0x2a, 0x32);
 pub const RAIL_BG: Color = Color::from_rgb8(0x18, 0x1b, 0x20);
 /// Account panel in the bottom-left corner.
 pub const CHIP_BG: Color = Color::from_rgb8(0x1b, 0x1e, 0x24);
+/// Repository tiles in the rail.
+pub const TILE_BG: Color = Color::from_rgb8(0x28, 0x2d, 0x36);
+pub const TILE_ACTIVE: Color = Color::from_rgb8(0x3b, 0x49, 0x63);
 pub const TAB_BAR_BG: Color = Color::from_rgb8(0x2b, 0x30, 0x38);
 pub const BORDER: Color = Color::from_rgb8(0x18, 0x1a, 0x1f);
 pub const HOVER: Color = Color::from_rgb8(0x2c, 0x31, 0x3a);
@@ -42,7 +45,7 @@ pub fn flat(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
             background: background.map(Background::Color),
             text_color: if selected { TEXT } else { TEXT_DIM },
             border: Border {
-                radius: 5.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -62,7 +65,7 @@ pub fn row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
             background: background.map(Background::Color),
             text_color: TEXT,
             border: Border {
-                radius: 5.0.into(),
+                radius: 3.0.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -76,7 +79,7 @@ pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
     text_input::Style {
         background: Background::Color(EDITOR_BG),
         border: Border {
-            radius: 6.0.into(),
+            radius: 3.0.into(),
             width: 1.0,
             color: if focused { ACCENT } else { SELECTED },
         },

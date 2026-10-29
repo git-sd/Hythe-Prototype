@@ -1,3 +1,4 @@
+mod add_repo;
 mod buffer;
 mod collab;
 mod completion_ui;
@@ -24,6 +25,7 @@ use iced::{clipboard, window, Subscription, Task, Theme};
 
 use doc::{Doc, TAB_WIDTH};
 use explorer::Node;
+use add_repo::{AddRepo, AddRepoMsg};
 use collab::{Collab, CollabMsg, CollabUi};
 use completion_ui::CompletionUi;
 use highlight::Highlighter;
@@ -110,6 +112,7 @@ struct App {
     /// Live collaboration for the open repository.
     collab: Option<Collab>,
     collab_ui: CollabUi,
+    add_repo: AddRepo,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +157,8 @@ pub enum Message {
     Scm(ScmMsg),
     /// Live collaboration through a relay.
     Collab(CollabMsg),
+    /// The "Add a repository" dialog: local folder or clone.
+    AddRepo(AddRepoMsg),
     /// Open a project from the sidebar's Projects list.
     OpenRecent(PathBuf),
     /// Click on a repository in the rail (None is the Home button).
@@ -188,7 +193,7 @@ impl App {
             terms: TerminalManager::default(),
             term_active: None,
             term_snap: None,
-            agents: hythe_term::available_agents(),
+            agents: hythe_term::known_agents(),
             status: String::new(),
             palette: None,
             menu: None,
@@ -205,6 +210,7 @@ impl App {
             home: None,
             collab: None,
             collab_ui: CollabUi::default(),
+            add_repo: AddRepo::default(),
         };
         app.projects = app.persisted.projects.iter().map(|p| Project { path: p.clone(), ws: None }).collect();
         // Scripted runs: HYTHE_COLLAB="ws://host:port|room|name" joins a room on startup.
@@ -218,6 +224,9 @@ impl App {
             }
         } else if let Some(i) = app.persisted.active.as_ref().and_then(|a| app.projects.iter().position(|p| &p.path == a)) {
             app.switch_project(Some(i));
+        } else if !app.projects.is_empty() {
+            // No Home screen: always land in a repository.
+            app.switch_project(Some(0));
         }
         if let Some(spec) = auto_join {
             let mut parts = spec.splitn(3, '|');
@@ -481,6 +490,10 @@ impl App {
             },
             None => Profile::shell(),
         };
+        if profile.kind == hythe_term::ProfileKind::Agent && !profile.is_available() {
+            self.status = format!("{} isn't installed (not found on PATH)", profile.name);
+            return;
+        }
         let cwd = self.root.as_ref().map(|r| r.path.clone());
         match self.terms.spawn_profile(&profile, cwd) {
             Ok(id) => {
@@ -736,6 +749,7 @@ impl App {
             Message::GitRefresh => self.refresh_git(),
             Message::Scm(m) => return self.scm_update(m),
             Message::Collab(m) => return self.collab_update(m),
+            Message::AddRepo(m) => return self.add_repo_update(m),
             Message::Unavailable(what) => self.status = format!("{what} isn't available yet"),
             Message::OpenFile(p) => self.open_file(p),
             Message::ToggleDir(p) => {
