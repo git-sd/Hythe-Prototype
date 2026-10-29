@@ -34,6 +34,7 @@ pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
             item("Save", "Ctrl+S", Message::Save),
             item("Close Tab", "Ctrl+W", Message::CloseActive),
             item("Pin / Unpin File", "", Message::TogglePin),
+            item("Close Repository", "", Message::CloseProject),
             Separator,
             item("Exit", "", Message::CloseRequested),
         ],

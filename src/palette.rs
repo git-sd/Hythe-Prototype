@@ -41,6 +41,7 @@ fn all(agents: &[String]) -> Vec<Command> {
         c("Split Down", "Ctrl+Shift+\\", Message::Split(Axis::Vertical)),
         c("Close Pane", "", Message::ClosePane),
         c("Focus Next Pane", "Ctrl+1-9", Message::FocusNextPane),
+        c("Close Repository", "", Message::CloseProject),
         c("Source Control", "Ctrl+Shift+G", Message::Scm(ScmMsg::Show)),
         c("Git: Push", "", Message::Scm(ScmMsg::Push)),
         c("Git: Pull", "", Message::Scm(ScmMsg::Pull)),

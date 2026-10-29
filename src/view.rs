@@ -18,7 +18,9 @@ use crate::{menus, theme, App, Message};
 pub(crate) const TITLE_H: f32 = 38.0;
 pub(crate) const BAR_H: f32 = 32.0;
 pub(crate) const TAB_H: f32 = 36.0;
-pub(crate) const SIDEBAR_W: f32 = 276.0;
+pub(crate) const RAIL_W: f32 = 72.0;
+pub(crate) const LIST_W: f32 = 240.0;
+pub(crate) const SIDEBAR_W: f32 = RAIL_W + LIST_W;
 const AGENT_W: f32 = 470.0;
 
 pub(crate) fn divider_v<'a>() -> Element<'a, Message> {
@@ -44,12 +46,6 @@ pub(crate) fn icon_button<'a>(glyph: Icon, color: Color, on: bool, msg: Message)
         .into()
 }
 
-pub(crate) fn section_header<'a>(label: &'a str) -> Element<'a, Message> {
-    container(text(label).size(13).color(theme::TEXT_DIM))
-        .padding(Padding { top: 12.0, right: 8.0, bottom: 4.0, left: 8.0 })
-        .into()
-}
-
 pub(crate) fn list_row<'a>(content: Element<'a, Message>, selected: bool, msg: Message) -> Element<'a, Message> {
     button(content)
         .width(Length::Fill)
@@ -71,17 +67,20 @@ pub(crate) fn dot<'a>(color: Color) -> Element<'a, Message> {
 
 impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
-        let mut columns = row![].height(Length::Fill);
-        if self.show_sidebar {
-            columns = columns.push(self.sidebar()).push(divider_v());
-        }
+        let mut main = row![].height(Length::Fill);
         if self.show_term {
-            columns = columns.push(self.agent_panel()).push(divider_v());
+            main = main.push(self.agent_panel()).push(divider_v());
         }
-        columns = columns.push(self.editor_area());
+        main = main.push(self.editor_area());
+        let right = column![main, divider_h(), self.bottom_bar()].width(Length::Fill);
 
-        let base = column![self.title_bar(), divider_h(), columns, divider_h(), self.bottom_bar()];
-        if let Some(p) = &self.palette {
+        let mut body = row![].height(Length::Fill);
+        if self.show_sidebar {
+            body = body.push(self.left_block()).push(divider_v());
+        }
+        body = body.push(right);
+
+        let base = column![self.title_bar(), divider_h(), body];        if let Some(p) = &self.palette {
             return stack![
                 base,
                 mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
@@ -246,144 +245,245 @@ impl App {
             .into()
     }
 
-    // --- sidebar: Pinned / Projects / Threads ---
+    // --- left block: repository rail, channel-style file list, account chip ---
 
-    fn sidebar(&self) -> Element<'_, Message> {
-        let dim = theme::TEXT_DIM;
-        let mut list = column![].spacing(1).padding([2, 8]);
+    fn left_block(&self) -> Element<'_, Message> {
+        container(column![
+            row![self.rail(), self.channel_list()].height(Length::Fill),
+            self.account_chip(),
+        ])
+        .width(Length::Fixed(SIDEBAR_W))
+        .height(Length::Fill)
+        .into()
+    }
 
-        // Pinned files.
-        list = list.push(section_header("Pinned"));
-        if self.persisted.pinned.is_empty() {
-            list = list.push(
-                container(text("Nothing pinned — File ▸ Pin / Unpin").size(12).color(theme::TEXT_FAINT))
-                    .padding([2, 8]),
-            );
-        }
-        let active_path = self.docs.get(self.panes.cur()).and_then(|d| d.path.as_ref());
-        for path in &self.persisted.pinned {
-            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            list = list.push(list_row(
-                row![icon(Icon::Pin, 13.0, dim), text(name).size(13)]
-                    .spacing(8)
-                    .align_y(Alignment::Center)
-                    .into(),
-                active_path == Some(path),
-                Message::OpenFile(path.clone()),
+    /// The far-left strip: one square per repository, like servers in Discord.
+    fn rail(&self) -> Element<'_, Message> {
+        let mut rail = column![].spacing(8).align_x(Alignment::Start).padding([10, 0]);
+
+        rail = rail.push(rail_item(
+            "H".into(),
+            theme::ACCENT,
+            self.active_project.is_none(),
+            false,
+            "Home".into(),
+            Message::SwitchProject(None),
+        ));
+        rail = rail.push(
+            container(space::vertical().height(Length::Fixed(2.0)).width(Length::Fixed(32.0)))
+                .style(theme::bg(theme::SELECTED))
+                .padding([0, 0]),
+        );
+        let rail = rail.align_x(Alignment::Center);
+        let mut rail = rail;
+
+        for (i, project) in self.projects.iter().enumerate() {
+            let name = self.project_name(i);
+            // Unread-style marker: something is still running or unsaved in a repo you're not looking at.
+            let busy = self.active_project != Some(i)
+                && project.ws.as_ref().is_some_and(|w| w.has_running_terminal() || w.has_dirty_docs());
+            rail = rail.push(rail_item(
+                initials(&name),
+                project_color(&name),
+                self.active_project == Some(i),
+                busy,
+                project.path.display().to_string(),
+                Message::SwitchProject(Some(i)),
             ));
         }
+        rail = rail.push(rail_item(
+            "+".into(),
+            Color::from_rgb8(0x3b, 0xa5, 0x5d),
+            false,
+            false,
+            "Add a repository".into(),
+            Message::OpenFolderDialog,
+        ));
 
-        // Projects: the open one expands into its file tree.
-        list = list.push(section_header("Projects"));
-        let root_path = self.root.as_ref().map(|r| &r.path);
-        let mut projects: Vec<&std::path::PathBuf> = self.persisted.recents.iter().collect();
-        if let Some(r) = root_path {
-            if !projects.contains(&r) {
-                projects.insert(0, r);
+        container(scrollable(rail).height(Length::Fill))
+            .width(Length::Fixed(RAIL_W))
+            .height(Length::Fill)
+            .style(theme::bg(theme::RAIL_BG))
+            .into()
+    }
+
+    /// The repository's files as channels: folders are categories, files are rows.
+    fn channel_list(&self) -> Element<'_, Message> {
+        let dim = theme::TEXT_DIM;
+        let name = self
+            .active_project
+            .map(|i| self.project_name(i))
+            .unwrap_or_else(|| "Hythe".to_string());
+
+        let header = button(
+            container(row![text(name).size(15), space::horizontal(), icon(Icon::ChevronDown, 13.0, dim)].align_y(Alignment::Center))
+                .height(Length::Fill)
+                .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(TITLE_H + 10.0))
+        .padding([0, 12])
+        .style(theme::row(false))
+        .on_press(Message::OpenMenu(0));
+
+        let changes = self.scm.changes.len();
+        let mut list = column![].spacing(1).padding([6, 8]);
+        list = list.push(list_row(
+            row![
+                icon(Icon::Branch, 15.0, dim),
+                text("Changes").size(14).color(dim),
+                space::horizontal(),
+                text(if changes > 0 { changes.to_string() } else { String::new() }).size(11).color(theme::ACCENT),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into(),
+            self.scm.open,
+            Message::Scm(ScmMsg::Show),
+        ));
+        list = list.push(list_row(
+            row![icon(Icon::Search, 15.0, dim), text("Search").size(14).color(dim)]
+                .spacing(10)
+                .align_y(Alignment::Center)
+                .into(),
+            false,
+            Message::OpenPalette,
+        ));
+        list = list.push(container(divider_h()).padding([6, 4]));
+
+        // Terminals and agents: local to this repository, like voice channels.
+        list = list.push(category("Terminals", None, Some(Message::NewTerminal(None))).with_plus());
+        for info in self.terms.list() {
+            let glyph = if self.agents.iter().any(|a| a.name == info.name) { Icon::Sparkle } else { Icon::Terminal };
+            list = list.push(list_row(
+                row![
+                    icon(glyph, 15.0, dim),
+                    text(info.name.clone()).size(14),
+                    space::horizontal(),
+                    dot(if info.running { theme::ADDED } else { theme::TEXT_FAINT }),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center)
+                .padding([0, 0])
+                .into(),
+                self.term_active == Some(info.id),
+                Message::TermSelect(info.id),
+            ));
+        }
+        if self.root.is_some() {
+            for (i, agent) in self.agents.iter().enumerate() {
+                list = list.push(list_row(
+                    row![
+                        icon(Icon::Sparkle, 15.0, theme::TEXT_FAINT),
+                        text(format!("Start {}", agent.name)).size(13).color(theme::TEXT_FAINT),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center)
+                    .into(),
+                    false,
+                    Message::NewTerminal(Some(i)),
+                ));
             }
         }
-        if projects.is_empty() {
-            list = list.push(list_row(
-                row![icon(Icon::Folder, 14.0, dim), text("Open a folder…").size(13)]
-                    .spacing(8)
-                    .align_y(Alignment::Center)
-                    .into(),
-                false,
-                Message::OpenFolderDialog,
-            ));
-        }
-        for path in projects {
-            let is_open = root_path == Some(path);
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
-            let expanded = is_open && self.root.as_ref().is_some_and(|r| r.expanded);
-            let chevron = if expanded { Icon::ChevronDown } else { Icon::ChevronRight };
-            let msg = if is_open { Message::ToggleDir(path.clone()) } else { Message::OpenRecent(path.clone()) };
-            list = list.push(list_row(
-                row![icon(chevron, 12.0, dim), icon(Icon::Folder, 14.0, dim), text(name).size(13)]
-                    .spacing(7)
-                    .align_y(Alignment::Center)
-                    .into(),
-                is_open,
-                msg,
-            ));
-            if expanded {
-                if let Some(root) = &self.root {
-                    let mut rows = Vec::new();
-                    root.rows(0, &mut rows);
-                    for (depth, node) in rows {
-                        let lead = space::horizontal().width(Length::Fixed(14.0 + depth as f32 * 14.0));
-                        let (marker, msg) = if node.is_dir {
-                            (
-                                icon(if node.expanded { Icon::ChevronDown } else { Icon::ChevronRight }, 11.0, dim),
-                                Message::ToggleDir(node.path.clone()),
-                            )
-                        } else {
-                            (icon(Icon::File, 12.0, theme::TEXT_FAINT), Message::OpenFile(node.path.clone()))
-                        };
-                        list = list.push(list_row(
-                            row![lead, marker, text(node.name.clone()).size(13)]
-                                .spacing(7)
-                                .align_y(Alignment::Center)
-                                .into(),
+        list = list.push(container(divider_h()).padding([6, 4]));
+
+        let active_path = self.docs.get(self.panes.cur()).and_then(|d| d.path.as_ref());
+
+        match &self.root {
+            None => {
+                list = list.push(
+                    container(text("No repository open").size(13).color(theme::TEXT_FAINT)).padding([8, 10]),
+                );
+                list = list.push(list_row(
+                    row![icon(Icon::Folder, 15.0, dim), text("Open a repository…").size(14)]
+                        .spacing(10)
+                        .align_y(Alignment::Center)
+                        .into(),
+                    false,
+                    Message::OpenFolderDialog,
+                ));
+            }
+            Some(root) => {
+                // Pinned files in this repository.
+                let pinned: Vec<&std::path::PathBuf> =
+                    self.persisted.pinned.iter().filter(|p| p.starts_with(&root.path)).collect();
+                if !pinned.is_empty() {
+                    list = list.push(category("Pinned", None, None));
+                    for path in pinned {
+                        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        list = list.push(channel_row(Icon::Pin, name, 0, active_path == Some(path), Message::OpenFile(path.clone())));
+                    }
+                }
+
+                // Files and folders. A folder is a category; its files are the channels under it.
+                let mut rows = Vec::new();
+                root.rows(0, &mut rows);
+                let mut top_files_started = false;
+                for (depth, node) in rows {
+                    if node.is_dir {
+                        list = list.push(category(
+                            &node.name,
+                            Some(node.expanded),
+                            Some(Message::ToggleDir(node.path.clone())),
+                        ).indent(depth));
+                    } else {
+                        if depth == 0 && !top_files_started {
+                            top_files_started = true;
+                            list = list.push(category("Files", None, None));
+                        }
+                        list = list.push(channel_row(
+                            Icon::File,
+                            node.name.clone(),
+                            depth,
                             active_path == Some(&node.path),
-                            msg,
+                            Message::OpenFile(node.path.clone()),
                         ));
                     }
                 }
             }
         }
 
-        // Threads: terminals and the agents running in them.
-        list = list.push(
-            row![
-                container(text("Threads").size(13).color(theme::TEXT_DIM)).padding(Padding {
-                    top: 12.0,
-                    right: 8.0,
-                    bottom: 4.0,
-                    left: 8.0
-                }),
-                space::horizontal(),
-                icon_button(Icon::Plus, dim, false, Message::NewTerminal(None)),
-            ]
-            .align_y(Alignment::Center),
-        );
-        for info in self.terms.list() {
-            let glyph = if self.agents.iter().any(|a| a.name == info.name) { Icon::Sparkle } else { Icon::Terminal };
-            list = list.push(list_row(
-                row![
-                    icon(glyph, 14.0, dim),
-                    text(info.name.clone()).size(13),
-                    space::horizontal(),
-                    dot(if info.running { theme::ACCENT } else { theme::TEXT_FAINT }),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into(),
-                self.term_active == Some(info.id),
-                Message::TermSelect(info.id),
-            ));
-        }
-        for (i, agent) in self.agents.iter().enumerate() {
-            list = list.push(list_row(
-                row![icon(Icon::Sparkle, 14.0, theme::TEXT_FAINT), text(format!("Start {}", agent.name)).size(13).color(dim)]
-                    .spacing(8)
-                    .align_y(Alignment::Center)
-                    .into(),
-                false,
-                Message::NewTerminal(Some(i)),
-            ));
-        }
-
-        container(scrollable(list).height(Length::Fill))
-            .width(Length::Fixed(SIDEBAR_W))
+        container(column![header, divider_h(), scrollable(list).height(Length::Fill)])
+            .width(Length::Fixed(LIST_W))
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))
             .into()
     }
 
+    /// Account panel across the bottom of the rail and list, like Discord's.
+    fn account_chip(&self) -> Element<'_, Message> {
+        let dim = theme::TEXT_DIM;
+        let initial = self.user.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
+        let avatar = container(text(initial).size(13).color(Color::WHITE))
+            .center(Length::Fixed(32.0))
+            .style(|_: &Theme| container::Style {
+                background: Some(Color::from_rgb8(0x5a, 0x7f, 0xb8).into()),
+                border: iced::Border { radius: 16.0.into(), ..Default::default() },
+                ..Default::default()
+            });
+        let subtitle = self
+            .git
+            .as_ref()
+            .map(|g| g.branch.clone())
+            .unwrap_or_else(|| "no repository".into());
+        container(
+            row![
+                avatar,
+                column![text(self.user.clone()).size(13), text(subtitle).size(11).color(dim)].spacing(1),
+                space::horizontal(),
+                icon_button(Icon::Terminal, dim, self.show_term, Message::ToggleTerminal),
+                icon_button(Icon::Menu, dim, self.menu.is_some(), Message::OpenMenu(0)),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .padding([0, 10]),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(52.0))
+        .align_y(Alignment::Center)
+        .style(theme::bg(theme::CHIP_BG))
+        .into()
+    }
     // --- agent / terminal panel ---
 
     fn agent_panel(&self) -> Element<'_, Message> {
@@ -646,31 +746,6 @@ impl App {
     fn bottom_bar(&self) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
 
-        // Account chip, as wide as the sidebar above it.
-        let initial = self.user.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
-        let avatar = container(text(initial).size(11).color(Color::WHITE))
-            .center(Length::Fixed(20.0))
-            .style(|_: &Theme| container::Style {
-                background: Some(Color::from_rgb8(0x5a, 0x7f, 0xb8).into()),
-                border: iced::Border { radius: 10.0.into(), ..Default::default() },
-                ..Default::default()
-            });
-        let account = container(
-            row![
-                avatar,
-                text(self.user.clone()).size(13),
-                text("Hythe").size(12).color(theme::TEXT_DIM),
-                space::horizontal(),
-                icon(Icon::ChevronDown, 12.0, dim),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .padding([0, 12]),
-        )
-        .width(if self.show_sidebar { Length::Fixed(SIDEBAR_W) } else { Length::Shrink })
-        .height(Length::Fill)
-        .align_y(Alignment::Center);
-
         // Repository, branch and uncommitted changes.
         let git: Element<'_, Message> = match &self.git {
             Some(g) => button(
@@ -725,7 +800,6 @@ impl App {
 
         container(
             row![
-                account,
                 git,
                 container(text(self.status.clone()).size(12).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None))
                     .width(Length::Fill)
@@ -765,4 +839,138 @@ impl App {
             .unwrap_or(0);
         Some(format!("{who}, {} • {}", hythe_git::time_ago(b.time, now), b.summary))
     }
+}
+/// Letters for a repository tile: "Hythe-Prototype" becomes "HP".
+pub(crate) fn initials(name: &str) -> String {
+    let letters: String = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .filter_map(|w| w.chars().next())
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect();
+    if letters.is_empty() { "?".into() } else { letters }
+}
+
+/// A stable colour per repository name.
+pub(crate) fn project_color(name: &str) -> Color {
+    const COLORS: [(u8, u8, u8); 6] = [
+        (0x5a, 0x7f, 0xb8),
+        (0x7a, 0x6b, 0xb8),
+        (0xb8, 0x78, 0x5a),
+        (0x4f, 0x9e, 0x82),
+        (0xb8, 0x5a, 0x8c),
+        (0xa8, 0x94, 0x4a),
+    ];
+    let hash = name.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+    let (r, g, b) = COLORS[hash as usize % COLORS.len()];
+    Color::from_rgb8(r, g, b)
+}
+
+/// One tile in the rail: a rounded square (rounder when selected) with a pill
+/// at its left edge when selected or busy.
+fn rail_item<'a>(label: String, color: Color, active: bool, busy: bool, tip: String, msg: Message) -> Element<'a, Message> {
+    let radius = if active { 16.0 } else { 24.0 };
+    let face = container(text(label).size(17).color(Color::WHITE).center())
+        .center(Length::Fixed(48.0))
+        .style(move |_: &Theme| container::Style {
+            background: Some(color.into()),
+            border: iced::Border { radius: radius.into(), ..Default::default() },
+            ..Default::default()
+        });
+    let pill_height = if active { 36.0 } else if busy { 10.0 } else { 0.0 };
+    let pill = container(space::vertical().height(Length::Fixed(pill_height)).width(Length::Fixed(4.0)))
+        .style(|_: &Theme| container::Style {
+            background: Some(Color::WHITE.into()),
+            border: iced::Border { radius: 2.0.into(), ..Default::default() },
+            ..Default::default()
+        });
+    let tile = button(face).padding(0).style(|_: &Theme, _| button::Style::default()).on_press(msg);
+    let content = container(row![pill, space::horizontal().width(Length::Fixed(10.0)), tile].align_y(Alignment::Center))
+        .width(Length::Fixed(RAIL_W))
+        .height(Length::Fixed(50.0))
+        .align_y(Alignment::Center);
+    iced::widget::tooltip(content, container(text(tip).size(12)).padding([4, 8]).style(|_: &Theme| container::Style {
+        background: Some(theme::BAR_BG.into()),
+        border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 6.0.into() },
+        ..Default::default()
+    }), iced::widget::tooltip::Position::Right)
+    .gap(6)
+    .into()
+}
+
+/// A category header: small caps title with an open/closed chevron. `indent`
+/// nests sub-folders; `with_plus` adds a "+" button on the right.
+pub(crate) struct Category<'a> {
+    title: String,
+    expanded: Option<bool>,
+    on_press: Option<Message>,
+    indent: usize,
+    plus: bool,
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+fn category<'a>(title: &str, expanded: Option<bool>, on_press: Option<Message>) -> Category<'a> {
+    Category { title: title.to_string(), expanded, on_press, indent: 0, plus: false, _marker: std::marker::PhantomData }
+}
+
+impl<'a> Category<'a> {
+    fn indent(mut self, depth: usize) -> Self {
+        self.indent = depth;
+        self
+    }
+
+    fn with_plus(mut self) -> Self {
+        self.plus = true;
+        self
+    }
+}
+
+impl<'a> From<Category<'a>> for Element<'a, Message> {
+    fn from(c: Category<'a>) -> Self {
+        let dim = theme::TEXT_DIM;
+        let chevron: Element<'a, Message> = match c.expanded {
+            Some(true) => icon(Icon::ChevronDown, 10.0, dim),
+            Some(false) => icon(Icon::ChevronRight, 10.0, dim),
+            None => space::horizontal().width(Length::Fixed(0.0)).into(),
+        };
+        let mut r = row![
+            space::horizontal().width(Length::Fixed(c.indent as f32 * 10.0)),
+            chevron,
+            text(c.title.to_uppercase()).size(11).color(dim),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center);
+        if c.plus {
+            r = r.push(space::horizontal());
+            r = r.push(icon(Icon::Plus, 13.0, dim));
+        }
+        let b = button(r).width(Length::Fill).padding(Padding { top: 10.0, right: 6.0, bottom: 3.0, left: 6.0 }).style(|_: &Theme, status| {
+            button::Style {
+                text_color: if matches!(status, button::Status::Hovered) { theme::TEXT } else { theme::TEXT_DIM },
+                ..button::Style::default()
+            }
+        });
+        match c.on_press {
+            Some(msg) => b.on_press(msg).into(),
+            None => b.into(),
+        }
+    }
+}
+
+/// A file as a channel row.
+fn channel_row<'a>(glyph: Icon, name: String, depth: usize, selected: bool, msg: Message) -> Element<'a, Message> {
+    let color = if selected { theme::TEXT } else { theme::TEXT_DIM };
+    list_row(
+        row![
+            space::horizontal().width(Length::Fixed(depth as f32 * 10.0 + 4.0)),
+            icon(glyph, 14.0, theme::TEXT_FAINT),
+            text(name).size(14).color(color),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into(),
+        selected,
+        msg,
+    )
 }

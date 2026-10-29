@@ -26,6 +26,11 @@ impl Node {
             loaded: false,
         };
         node.load();
+        // Top-level folders start open, like categories in a channel list.
+        for child in node.children.iter_mut().filter(|c| c.is_dir) {
+            child.expanded = true;
+            child.load();
+        }
         node
     }
 

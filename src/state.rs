@@ -1,19 +1,26 @@
-//! Remembered projects and pinned files, and a quick look at the git repository.
+//! What we remember between runs: the repositories in the rail, which one was
+//! open, and pinned files. Plus the git user's name for the account chip.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const MAX_RECENTS: usize = 8;
+const MAX_PROJECTS: usize = 24;
 
-/// What we keep between runs: recently opened project folders and pinned files.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Persisted {
-    pub recents: Vec<PathBuf>,
+    /// Repositories shown in the rail, in the order they were added.
+    pub projects: Vec<PathBuf>,
+    /// The project that was open when the app last ran.
+    pub active: Option<PathBuf>,
     pub pinned: Vec<PathBuf>,
 }
 
 impl Persisted {
+    /// `HYTHE_STATE` overrides the location (used by tests and scripted runs).
     fn file() -> Option<PathBuf> {
+        if let Some(p) = std::env::var_os("HYTHE_STATE") {
+            return Some(PathBuf::from(p));
+        }
         let base = std::env::var_os("APPDATA")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
@@ -35,12 +42,19 @@ impl Persisted {
         let _ = std::fs::write(file, self.serialize());
     }
 
-    /// One `kind=path` per line; unknown lines are ignored.
+    /// One `kind=path` per line; unknown lines are ignored. Older files used
+    /// `recent=` for what is now `project=`.
     pub fn parse(text: &str) -> Self {
         let mut p = Persisted::default();
         for line in text.lines() {
             match line.split_once('=') {
-                Some(("recent", path)) if !path.is_empty() => p.recents.push(PathBuf::from(path)),
+                Some(("project" | "recent", path)) if !path.is_empty() => {
+                    let path = PathBuf::from(path);
+                    if !p.projects.contains(&path) {
+                        p.projects.push(path);
+                    }
+                }
+                Some(("active", path)) if !path.is_empty() => p.active = Some(PathBuf::from(path)),
                 Some(("pinned", path)) if !path.is_empty() => p.pinned.push(PathBuf::from(path)),
                 _ => {}
             }
@@ -50,8 +64,11 @@ impl Persisted {
 
     pub fn serialize(&self) -> String {
         let mut out = String::new();
-        for r in &self.recents {
-            out.push_str(&format!("recent={}\n", r.display()));
+        for r in &self.projects {
+            out.push_str(&format!("project={}\n", r.display()));
+        }
+        if let Some(a) = &self.active {
+            out.push_str(&format!("active={}\n", a.display()));
         }
         for r in &self.pinned {
             out.push_str(&format!("pinned={}\n", r.display()));
@@ -59,11 +76,24 @@ impl Persisted {
         out
     }
 
-    /// Move `dir` to the front of the recent projects.
-    pub fn remember_project(&mut self, dir: &Path) {
-        self.recents.retain(|r| r != dir);
-        self.recents.insert(0, dir.to_path_buf());
-        self.recents.truncate(MAX_RECENTS);
+    /// Add `dir` to the rail unless it's there. Returns its index.
+    pub fn add_project(&mut self, dir: &Path) -> usize {
+        if let Some(i) = self.projects.iter().position(|p| p == dir) {
+            return i;
+        }
+        if self.projects.len() >= MAX_PROJECTS {
+            self.projects.remove(0);
+        }
+        self.projects.push(dir.to_path_buf());
+        self.projects.len() - 1
+    }
+
+    pub fn remove_project(&mut self, dir: &Path) {
+        self.projects.retain(|p| p != dir);
+        if self.active.as_deref() == Some(dir) {
+            self.active = None;
+        }
+        self.pinned.retain(|f| !f.starts_with(dir));
     }
 
     pub fn toggle_pin(&mut self, file: &Path) -> bool {
@@ -77,7 +107,7 @@ impl Persisted {
     }
 }
 
-/// Branch and uncommitted-change counts for the project's repository.
+/// Branch and uncommitted-change counts for the open project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitInfo {
     pub repo: String,
@@ -86,21 +116,18 @@ pub struct GitInfo {
     pub removed: u32,
 }
 
-fn git(dir: &Path, args: &[&str]) -> Option<String> {
+/// The git user name, for the account chip in the corner.
+pub fn git_user() -> Option<String> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir).args(args);
+    cmd.args(["config", "user.name"]);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let out = cmd.output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-/// The git user name, for the account chip in the corner.
-pub fn git_user() -> Option<String> {
-    git(Path::new("."), &["config", "user.name"]).filter(|n| !n.is_empty())
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !name.is_empty()).then_some(name)
 }
 
 #[cfg(test)]
@@ -108,25 +135,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn persisted_round_trips_and_ignores_junk() {
+    fn projects_keep_their_order_and_round_trip() {
         let mut p = Persisted::default();
-        p.remember_project(Path::new("C:/work/a"));
-        p.remember_project(Path::new("C:/work/b"));
-        p.remember_project(Path::new("C:/work/a"));
-        assert_eq!(p.recents, vec![PathBuf::from("C:/work/a"), PathBuf::from("C:/work/b")]);
+        assert_eq!(p.add_project(Path::new("C:/work/a")), 0);
+        assert_eq!(p.add_project(Path::new("C:/work/b")), 1);
+        assert_eq!(p.add_project(Path::new("C:/work/a")), 0, "no duplicates, no reordering");
+        p.active = Some(PathBuf::from("C:/work/b"));
         assert!(p.toggle_pin(Path::new("C:/work/a/x.rs")));
         let text = p.serialize();
-        assert_eq!(Persisted::parse(&format!("{text}garbage\nrecent=\n")), p);
+        assert_eq!(Persisted::parse(&format!("{text}garbage\nproject=\n")), p);
         assert!(!p.toggle_pin(Path::new("C:/work/a/x.rs")));
     }
 
     #[test]
-    fn recents_are_capped() {
+    fn old_state_files_still_load() {
+        let p = Persisted::parse("recent=C:/old\nrecent=C:/older\nrecent=C:/old\n");
+        assert_eq!(p.projects, vec![PathBuf::from("C:/old"), PathBuf::from("C:/older")]);
+    }
+
+    #[test]
+    fn removing_a_project_forgets_its_pins_and_active_marker() {
         let mut p = Persisted::default();
-        for i in 0..20 {
-            p.remember_project(Path::new(&format!("/p/{i}")));
+        p.add_project(Path::new("/p/a"));
+        p.add_project(Path::new("/p/b"));
+        p.active = Some(PathBuf::from("/p/a"));
+        p.toggle_pin(Path::new("/p/a/f.rs"));
+        p.toggle_pin(Path::new("/p/b/g.rs"));
+        p.remove_project(Path::new("/p/a"));
+        assert_eq!(p.projects, vec![PathBuf::from("/p/b")]);
+        assert_eq!(p.active, None);
+        assert_eq!(p.pinned, vec![PathBuf::from("/p/b/g.rs")]);
+    }
+
+    #[test]
+    fn the_rail_is_capped() {
+        let mut p = Persisted::default();
+        for i in 0..40 {
+            p.add_project(Path::new(&format!("/p/{i}")));
         }
-        assert_eq!(p.recents.len(), MAX_RECENTS);
-        assert_eq!(p.recents[0], PathBuf::from("/p/19"));
+        assert_eq!(p.projects.len(), MAX_PROJECTS);
+        assert_eq!(p.projects.last(), Some(&PathBuf::from("/p/39")));
     }
 }

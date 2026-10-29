@@ -14,6 +14,7 @@ mod state;
 mod terminal_view;
 mod theme;
 mod view;
+mod workspace;
 
 use std::path::PathBuf;
 
@@ -29,6 +30,7 @@ use palette::Palette;
 use panes::{Axis, Panes};
 use scm::{Scm, ScmMsg};
 use state::{GitInfo, Persisted};
+use workspace::{Project, Workspace};
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
@@ -40,13 +42,13 @@ fn main() -> iced::Result {
         .run()
 }
 
-enum Unsaved {
+pub(crate) enum Unsaved {
     Save,
     Discard,
     Cancel,
 }
 
-fn ask_unsaved(body: &str, save_label: &str) -> Unsaved {
+pub(crate) fn ask_unsaved(body: &str, save_label: &str) -> Unsaved {
     use rfd::{MessageButtons, MessageDialog, MessageDialogResult as R, MessageLevel};
     const DISCARD: &str = "Don't Save";
     let result = MessageDialog::new()
@@ -98,6 +100,11 @@ struct App {
     blame_on: bool,
     /// Name shown on the account chip.
     user: String,
+    /// Repositories in the rail; the open one's state lives in the fields above.
+    projects: Vec<Project>,
+    active_project: Option<usize>,
+    /// Workspace shown when no repository is selected (the Home screen).
+    home: Option<Workspace>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +149,10 @@ pub enum Message {
     Scm(ScmMsg),
     /// Open a project from the sidebar's Projects list.
     OpenRecent(PathBuf),
+    /// Click on a repository in the rail (None is the Home button).
+    SwitchProject(Option<usize>),
+    /// Remove the open repository from the rail.
+    CloseProject,
     /// Pin or unpin the current file in the sidebar.
     TogglePin,
     /// Re-read branch and change counts from git.
@@ -182,7 +193,11 @@ impl App {
             scm: Scm::default(),
             blame_on: false,
             user: state::git_user().unwrap_or_else(|| "you".into()),
+            projects: Vec::new(),
+            active_project: None,
+            home: None,
         };
+        app.projects = app.persisted.projects.iter().map(|p| Project { path: p.clone(), ws: None }).collect();
         if let Some(arg) = std::env::args().nth(1) {
             let path = PathBuf::from(arg);
             if path.is_dir() {
@@ -190,17 +205,10 @@ impl App {
             } else {
                 app.open_file(path);
             }
+        } else if let Some(i) = app.persisted.active.as_ref().and_then(|a| app.projects.iter().position(|p| &p.path == a)) {
+            app.switch_project(Some(i));
         }
         app
-    }
-
-    /// Make `path` the project: show it in the sidebar and remember it.
-    fn open_folder(&mut self, path: PathBuf) {
-        self.persisted.remember_project(&path);
-        self.persisted.save();
-        self.root = Some(Node::root(path));
-        self.show_sidebar = true;
-        self.refresh_git();
     }
 
     fn refresh_git(&mut self) {
@@ -236,10 +244,9 @@ impl App {
         match Doc::open(path.clone(), &mut self.highlighter) {
             Ok(doc) => {
                 if self.root.is_none() {
-                    // Show the file's folder without adding it to recent projects.
+                    // A file outside any repository in the rail: its folder becomes one.
                     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                        self.root = Some(Node::root(parent.to_path_buf()));
-                        self.refresh_git();
+                        self.open_folder(parent.to_path_buf());
                     }
                 }
                 self.docs.push(doc);
@@ -676,13 +683,11 @@ impl App {
                     self.open_folder(p);
                 }
             }
-            Message::OpenRecent(p) => {
-                if p.is_dir() {
-                    self.open_folder(p);
-                } else {
-                    self.status = format!("{} no longer exists", p.display());
-                    self.persisted.recents.retain(|r| r != &p);
-                    self.persisted.save();
+            Message::OpenRecent(p) => self.open_folder(p),
+            Message::SwitchProject(i) => self.switch_project(i),
+            Message::CloseProject => {
+                if let Some(i) = self.active_project {
+                    self.close_project(i);
                 }
             }
             Message::TogglePin => {
@@ -733,9 +738,28 @@ impl App {
             }
             Message::CloseRequested => {
                 let all: Vec<usize> = (0..self.docs.len()).collect();
-                if self.confirm_discard(&all) {
-                    return iced::exit();
+                if !self.confirm_discard(&all) {
+                    return Task::none();
                 }
+                // Other repositories' unsaved files count too.
+                let parked = self.parked_dirty_docs();
+                if !parked.is_empty() {
+                    let body = format!(
+                        "Unsaved files in other repositories:\n{}\n\nYes saves them all, No discards the changes.",
+                        parked.join("\n")
+                    );
+                    match ask_unsaved(&body, "Save All") {
+                        Unsaved::Cancel => return Task::none(),
+                        Unsaved::Discard => {}
+                        Unsaved::Save => {
+                            if let Err(e) = self.save_parked_docs() {
+                                self.status = e;
+                                return Task::none();
+                            }
+                        }
+                    }
+                }
+                return iced::exit();
             }
             Message::FocusNextPane => self.panes.focus_next(),
             Message::FocusPane(i) => self.panes.focus_pane(i),
