@@ -27,7 +27,6 @@ pub(crate) const RAIL_W: f32 = 52.0;
 pub(crate) const LIST_W: f32 = 232.0;
 pub(crate) const AGENT_W: f32 = 470.0;
 pub(crate) const SCM_W: f32 = 340.0;
-pub(crate) const MEMBERS_W: f32 = 220.0;
 pub(crate) const CHAT_W: f32 = 160.0;
 /// Width of a draggable divider (the visible line is 1px in the middle).
 pub(crate) const HANDLE_W: f32 = 5.0;
@@ -121,9 +120,6 @@ impl App {
             main = main.push(self.agent_panel()).push(self.handle(Handle::Agent, true));
         }
         main = main.push(self.editor_area());
-        if self.show_members() {
-            main = main.push(self.handle(Handle::Members, true)).push(self.members_panel());
-        }
         if agent_right {
             main = main.push(self.handle(Handle::Agent, true)).push(self.agent_panel());
         }
@@ -194,7 +190,7 @@ impl App {
                 .on_press(Message::DragWindow)
                 .on_double_click(Message::ToggleMaximize),
                 icon_button(Icon::Eye, dim, false, Message::Unavailable("Follow mode")),
-                self.peer_dots(),
+                self.people_bar(),
                 icon_button(
                     Icon::Chat,
                     dim,
@@ -1043,77 +1039,68 @@ impl App {
     }
 }
 impl App {
-    /// Discord-style list of the people on this repository, down the right side.
-    pub(crate) fn members_panel(&self) -> Element<'_, Message> {
-        let header = |label: String| {
-            container(text(label).size(11).color(theme::TEXT_FAINT)).padding(Padding { top: 12.0, right: 8.0, bottom: 4.0, left: 8.0 })
-        };
-        let face = |name: &str, handle: Option<&iced::widget::image::Handle>, color: Color| -> Element<'static, Message> {
+    /// Everyone working on this repository as small round pictures in the title
+    /// bar; hovering one shows the name. Shown only when there is more than one.
+    pub(crate) fn people_bar(&self) -> Element<'_, Message> {
+        if !self.show_members() {
+            return space::horizontal().width(Length::Shrink).into();
+        }
+        const SHOWN: usize = 7;
+        const SIZE: f32 = 22.0;
+        let face = |name: &str, handle: Option<&iced::widget::image::Handle>, color: Color, ring: Option<Color>| -> Element<'static, Message> {
+            let border = iced::Border { radius: (SIZE / 2.0).into(), color: ring.unwrap_or(Color::TRANSPARENT), width: if ring.is_some() { 2.0 } else { 0.0 } };
             match handle {
-                Some(h) => iced::widget::image(h.clone())
-                    .width(Length::Fixed(28.0))
-                    .height(Length::Fixed(28.0))
-                    .border_radius(14.0)
+                Some(h) => container(iced::widget::image(h.clone()).width(Length::Fixed(SIZE)).height(Length::Fixed(SIZE)).border_radius(SIZE / 2.0))
+                    .style(move |_: &Theme| container::Style { border, ..Default::default() })
                     .into(),
                 None => {
                     let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-                    container(text(initial).size(12).color(Color::WHITE))
-                        .center(Length::Fixed(28.0))
-                        .style(move |_: &Theme| container::Style {
-                            background: Some(color.into()),
-                            border: iced::Border { radius: 14.0.into(), ..Default::default() },
-                            ..Default::default()
-                        })
+                    container(text(initial).size(11).color(Color::WHITE))
+                        .center(Length::Fixed(SIZE))
+                        .style(move |_: &Theme| container::Style { background: Some(color.into()), border, ..Default::default() })
                         .into()
                 }
             }
         };
-        let person = |face: Element<'static, Message>, name: String, sub: String, dim: bool| -> Element<'static, Message> {
-            container(
-                row![
-                    face,
-                    column![
-                        text(name).size(13).color(if dim { theme::TEXT_DIM } else { theme::TEXT }),
-                        text(sub).size(11).color(theme::TEXT_FAINT)
-                    ]
-                    .spacing(1),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
+        let tip = |face: Element<'static, Message>, label: String| -> Element<'static, Message> {
+            iced::widget::tooltip(
+                face,
+                container(text(label).size(12)).padding([3, 7]).style(|_: &Theme| container::Style {
+                    background: Some(theme::BAR_BG.into()),
+                    border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 2.0.into() },
+                    ..Default::default()
+                }),
+                iced::widget::tooltip::Position::Bottom,
             )
-            .padding([4, 8])
-            .width(Length::Fill)
+            .gap(6)
             .into()
         };
 
-        let mut list = column![].spacing(1).padding([0, 4]);
+        let mut r = row![].spacing(4).align_y(Alignment::Center);
+        // People in a live session first, ringed in green.
         if let Some(c) = &self.collab {
-            if !c.peers.is_empty() {
-                list = list.push(header(format!("ONLINE — {}", c.peers.len())));
-                for p in &c.peers {
-                    let color = crate::collab::rgb(p.color);
-                    list = list.push(person(face(&p.name, None, color), p.name.clone(), "In this session".into(), false));
-                }
+            for p in &c.peers {
+                let color = crate::collab::rgb(p.color);
+                r = r.push(tip(face(&p.name, None, color, Some(theme::ADDED)), format!("{} (online)", p.name)));
             }
         }
-        list = list.push(header(format!("COLLABORATORS — {}", self.members.len())));
-        for m in &self.members {
+        for m in self.members.iter().take(SHOWN) {
             let hue = m.name.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
-            let color = hsv(hue as f32);
             let handle = m.login.as_ref().and_then(|l| self.member_avatars.get(l));
-            let sub = format!("{} commit{}", m.commits, if m.commits == 1 { "" } else { "s" });
-            list = list.push(person(face(&m.name, handle, color), m.name.clone(), sub, true));
+            let label = format!("{} · {} commit{}", m.name, m.commits, if m.commits == 1 { "" } else { "s" });
+            r = r.push(tip(face(&m.name, handle, hsv(hue as f32), None), label));
         }
-
-        container(column![
-            container(text("People").size(13)).height(Length::Fixed(TAB_H)).padding([0, 12]).align_y(Alignment::Center),
-            divider_h(),
-            scrollable(list).height(Length::Fill),
-        ])
-        .width(Length::Fixed(self.members_w))
-        .height(Length::Fill)
-        .style(theme::bg(theme::PANEL_BG))
-        .into()
+        if self.members.len() > SHOWN {
+            let rest: Vec<&str> = self.members[SHOWN..].iter().map(|m| m.name.as_str()).collect();
+            let more = container(text(format!("+{}", rest.len())).size(10).color(theme::TEXT_DIM))
+                .center(Length::Fixed(SIZE))
+                .style(|_: &Theme| container::Style {
+                    border: iced::Border { color: theme::SELECTED, width: 1.0, radius: (SIZE / 2.0).into() },
+                    ..Default::default()
+                });
+            r = r.push(tip(more.into(), rest.join(", ")));
+        }
+        container(r).padding([0, 6]).into()
     }
 }
 

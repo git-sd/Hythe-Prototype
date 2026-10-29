@@ -307,27 +307,6 @@ impl App {
             .collect()
     }
 
-    /// Small coloured circles for the people in the room, for the title bar.
-    pub(crate) fn peer_dots(&self) -> Element<'_, Message> {
-        let mut r = row![].spacing(4).align_y(Alignment::Center);
-        if let Some(c) = &self.collab {
-            for p in &c.peers {
-                let color = rgb(p.color);
-                let initial = p.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-                r = r.push(
-                    container(text(initial).size(11).color(Color::WHITE))
-                        .center(Length::Fixed(22.0))
-                        .style(move |_: &Theme| container::Style {
-                            background: Some(color.into()),
-                            border: iced::Border { radius: 11.0.into(), ..Default::default() },
-                            ..Default::default()
-                        }),
-                );
-            }
-        }
-        r.into()
-    }
-
     /// The Collaborate panel, anchored above the bottom bar on the right.
     pub(crate) fn collab_panel(&self) -> Element<'_, Message> {
         let ui = &self.collab_ui;

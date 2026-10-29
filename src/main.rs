@@ -151,7 +151,6 @@ struct App {
     list_w: f32,
     agent_w: f32,
     scm_w: f32,
-    members_w: f32,
     /// Window size, for keeping dragged columns on screen.
     win: iced::Size,
     drag: Option<Drag>,
@@ -199,7 +198,6 @@ pub enum Handle {
     List,
     Agent,
     Scm,
-    Members,
     /// The thread column's header: drag it to the other side of the window.
     Dock,
     Chat,
@@ -362,7 +360,6 @@ impl App {
             list_w: view::LIST_W,
             agent_w: view::AGENT_W,
             scm_w: view::SCM_W,
-            members_w: view::MEMBERS_W,
             win: iced::Size::new(1280.0, 780.0),
             drag: None,
             members: Vec::new(),
@@ -1490,7 +1487,6 @@ impl App {
         let chat_l = if chat_on && !self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         let chat_r = if chat_on && self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         let agent_l = if self.show_term && !self.agent_right { self.agent_w + view::HANDLE_W } else { 0.0 };
-        let agent_r = if self.show_term && self.agent_right { self.agent_w + view::HANDLE_W } else { 0.0 };
         let left = sidebar + chat_l + agent_l;
         match drag.handle {
             Handle::List => self.list_w = (p.x - view::RAIL_W).clamp(140.0, (win.width - 300.0).clamp(140.0, 480.0)),
@@ -1507,7 +1503,6 @@ impl App {
             Handle::Dock => self.agent_right = p.x > win.width / 2.0,
             Handle::ChatDock => self.chat_right = p.x > win.width / 2.0,
             Handle::Scm => self.scm_w = (p.x - left).clamp(220.0, (win.width - left - 300.0).clamp(220.0, 700.0)),
-            Handle::Members => self.members_w = (win.width - chat_r - agent_r - p.x).clamp(150.0, 420.0),
             Handle::Panes(i) => {
                 let pos = match self.panes.axis {
                     Axis::Horizontal => p.x,

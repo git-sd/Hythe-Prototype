@@ -31,8 +31,7 @@ impl App {
         let docked = |on: bool, w: f32| if on { w + HANDLE_W } else { 0.0 };
         let sidebar = docked(self.show_sidebar, RAIL_W + self.list_w);
         let others = docked(self.show_term, self.agent_w)
-            + docked(self.chat_visible(), self.chat_w)
-            + docked(self.show_members(), self.members_w);
+            + docked(self.chat_visible(), self.chat_w);
         (self.win.width - sidebar - others - self.scm_w - HANDLE_W).max(300.0)
     }
 
