@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use hythe_git::ChatMessage;
-use iced::widget::{button, column, container, mouse_area, row, scrollable, space, text, text_input};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, text_input};
 use iced::{Alignment, Color, Element, Length, Padding, Task, Theme};
 
 use crate::icons::{icon, Icon};
@@ -308,8 +308,7 @@ impl App {
         .spacing(4)
         .padding(6);
 
-        // The 2px matches the focus line above the thread column, so the rules line up.
-        container(column![space::vertical().height(Length::Fixed(2.0)), header, divider_h(), scrollable(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
+        container(column![header, divider_h(), scrollable(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
             .width(Length::Fixed(self.chat_w))
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))

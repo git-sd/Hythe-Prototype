@@ -19,8 +19,10 @@ use crate::terminal_view::TerminalView;
 use crate::{menus, theme, App, Handle, Item, Message};
 
 pub(crate) const TITLE_H: f32 = 38.0;
-pub(crate) const BAR_H: f32 = 32.0;
-pub(crate) const TAB_H: f32 = 36.0;
+/// Height of the bottom bar and the account chip beside it, so their rules line up.
+pub(crate) const BAR_H: f32 = 40.0;
+/// Height of every column's header row; a 1px rule runs under each at the same level.
+pub(crate) const TAB_H: f32 = 38.0;
 pub(crate) const RAIL_W: f32 = 52.0;
 pub(crate) const LIST_W: f32 = 232.0;
 pub(crate) const AGENT_W: f32 = 470.0;
@@ -316,11 +318,11 @@ impl App {
                 }, ..Padding::ZERO },
             ),
             // Editor tabs "…": right edge of the window, under the tab bar.
-            2 => (Alignment::End, Alignment::Start, Padding { top: TITLE_H + 40.0, right: 8.0, ..Padding::ZERO }),
+            2 => (Alignment::End, Alignment::Start, Padding { top: TITLE_H + 42.0, right: 8.0, ..Padding::ZERO }),
             // Account chip: above the chip, bottom-left.
             3 => (Alignment::Start, Alignment::End, Padding { bottom: 56.0, left: 8.0, ..Padding::ZERO }),
             // Repository name: under it, in the file list.
-            4 => (Alignment::Start, Alignment::Start, Padding { top: TITLE_H + 52.0, left: RAIL_W + 8.0, ..Padding::ZERO }),
+            4 => (Alignment::Start, Alignment::Start, Padding { top: TITLE_H + 42.0, left: RAIL_W + 8.0, ..Padding::ZERO }),
             _ => (Alignment::Start, Alignment::Start, Padding { top: TITLE_H + 4.0, left: 8.0, ..Padding::ZERO }),
         };
         container(opaque(panel))
@@ -392,6 +394,7 @@ impl App {
     fn left_block(&self) -> Element<'_, Message> {
         container(column![
             row![self.rail(), self.channel_list()].height(Length::Fill),
+            divider_h(),
             self.account_chip(),
         ])
         .width(Length::Fixed(RAIL_W + self.list_w))
@@ -438,7 +441,7 @@ impl App {
                 .align_y(Alignment::Center),
         )
         .width(Length::Fill)
-        .height(Length::Fixed(TITLE_H + 10.0))
+        .height(Length::Fixed(TAB_H))
         .padding([0, 12])
         .style(theme::row(false))
         .on_press(Message::OpenMenu(4));
@@ -580,15 +583,15 @@ impl App {
         let initial = self.user.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
         let avatar: Element<'_, Message> = match &self.avatar {
             Some(handle) => iced::widget::image(handle.clone())
-                .width(Length::Fixed(32.0))
-                .height(Length::Fixed(32.0))
-                .border_radius(16.0)
+                .width(Length::Fixed(28.0))
+                .height(Length::Fixed(28.0))
+                .border_radius(14.0)
                 .into(),
             None => container(text(initial).size(13).color(Color::WHITE))
-                .center(Length::Fixed(32.0))
+                .center(Length::Fixed(28.0))
                 .style(|_: &Theme| container::Style {
                     background: Some(Color::from_rgb8(0x5a, 0x7f, 0xb8).into()),
-                    border: iced::Border { radius: 16.0.into(), ..Default::default() },
+                    border: iced::Border { radius: 14.0.into(), ..Default::default() },
                     ..Default::default()
                 })
                 .into(),
@@ -611,7 +614,7 @@ impl App {
             .padding([0, 10]),
         )
         .width(Length::Fill)
-        .height(Length::Fixed(52.0))
+        .height(Length::Fixed(BAR_H))
         .align_y(Alignment::Center)
         .style(theme::bg(theme::CHIP_BG))
         .into()
@@ -724,10 +727,11 @@ impl App {
             }
         };
 
-        let focus_line = container(space::vertical().height(Length::Fixed(2.0)))
+        // The rule under the header lights up while the keyboard is in this column.
+        let rule = container(space::vertical().height(Length::Fixed(1.0)))
             .width(Length::Fill)
-            .style(theme::bg(if self.focus_term { theme::ACCENT } else { theme::AGENT_BG }));
-        container(column![focus_line, header, divider_h(), body])
+            .style(theme::bg(if self.focus_term { theme::ACCENT } else { theme::BORDER }));
+        container(column![header, rule, body])
             .width(Length::Fixed(self.agent_w))
             .height(Length::Fill)
             .style(theme::bg(theme::AGENT_BG))
@@ -870,7 +874,7 @@ impl App {
         let tabs = scrollable(row(tabs)).direction(scrollable::Direction::Horizontal(
             scrollable::Scrollbar::new().width(0).scroller_width(0),
         ));
-        container(
+        let bar = container(
             row![
                 tabs,
                 space::horizontal(),
@@ -882,8 +886,8 @@ impl App {
         )
         .width(Length::Fill)
         .height(Length::Fixed(TAB_H))
-        .style(theme::bg(theme::TAB_BAR_BG))
-        .into()
+        .style(theme::bg(theme::TAB_BAR_BG));
+        column![bar, divider_h()].into()
     }
 
     fn welcome(&self) -> Element<'_, Message> {
