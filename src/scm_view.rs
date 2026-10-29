@@ -25,6 +25,17 @@ fn status_color(s: Status) -> Color {
 }
 
 impl App {
+    /// Roughly how wide the diff beside the Changes / History list is.
+    fn diff_pane_w(&self) -> f32 {
+        use crate::view::{HANDLE_W, RAIL_W};
+        let docked = |on: bool, w: f32| if on { w + HANDLE_W } else { 0.0 };
+        let sidebar = docked(self.show_sidebar, RAIL_W + self.list_w);
+        let others = docked(self.show_term, self.agent_w)
+            + docked(self.chat_visible(), self.chat_w)
+            + docked(self.show_members(), self.members_w);
+        (self.win.width - sidebar - others - self.scm_w - HANDLE_W).max(300.0)
+    }
+
     pub(crate) fn scm_view(&self) -> Element<'_, Message> {
         container(row![self.scm_left(), self.handle(Handle::Scm, true), self.scm_diff()])
             .width(Length::Fill)
@@ -228,7 +239,7 @@ impl App {
         .align_y(Alignment::Center)
         .width(Length::Fill);
 
-        container(column![header, divider_h(), diff_body(&s.diff)])
+        container(column![header, divider_h(), diff_body(&s.diff, self.diff_pane_w())])
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
@@ -362,7 +373,7 @@ impl App {
             .padding(12),
         )
         .width(Length::Fill);
-        container(column![top, divider_h(), diff_body(&s.commit_diff)])
+        container(column![top, divider_h(), diff_body(&s.commit_diff, self.diff_pane_w())])
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
@@ -423,7 +434,12 @@ impl App {
 }
 
 /// A diff as coloured, numbered lines in a scrollable area.
-fn diff_body(diff: &[DiffLine]) -> Element<'static, Message> {
+/// Width of a monospace character at the diff's 12.5px size.
+const DIFF_CHAR_W: f32 = 7.6;
+
+/// Colour-coded diff lines that scroll sideways instead of wrapping. Every row is
+/// as wide as the longest line (or `pane_w`, if that is wider) so tints line up.
+fn diff_body(diff: &[DiffLine], pane_w: f32) -> Element<'static, Message> {
         let num = |n: Option<u32>| -> Element<'static, Message> {
             text(n.map(|n| n.to_string()).unwrap_or_default())
                 .size(12)
@@ -433,6 +449,8 @@ fn diff_body(diff: &[DiffLine]) -> Element<'static, Message> {
                 .width(Length::Fixed(44.0))
                 .into()
         };
+        let longest = diff.iter().take(MAX_DIFF_LINES).map(|l| l.text.chars().count()).max().unwrap_or(0);
+        let row_w = (44.0 * 2.0 + 18.0 + 12.0 + longest as f32 * DIFF_CHAR_W + 24.0).max(pane_w - 20.0);
         let mut lines = column![];
         for l in diff.iter().take(MAX_DIFF_LINES) {
             let (tint, color, marker) = match l.kind {
@@ -443,17 +461,17 @@ fn diff_body(diff: &[DiffLine]) -> Element<'static, Message> {
                 LineKind::Context => (None, theme::TEXT_DIM, " "),
             };
             let body = if l.kind == LineKind::Hunk {
-                row![text(l.text.clone()).size(12.5).font(Font::MONOSPACE).color(color)].padding([0, 12])
+                row![text(l.text.clone()).size(12.5).font(Font::MONOSPACE).color(color).wrapping(text::Wrapping::None)].padding([0, 12])
             } else {
                 row![
                     num(l.old),
                     num(l.new),
                     text(marker).size(12.5).font(Font::MONOSPACE).color(color).width(Length::Fixed(18.0)),
-                    text(l.text.clone()).size(12.5).font(Font::MONOSPACE).color(color),
+                    text(l.text.clone()).size(12.5).font(Font::MONOSPACE).color(color).wrapping(text::Wrapping::None),
                 ]
                 .spacing(4)
             };
-            let row_el = container(body).width(Length::Fill).padding([1, 0]);
+            let row_el = container(body).width(Length::Fixed(row_w)).padding([1, 0]);
             lines = lines.push(match tint {
                 Some(c) => row_el.style(theme::bg(c)),
                 None => row_el,
@@ -466,7 +484,13 @@ fn diff_body(diff: &[DiffLine]) -> Element<'static, Message> {
             lines = lines.push(container(text("No textual changes to show.").size(12).color(theme::TEXT_FAINT)).padding(12));
         }
 
-    scrollable(lines).height(Length::Fill).into()
+    scrollable(lines)
+        .direction(scrollable::Direction::Both {
+            vertical: scrollable::Scrollbar::default(),
+            horizontal: scrollable::Scrollbar::default(),
+        })
+        .height(Length::Fill)
+        .into()
 }
 
 /// A tab in the Source Control header.
