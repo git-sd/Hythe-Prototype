@@ -164,6 +164,8 @@ struct App {
     git_wanted: bool,
     git_busy: bool,
     chat: Chat,
+    /// A tab being dragged: (pane, tab).
+    tab_drag: Option<(usize, usize)>,
 }
 
 /// What a background git read found.
@@ -280,6 +282,10 @@ pub enum Message {
     GitLoaded(Option<Box<GitResult>>),
     /// Look for open files changed on disk by something else.
     DiskTick,
+    /// Mouse pressed on a file tab: select it and start dragging it.
+    TabPress { pane: usize, tab: usize },
+    /// The pointer moved onto a tab; while dragging, the dragged tab takes its place.
+    TabEnter { pane: usize, tab: usize },
     /// Repository chat.
     Chat(ChatMsg),
     /// Look for files added or removed on disk.
@@ -341,6 +347,7 @@ impl App {
             git_wanted: false,
             git_busy: false,
             chat: Chat::default(),
+            tab_drag: None,
         };
         app.projects = app.persisted.projects.iter().map(|p| Project { path: p.clone(), ws: None }).collect();
         // Scripted runs: HYTHE_COLLAB="ws://host:port|room|name" joins a room on startup.
@@ -1021,7 +1028,20 @@ impl App {
                 }
             }
             Message::DragStart(handle) => self.start_drag(handle),
-            Message::PointerUp => self.drag = None,
+            Message::PointerUp => {
+                self.drag = None;
+                self.tab_drag = None;
+            }
+            Message::TabPress { pane, tab } => {
+                let task = self.update_inner(Message::SelectTab { pane, tab });
+                self.tab_drag = Some((pane, tab));
+                return task;
+            }
+            Message::TabEnter { pane, tab } => {
+                if let Some(from) = self.tab_drag {
+                    self.tab_drag = Some(self.panes.move_tab(from, (pane, tab)));
+                }
+            }
             Message::PointerMoved(p) => self.drag_to(p),
             Message::AvatarReady(path) => self.avatar = path.and_then(|p| std::fs::read(p).ok()).map(iced::widget::image::Handle::from_bytes),
             Message::Unavailable(what) => self.status = format!("{what} isn't available yet"),
@@ -1430,7 +1450,7 @@ impl App {
         if self.root.is_some() {
             subs.push(iced::time::every(std::time::Duration::from_secs(2)).map(|_| Message::TreeTick));
         }
-        if self.drag.is_some() {
+        if self.drag.is_some() || self.tab_drag.is_some() {
             subs.push(iced::event::listen_with(|event, _status, _window| match event {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::PointerMoved(position)),
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::PointerUp),

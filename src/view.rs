@@ -804,21 +804,28 @@ impl App {
             } else {
                 icon_button(Icon::Close, theme::TEXT_FAINT, false, Message::CloseTab { pane: pane_index, tab: i })
             };
+            // Pressing selects the tab and lets go of it again on release; dragging it
+            // over another tab (in this pane or another) moves it there.
             let tab = row![
-                button(text(d.name()).size(13).color(if active { theme::TEXT } else { theme::TEXT_DIM }))
-                    .padding([8, 6])
-                    .style(theme::flat(false))
-                    .on_press(Message::SelectTab { pane: pane_index, tab: i }),
+                mouse_area(
+                    container(text(d.name()).size(13).color(if active { theme::TEXT } else { theme::TEXT_DIM }))
+                        .padding([8, 6]),
+                )
+                .on_press(Message::TabPress { pane: pane_index, tab: i })
+                .interaction(iced::mouse::Interaction::Pointer),
                 end,
             ]
             .align_y(Alignment::Center)
             .padding([0, 4]);
             Some(
-                container(tab)
-                    .height(Length::Fixed(TAB_H))
-                    .align_y(Alignment::Center)
-                    .style(theme::bg(if active { theme::EDITOR_BG } else { theme::TAB_BAR_BG }))
-                    .into(),
+                mouse_area(
+                    container(tab)
+                        .height(Length::Fixed(TAB_H))
+                        .align_y(Alignment::Center)
+                        .style(theme::bg(if active { theme::EDITOR_BG } else { theme::TAB_BAR_BG })),
+                )
+                .on_enter(Message::TabEnter { pane: pane_index, tab: i })
+                .into(),
             )
         });
         let tabs = scrollable(row(tabs)).direction(scrollable::Direction::Horizontal(

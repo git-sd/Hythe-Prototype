@@ -313,7 +313,8 @@ impl App {
         .spacing(6)
         .padding(12);
 
-        container(column![header, divider_h(), scrollable(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
+        // The 2px matches the focus line above the thread column, so the rules line up.
+        container(column![space::vertical().height(Length::Fixed(2.0)), header, divider_h(), scrollable(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
             .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::bg(theme::EDITOR_BG))

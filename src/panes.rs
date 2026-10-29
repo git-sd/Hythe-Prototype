@@ -102,6 +102,49 @@ impl Panes {
         self.focus += 1;
     }
 
+    /// Move a tab to another position, in the same pane or into another one,
+    /// and return where it ended up. Tabs only leave a pane that keeps at least
+    /// one other tab, and a pane never gets the same document twice.
+    pub fn move_tab(&mut self, from: (usize, usize), to: (usize, usize)) -> (usize, usize) {
+        let (fp, ft) = from;
+        let (tp, tt) = to;
+        if fp >= self.list.len() || tp >= self.list.len() || ft >= self.list[fp].tabs.len() {
+            return from;
+        }
+        if fp == tp {
+            let pane = &mut self.list[fp];
+            let tt = tt.min(pane.tabs.len() - 1);
+            if tt == ft {
+                return from;
+            }
+            let tab = pane.tabs.remove(ft);
+            pane.tabs.insert(tt, tab);
+            pane.active = if pane.active == ft {
+                tt
+            } else if ft < pane.active && tt >= pane.active {
+                pane.active - 1
+            } else if ft > pane.active && tt <= pane.active {
+                pane.active + 1
+            } else {
+                pane.active
+            };
+            return (fp, tt);
+        }
+        let doc = self.list[fp].tabs[ft].doc;
+        if self.list[fp].tabs.len() < 2 || self.list[tp].tabs.iter().any(|t| t.doc == doc) {
+            return from;
+        }
+        let src = &mut self.list[fp];
+        let tab = src.tabs.remove(ft);
+        src.active = if src.active > ft { src.active - 1 } else { src.active.min(src.tabs.len() - 1) };
+        let dst = &mut self.list[tp];
+        let at = tt.min(dst.tabs.len());
+        dst.tabs.insert(at, tab);
+        dst.active = at;
+        self.focus = tp;
+        (tp, at)
+    }
+
     /// Close one tab. Returns its document so the caller can drop it if no
     /// other tab uses it. A split pane left with no tabs is removed.
     pub fn close_tab(&mut self, pane: usize, tab: usize) -> Option<usize> {
@@ -201,5 +244,46 @@ mod tests {
         p.split(Axis::Horizontal);
         assert_eq!(p.close_pane(0), vec![0]);
         assert_eq!(p.list.len(), 1);
+    }
+
+
+    fn panes(tabs: &[&[usize]]) -> Panes {
+        let mut p = Panes::new();
+        p.list.clear();
+        for docs in tabs {
+            let mut pane = Pane::new();
+            pane.tabs = docs.iter().map(|&doc| Tab { doc, scroll: Scroll::default() }).collect();
+            p.list.push(pane);
+        }
+        p
+    }
+
+    fn order(p: &Panes, pane: usize) -> Vec<usize> {
+        p.list[pane].tabs.iter().map(|t| t.doc).collect()
+    }
+
+    #[test]
+    fn tabs_reorder_and_the_active_tab_follows() {
+        let mut p = panes(&[&[0, 1, 2, 3]]);
+        p.list[0].active = 1;
+        assert_eq!(p.move_tab((0, 0), (0, 2)), (0, 2));
+        assert_eq!(order(&p, 0), [1, 2, 0, 3]);
+        assert_eq!(p.list[0].active, 0, "doc 1 is still the active tab");
+        assert_eq!(p.move_tab((0, 0), (0, 3)), (0, 3));
+        assert_eq!(p.list[0].active, 3, "the dragged tab was active");
+        assert_eq!(p.move_tab((0, 1), (0, 1)), (0, 1));
+    }
+
+    #[test]
+    fn tabs_move_between_panes_but_never_empty_one() {
+        let mut p = panes(&[&[0, 1], &[2], &[1]]);
+        assert_eq!(p.move_tab((0, 0), (1, 0)), (1, 0));
+        assert_eq!((order(&p, 0), order(&p, 1)), (vec![1], vec![0, 2]));
+        assert_eq!(p.focus, 1);
+        // Pane 0 is down to one tab: it stays.
+        assert_eq!(p.move_tab((0, 0), (1, 0)), (0, 0));
+        // Pane 2 already shows doc 1.
+        let mut q = panes(&[&[0, 1], &[1]]);
+        assert_eq!(q.move_tab((0, 1), (1, 0)), (0, 1));
     }
 }
