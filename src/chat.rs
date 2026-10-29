@@ -308,6 +308,7 @@ impl App {
         };
         let header = container(
             row![
+                self.header_left(Edge::Chat),
                 icon(Icon::Chat, 13.0, dim),
                 container(text(title).size(12).color(title_color).wrapping(text::Wrapping::None))
                     .width(Length::Fill)

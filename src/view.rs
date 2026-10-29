@@ -154,11 +154,7 @@ impl App {
 
         // With the sidebar open the column headers form the only top row, and carry the
         // window buttons; with it hidden the full title bar comes back above everything.
-        let base: Element<'_, Message> = if self.show_sidebar {
-            body.into()
-        } else {
-            column![self.title_bar(), divider_h(), body].into()
-        };
+        let base: Element<'_, Message> = body.into();
         if let Some(p) = &self.palette {
             return stack![
                 base,
@@ -233,42 +229,34 @@ impl App {
         }
     }
 
-    /// The window buttons, if this column's header is the one at the right edge.
-    pub(crate) fn header_extra(&self, edge: Edge) -> Element<'_, Message> {
-        if self.show_sidebar && self.rightmost() == edge {
-            self.right_controls()
+    /// The column furthest left once the sidebar is hidden; it carries the menu buttons.
+    pub(crate) fn leftmost(&self) -> Edge {
+        if self.chat_visible() && !self.chat_right {
+            Edge::Chat
+        } else if self.show_term && !self.agent_right {
+            Edge::Agent
+        } else {
+            Edge::Editor
+        }
+    }
+
+    /// Menu, sidebar and search buttons, if the sidebar is hidden and this column is
+    /// the first one on the left (with the sidebar open they live in its top row).
+    pub(crate) fn header_left(&self, edge: Edge) -> Element<'_, Message> {
+        if !self.show_sidebar && self.leftmost() == edge {
+            self.left_controls()
         } else {
             space::horizontal().width(Length::Shrink).into()
         }
     }
 
-    /// Full-width bar used only while the sidebar is hidden.
-    fn title_bar(&self) -> Element<'_, Message> {
-        let doc_name = self.docs.get(self.panes.cur()).map(|d| d.name()).unwrap_or_default();
-        container(
-            row![
-                self.left_controls(),
-                // The empty stretch of the bar drags the window; double-click maximises.
-                mouse_area(
-                    container(text(doc_name).size(13).color(theme::TEXT_DIM))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill)
-                        .align_y(Alignment::Center),
-                )
-                .on_press(Message::DragWindow)
-                .on_double_click(Message::ToggleMaximize),
-                self.right_controls(),
-            ]
-            .spacing(2)
-            .align_y(Alignment::Center)
-            .padding([0, 8]),
-        )
-        .width(Length::Fill)
-        .height(Length::Fixed(TITLE_H))
-        .align_y(Alignment::Center)
-        .style(theme::bg(theme::BAR_BG))
-        .into()
+    /// The window buttons, if this column's header is the one at the right edge.
+    pub(crate) fn header_extra(&self, edge: Edge) -> Element<'_, Message> {
+        if self.rightmost() == edge {
+            self.right_controls()
+        } else {
+            space::horizontal().width(Length::Shrink).into()
+        }
     }
 
     /// The row for one menu entry, shared by the flat and cascading menus.
@@ -349,7 +337,7 @@ impl App {
         };
         // Each menu opens beside the button that asked for it.
         // With the sidebar open there is no separate title bar above the headers.
-        let top_shift = if self.show_sidebar { TITLE_H + 1.0 } else { 0.0 };
+        let top_shift = TITLE_H + 1.0;
         let sidebar_left = if self.show_sidebar { RAIL_W + self.list_w + HANDLE_W } else { 0.0 };
         let (align_x, align_y, pad) = match kind {
             // Thread column "…": right-aligned under the column header.
@@ -372,7 +360,7 @@ impl App {
                 Padding {
                     top: TITLE_H + 42.0 - top_shift,
                     // The window buttons sit to the right of the tab bar's own "…".
-                    right: 8.0 + if self.show_sidebar && self.rightmost() == Edge::Editor { 250.0 } else { 0.0 },
+                    right: 8.0 + if self.rightmost() == Edge::Editor { 250.0 } else { 0.0 },
                     ..Padding::ZERO
                 },
             ),
@@ -706,6 +694,7 @@ impl App {
 
         let header = container(
             row![
+                self.header_left(Edge::Agent),
                 text(title).size(14),
                 space::horizontal(),
                 icon_button(Icon::Plus, dim, false, Message::NewTerminal(None)),
@@ -827,6 +816,7 @@ impl App {
         if self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty() {
             let strip = container(
                 row![
+                    self.header_left(Edge::Editor),
                     mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
                         .on_press(Message::DragWindow)
                         .on_double_click(Message::ToggleMaximize),
@@ -982,6 +972,7 @@ impl App {
         .direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(0).scroller_width(0)));
         let bar = container(
             row![
+                if pane_index == 0 && !self.scm.open { self.header_left(Edge::Editor) } else { space::horizontal().width(Length::Shrink).into() },
                 tabs,
                 icon_button(Icon::Split, theme::TEXT_DIM, self.panes.list.len() > 1, Message::Split(Axis::Horizontal)),
                 icon_button(Icon::More, theme::TEXT_DIM, self.menu == Some(2), Message::OpenMenu(2)),

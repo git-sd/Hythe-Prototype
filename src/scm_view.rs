@@ -39,7 +39,7 @@ impl App {
     /// over the list, and the file tabs and window buttons over the diff.
     pub(crate) fn scm_view(&self) -> Element<'_, Message> {
         let left_head = column![
-            container(self.mode_switch())
+            container(row![self.header_left(crate::view::Edge::Editor), self.mode_switch()].spacing(6).align_y(Alignment::Center))
                 .width(Length::Fixed(self.scm_w))
                 .height(Length::Fixed(crate::view::TAB_H))
                 .padding([0, 10])
