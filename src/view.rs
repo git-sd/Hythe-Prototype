@@ -124,7 +124,7 @@ impl App {
             .unwrap_or_default();
         container(
             row![
-                icon_button(Icon::Menu, dim, self.menu.is_some(), Message::OpenMenu(0)),
+                icon_button(Icon::Menu, dim, self.menu == Some(0), Message::OpenMenu(0)),
                 icon_button(Icon::Sidebar, dim, self.show_sidebar, Message::ToggleSidebar),
                 icon_button(Icon::Search, dim, false, Message::OpenPalette),
                 icon_button(Icon::History, dim, false, Message::Unavailable("History")),
@@ -155,7 +155,14 @@ impl App {
     }
 
     fn menu_dropdown(&self) -> Element<'_, Message> {
-        let rows = menus::all_entries(&self.agent_names()).into_iter().map(|entry| match entry {
+        let kind = self.menu.unwrap_or(0);
+        let entries = match kind {
+            1 => menus::thread_entries(&self.agent_names()),
+            2 => menus::editor_entries(),
+            4 => menus::project_entries(),
+            _ => menus::all_entries(&self.agent_names()),
+        };
+        let rows = entries.into_iter().map(|entry| match entry {
             menus::Entry::Separator => container(divider_h()).padding([4, 6]).into(),
             menus::Entry::Header(title) => container(text(title).size(11).color(theme::TEXT_FAINT))
                 .padding(Padding { top: 6.0, right: 12.0, bottom: 2.0, left: 12.0 })
@@ -183,10 +190,29 @@ impl App {
                 border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 4.0.into() },
                 ..Default::default()
             });
+        // Each menu opens beside the button that asked for it.
+        let sidebar_left = if self.show_sidebar { SIDEBAR_W + 1.0 } else { 0.0 };
+        let (align_x, align_y, pad) = match kind {
+            // Thread column "…": right-aligned under the column header.
+            1 => (
+                Alignment::Start,
+                Alignment::Start,
+                Padding { top: TITLE_H + 42.0, left: (sidebar_left + AGENT_W - 300.0 - 8.0).max(8.0), ..Padding::ZERO },
+            ),
+            // Editor tabs "…": right edge of the window, under the tab bar.
+            2 => (Alignment::End, Alignment::Start, Padding { top: TITLE_H + 40.0, right: 8.0, ..Padding::ZERO }),
+            // Account chip: above the chip, bottom-left.
+            3 => (Alignment::Start, Alignment::End, Padding { bottom: 56.0, left: 8.0, ..Padding::ZERO }),
+            // Repository name: under it, in the file list.
+            4 => (Alignment::Start, Alignment::Start, Padding { top: TITLE_H + 52.0, left: RAIL_W + 8.0, ..Padding::ZERO }),
+            _ => (Alignment::Start, Alignment::Start, Padding { top: TITLE_H + 4.0, left: 8.0, ..Padding::ZERO }),
+        };
         container(opaque(panel))
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(Padding { top: TITLE_H + 4.0, left: 8.0, ..Padding::ZERO })
+            .align_x(align_x)
+            .align_y(align_y)
+            .padding(pad)
             .into()
     }
 
@@ -298,7 +324,7 @@ impl App {
         .height(Length::Fixed(TITLE_H + 10.0))
         .padding([0, 12])
         .style(theme::row(false))
-        .on_press(Message::OpenMenu(0));
+        .on_press(Message::OpenMenu(4));
 
         let changes = self.scm.changes.len();
         let mut list = column![].spacing(1).padding([6, 8]);
@@ -446,7 +472,7 @@ impl App {
                 column![text(self.user.clone()).size(13), text(subtitle).size(11).color(dim)].spacing(1),
                 space::horizontal(),
                 icon_button(Icon::Terminal, dim, self.show_term, Message::ToggleTerminal),
-                icon_button(Icon::Menu, dim, self.menu.is_some(), Message::OpenMenu(0)),
+                icon_button(Icon::Menu, dim, self.menu == Some(3), Message::OpenMenu(3)),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -471,7 +497,7 @@ impl App {
                 space::horizontal(),
                 icon_button(Icon::Plus, dim, false, Message::NewTerminal(None)),
                 icon_button(Icon::Expand, dim, false, Message::Unavailable("Zoom")),
-                icon_button(Icon::More, dim, false, Message::OpenMenu(0)),
+                icon_button(Icon::More, dim, self.menu == Some(1), Message::OpenMenu(1)),
             ]
             .spacing(2)
             .align_y(Alignment::Center)
@@ -722,7 +748,7 @@ impl App {
                 tabs,
                 space::horizontal(),
                 icon_button(Icon::Split, theme::TEXT_DIM, self.panes.list.len() > 1, Message::Split(Axis::Horizontal)),
-                icon_button(Icon::More, theme::TEXT_DIM, false, Message::OpenMenu(0)),
+                icon_button(Icon::More, theme::TEXT_DIM, self.menu == Some(2), Message::OpenMenu(2)),
             ]
             .align_y(Alignment::Center)
             .padding([0, 6]),

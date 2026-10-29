@@ -289,7 +289,7 @@ impl App {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let mut head = column![
+        let head = column![
             text(commit.subject.clone()).size(15),
             row![
                 text(commit.author.clone()).size(12).color(dim),

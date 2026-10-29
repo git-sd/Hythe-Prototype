@@ -89,3 +89,48 @@ pub fn all_entries(agents: &[String]) -> Vec<Entry> {
     }
     out
 }
+
+/// The "…" menu on the thread column: terminals and agents.
+pub fn thread_entries(agents: &[String]) -> Vec<Entry> {
+    let mut v = vec![
+        item("New Terminal", "Ctrl+Shift+`", Message::NewTerminal(None)),
+        item("Close Terminal", "Ctrl+Shift+W", Message::CloseTerminal),
+        item("Hide Thread Panel", "Ctrl+`", Message::ToggleTerminal),
+    ];
+    if !agents.is_empty() {
+        v.push(Entry::Separator);
+    }
+    for (i, name) in agents.iter().enumerate() {
+        v.push(item(&format!("Run {name}"), "", Message::NewTerminal(Some(i))));
+    }
+    v
+}
+
+/// The "…" menu on the editor tabs: panes and file actions.
+pub fn editor_entries() -> Vec<Entry> {
+    use Entry::Separator;
+    vec![
+        item("Save", "Ctrl+S", Message::Save),
+        item("Close Tab", "Ctrl+W", Message::CloseActive),
+        item("Pin / Unpin File", "", Message::TogglePin),
+        Separator,
+        item("Split Right", "Ctrl+\\", Message::Split(Axis::Horizontal)),
+        item("Split Down", "Ctrl+Shift+\\", Message::Split(Axis::Vertical)),
+        item("Close Pane", "", Message::ClosePane),
+        Separator,
+        item("Source Control", "Ctrl+Shift+G", Message::Scm(ScmMsg::Show)),
+        item("Toggle Inline Blame", "", Message::Scm(ScmMsg::ToggleBlame)),
+    ]
+}
+
+/// The menu on the repository name at the top of the file list.
+pub fn project_entries() -> Vec<Entry> {
+    use Entry::Separator;
+    vec![
+        item("Add Repository…", "", Message::AddRepo(AddRepoMsg::Open)),
+        item("Open Folder…", "Ctrl+Shift+O", Message::OpenFolderDialog),
+        Separator,
+        item("Source Control", "Ctrl+Shift+G", Message::Scm(ScmMsg::Show)),
+        item("Close Repository", "", Message::CloseProject),
+    ]
+}
