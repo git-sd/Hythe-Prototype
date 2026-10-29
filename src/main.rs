@@ -4,21 +4,22 @@ mod editor;
 mod explorer;
 mod highlight;
 mod palette;
+mod panes;
 mod theme;
 
-use std::cell::Cell;
 use std::path::PathBuf;
 
 use iced::keyboard::{self, key::Named, Key};
 use iced::widget::canvas::Canvas;
 use iced::widget::{button, column, container, mouse_area, opaque, row, scrollable, space, stack, text};
-use iced::{clipboard, Alignment, Element, Length, Size, Subscription, Task, Theme};
+use iced::{clipboard, Alignment, Element, Length, Subscription, Task, Theme};
 
 use doc::{Doc, TAB_WIDTH};
 use editor::EditorView;
 use explorer::Node;
 use highlight::RustHighlighter;
 use palette::Palette;
+use panes::{Axis, Panes};
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
@@ -31,29 +32,32 @@ fn main() -> iced::Result {
 
 struct App {
     docs: Vec<Doc>,
-    active: usize,
+    panes: Panes,
     root: Option<Node>,
     show_sidebar: bool,
     show_ai: bool,
     status: String,
     palette: Option<Palette>,
     highlighter: RustHighlighter,
-    viewport: Cell<Size>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Key(keyboard::Event),
-    Click { line: usize, col: usize, select: bool },
-    Scroll(f32),
+    Click { pane: usize, line: usize, col: usize, select: bool },
+    Scroll { pane: usize, dy: f32 },
     Paste(Option<String>),
     NewFile,
     OpenFileDialog,
     OpenFolderDialog,
     OpenFile(PathBuf),
     ToggleDir(PathBuf),
-    SelectTab(usize),
-    CloseTab(usize),
+    SelectTab { pane: usize, tab: usize },
+    CloseTab { pane: usize, tab: usize },
+    Split(Axis),
+    ClosePane,
+    FocusNextPane,
+    FocusPane(usize),
     ToggleSidebar,
     ToggleAi,
     Save,
@@ -70,14 +74,13 @@ impl App {
     fn new() -> Self {
         let mut app = App {
             docs: Vec::new(),
-            active: 0,
+            panes: Panes::new(),
             root: None,
             show_sidebar: true,
             show_ai: true,
             status: String::new(),
             palette: None,
             highlighter: RustHighlighter::new(),
-            viewport: Cell::new(Size::new(800.0, 600.0)),
         };
         if let Some(arg) = std::env::args().nth(1) {
             let path = PathBuf::from(arg);
@@ -91,7 +94,7 @@ impl App {
     }
 
     fn title(&self) -> String {
-        match self.docs.get(self.active) {
+        match self.docs.get(self.panes.cur()) {
             Some(d) => format!("{}{} — Hythe", d.name(), if d.dirty { " •" } else { "" }),
             None => "Hythe".into(),
         }
@@ -99,7 +102,7 @@ impl App {
 
     fn open_file(&mut self, path: PathBuf) {
         if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
-            self.active = i;
+            self.panes.open_doc(i);
             return;
         }
         match Doc::open(path.clone(), &mut self.highlighter) {
@@ -110,42 +113,69 @@ impl App {
                     }
                 }
                 self.docs.push(doc);
-                self.active = self.docs.len() - 1;
+                self.panes.open_doc(self.docs.len() - 1);
                 self.status = format!("Opened {}", path.display());
             }
             Err(e) => self.status = format!("Open failed: {e}"),
         }
     }
 
-    fn close_tab(&mut self, index: usize) {
-        if index < self.docs.len() {
-            self.docs.remove(index);
-            if self.active > index || self.active >= self.docs.len() {
-                self.active = self.active.saturating_sub(1);
+    fn close_tab(&mut self, pane: usize, tab: usize) {
+        if let Some(doc) = self.panes.close_tab(pane, tab) {
+            self.prune_docs(vec![doc]);
+        }
+    }
+
+    /// Drop documents that no pane shows any more.
+    fn prune_docs(&mut self, mut candidates: Vec<usize>) {
+        candidates.sort_unstable_by(|a, b| b.cmp(a));
+        candidates.dedup();
+        for d in candidates {
+            if !self.panes.uses_doc(d) {
+                self.docs.remove(d);
+                self.panes.forget_doc(d);
+            }
+        }
+    }
+
+    /// Scroll the focused pane so the cursor is on screen.
+    fn reveal_cursor(&mut self) {
+        let Some(pane) = self.panes.list.get_mut(self.panes.focus) else {
+            return;
+        };
+        let vp = pane.viewport.get();
+        if let Some(tab) = pane.tabs.get_mut(pane.active) {
+            if let Some(d) = self.docs.get(tab.doc) {
+                tab.scroll.ensure_cursor_visible(&d.buffer, vp);
             }
         }
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
-        let vp = self.viewport.get();
         match message {
-            Message::Scroll(dy) => {
-                if let Some(d) = self.docs.get_mut(self.active) {
-                    d.scroll_y -= dy;
-                    d.clamp_scroll(vp);
+            Message::Scroll { pane, dy } => {
+                if let Some(p) = self.panes.list.get_mut(pane) {
+                    let vp = p.viewport.get();
+                    if let Some(tab) = p.tabs.get_mut(p.active) {
+                        if let Some(d) = self.docs.get(tab.doc) {
+                            tab.scroll.y -= dy;
+                            tab.scroll = tab.scroll.clamped(&d.buffer, vp);
+                        }
+                    }
                 }
             }
-            Message::Click { line, col, select } => {
-                if let Some(d) = self.docs.get_mut(self.active) {
+            Message::Click { pane, line, col, select } => {
+                self.panes.focus_pane(pane);
+                if let Some(d) = self.docs.get_mut(self.panes.cur()) {
                     d.buffer.set_cursor(line, col, select);
                 }
             }
             Message::Paste(Some(text)) => {
-                if let Some(d) = self.docs.get_mut(self.active) {
+                if let Some(d) = self.docs.get_mut(self.panes.cur()) {
                     d.buffer.insert(&text.replace("\r\n", "\n"));
                     d.edited(&mut self.highlighter);
-                    d.ensure_cursor_visible(vp);
                 }
+                self.reveal_cursor();
             }
             Message::Paste(None) => {}
             Message::Key(keyboard::Event::KeyPressed { key, modifiers, text, .. }) => {
@@ -153,15 +183,13 @@ impl App {
                     return self.palette_key(key, modifiers, text.as_deref());
                 }
                 let task = self.handle_key(key, modifiers, text.as_deref());
-                if let Some(d) = self.docs.get_mut(self.active) {
-                    d.ensure_cursor_visible(vp);
-                }
+                self.reveal_cursor();
                 return task;
             }
             Message::Key(_) => {}
             Message::NewFile => {
                 self.docs.push(Doc::empty());
-                self.active = self.docs.len() - 1;
+                self.panes.open_doc(self.docs.len() - 1);
             }
             Message::OpenFileDialog => {
                 if let Some(p) = rfd::FileDialog::new().pick_file() {
@@ -180,31 +208,49 @@ impl App {
                     root.toggle(&p);
                 }
             }
-            Message::SelectTab(i) => self.active = i.min(self.docs.len().saturating_sub(1)),
-            Message::CloseTab(i) => self.close_tab(i),
+            Message::SelectTab { pane, tab } => {
+                self.panes.focus_pane(pane);
+                if let Some(p) = self.panes.list.get_mut(pane) {
+                    if tab < p.tabs.len() {
+                        p.active = tab;
+                    }
+                }
+            }
+            Message::CloseTab { pane, tab } => self.close_tab(pane, tab),
+            Message::Split(axis) => self.panes.split(axis),
+            Message::ClosePane => {
+                let docs = self.panes.close_pane(self.panes.focus);
+                self.prune_docs(docs);
+            }
+            Message::FocusNextPane => self.panes.focus_next(),
+            Message::FocusPane(i) => self.panes.focus_pane(i),
             Message::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
             Message::ToggleAi => self.show_ai = !self.show_ai,
             Message::Save => {
-                if let Some(d) = self.docs.get_mut(self.active) {
+                if let Some(d) = self.docs.get_mut(self.panes.cur()) {
                     self.status = match d.save() {
                         Ok(p) => format!("Saved {}", p.display()),
                         Err(e) => e,
                     };
                 }
             }
-            Message::CloseActive => self.close_tab(self.active),
+            Message::CloseActive => {
+                let p = &self.panes.list[self.panes.focus];
+                let (pane, tab) = (self.panes.focus, p.active);
+                self.close_tab(pane, tab);
+            }
             Message::Undo | Message::Redo => {
                 let undo = matches!(message, Message::Undo);
-                if let Some(d) = self.docs.get_mut(self.active) {
+                if let Some(d) = self.docs.get_mut(self.panes.cur()) {
                     let changed = if undo { d.buffer.undo() } else { d.buffer.redo() };
                     if changed {
                         d.edited(&mut self.highlighter);
-                        d.ensure_cursor_visible(vp);
                     }
                 }
+                self.reveal_cursor();
             }
             Message::SelectAll => {
-                if let Some(d) = self.docs.get_mut(self.active) {
+                if let Some(d) = self.docs.get_mut(self.panes.cur()) {
                     d.buffer.select_all();
                 }
             }
@@ -266,6 +312,11 @@ impl App {
                     ("o", true) => return self.update(Message::OpenFolderDialog),
                     ("p", true) => return self.update(Message::OpenPalette),
                     ("b", _) => return self.update(Message::ToggleSidebar),
+                    ("\\", false) => return self.update(Message::Split(Axis::Horizontal)),
+                    ("\\", true) => return self.update(Message::Split(Axis::Vertical)),
+                    (n, false) if n.len() == 1 && n.as_bytes()[0].is_ascii_digit() && n != "0" => {
+                        return self.update(Message::FocusPane((n.as_bytes()[0] - b'1') as usize))
+                    }
                     ("w", _) => return self.update(Message::CloseActive),
                     ("s", _) => return self.update(Message::Save),
                     ("a", _) => return self.update(Message::SelectAll),
@@ -274,12 +325,12 @@ impl App {
                     }
                     ("z", true) => return self.update(Message::Redo),
                     ("c", _) => {
-                        if let Some(t) = self.docs.get(self.active).and_then(|d| d.buffer.selected_text()) {
+                        if let Some(t) = self.docs.get(self.panes.cur()).and_then(|d| d.buffer.selected_text()) {
                             return clipboard::write(t);
                         }
                     }
                     ("x", _) => {
-                        if let Some(d) = self.docs.get_mut(self.active) {
+                        if let Some(d) = self.docs.get_mut(self.panes.cur()) {
                             if let Some(t) = d.buffer.selected_text() {
                                 d.buffer.delete_selection();
                                 d.edited(&mut self.highlighter);
@@ -294,8 +345,8 @@ impl App {
             }
         }
 
-        let vp = self.viewport.get();
-        let Some(d) = self.docs.get_mut(self.active) else {
+        let vp = self.panes.list[self.panes.focus].viewport.get();
+        let Some(d) = self.docs.get_mut(self.panes.cur()) else {
             return Task::none();
         };
         let hl = &mut self.highlighter;
@@ -441,7 +492,7 @@ impl App {
                     .padding([3, 10])
                     .on_press(Message::OpenFolderDialog),
                 space::horizontal(),
-                text(self.docs.get(self.active).map(|d| d.name()).unwrap_or_default())
+                text(self.docs.get(self.panes.cur()).map(|d| d.name()).unwrap_or_default())
                     .size(12)
                     .color(theme::TEXT_DIM),
                 space::horizontal().width(Length::Fixed(80.0)),
@@ -469,7 +520,7 @@ impl App {
             Some(root) => {
                 let mut rows = Vec::new();
                 root.rows(0, &mut rows);
-                let active_path = self.docs.get(self.active).and_then(|d| d.path.as_ref());
+                let active_path = self.docs.get(self.panes.cur()).and_then(|d| d.path.as_ref());
                 let list = column(rows.into_iter().map(|(depth, node)| {
                     let arrow = if !node.is_dir {
                         " "
@@ -520,46 +571,87 @@ impl App {
     }
 
     fn center(&self) -> Element<'_, Message> {
-        let content: Element<'_, Message> = match self.docs.get(self.active) {
-            Some(doc) => column![
-                self.tab_bar(),
-                divider_h(),
-                Canvas::new(EditorView { doc, viewport: &self.viewport })
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-            ]
-            .into(),
-            None => self.welcome(),
-        };
-        container(content)
+        let single = self.panes.list.len() == 1;
+        if single && self.panes.list[0].tabs.is_empty() {
+            return container(self.welcome())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(theme::bg(theme::EDITOR_BG))
+                .into();
+        }
+        let mut views = Vec::new();
+        for i in 0..self.panes.list.len() {
+            if i > 0 {
+                views.push(match self.panes.axis {
+                    Axis::Horizontal => divider_v(),
+                    Axis::Vertical => divider_h(),
+                });
+            }
+            views.push(self.pane_view(i));
+        }
+        match self.panes.axis {
+            Axis::Horizontal => row(views).width(Length::Fill).height(Length::Fill).into(),
+            Axis::Vertical => column(views).width(Length::Fill).height(Length::Fill).into(),
+        }
+    }
+
+    fn pane_view(&self, index: usize) -> Element<'_, Message> {
+        let pane = &self.panes.list[index];
+        let focused = index == self.panes.focus;
+        let body: Element<'_, Message> = match pane.current().and_then(|t| self.docs.get(t.doc).map(|d| (t, d))) {
+            Some((tab, doc)) => Canvas::new(EditorView {
+                doc,
+                scroll: tab.scroll,
+                pane: index,
+                focused,
+                viewport: &pane.viewport,
+            })
             .width(Length::Fill)
             .height(Length::Fill)
+            .into(),
+            None => container(text("Open a file here").size(13).color(theme::TEXT_DIM))
+                .center(Length::Fill)
+                .into(),
+        };
+        container(column![self.tab_bar(index), divider_h(), body])
+            .width(Length::FillPortion(1))
+            .height(Length::FillPortion(1))
             .style(theme::bg(theme::EDITOR_BG))
             .into()
     }
 
-    fn tab_bar(&self) -> Element<'_, Message> {
-        let tabs = self.docs.iter().enumerate().map(|(i, d)| {
-            let active = i == self.active;
+    fn tab_bar(&self, pane_index: usize) -> Element<'_, Message> {
+        let pane = &self.panes.list[pane_index];
+        let focused = pane_index == self.panes.focus;
+        let tabs = pane.tabs.iter().enumerate().filter_map(|(i, t)| {
+            let d = self.docs.get(t.doc)?;
+            let active = i == pane.active;
             let marker = if d.dirty { "●" } else { "×" };
             let tab = row![
                 button(text(d.name()).size(13))
                     .padding([6, 4])
                     .style(theme::flat(false))
-                    .on_press(Message::SelectTab(i)),
+                    .on_press(Message::SelectTab { pane: pane_index, tab: i }),
                 button(text(marker).size(12))
                     .padding([6, 6])
                     .style(theme::flat(false))
-                    .on_press(Message::CloseTab(i)),
+                    .on_press(Message::CloseTab { pane: pane_index, tab: i }),
             ]
             .align_y(Alignment::Center)
             .padding([0, 6]);
+            let accent_color = match (active, focused) {
+                (true, true) => theme::ACCENT,
+                (true, false) => theme::TEXT_DIM,
+                _ => theme::PANEL_BG,
+            };
             let accent = container(space::vertical().height(Length::Fixed(2.0)))
                 .width(Length::Fill)
-                .style(theme::bg(if active { theme::ACCENT } else { theme::PANEL_BG }));
-            container(column![accent, tab])
-                .style(theme::bg(if active { theme::EDITOR_BG } else { theme::PANEL_BG }))
-                .into()
+                .style(theme::bg(accent_color));
+            Some(
+                container(column![accent, tab])
+                    .style(theme::bg(if active { theme::EDITOR_BG } else { theme::PANEL_BG }))
+                    .into(),
+            )
         });
         container(scrollable(row(tabs)).direction(scrollable::Direction::Horizontal(
             scrollable::Scrollbar::new().width(0).scroller_width(0),
@@ -639,7 +731,7 @@ impl App {
         };
         let position = self
             .docs
-            .get(self.active)
+            .get(self.panes.cur())
             .map(|d| {
                 let (l, c) = d.buffer.cursor();
                 format!("Ln {}, Col {}    {}", l + 1, c + 1, d.language())
@@ -651,6 +743,7 @@ impl App {
                 text(self.status.clone()).size(12).color(theme::TEXT_DIM),
                 space::horizontal(),
                 text(position).size(12).color(theme::TEXT_DIM),
+                toggle("Split", self.panes.list.len() > 1, Message::Split(Axis::Horizontal)),
                 toggle("Assistant", self.show_ai, Message::ToggleAi),
             ]
             .spacing(14)

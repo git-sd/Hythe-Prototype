@@ -36,6 +36,9 @@ fn class_color(class: u8) -> Color {
 
 pub struct EditorView<'a> {
     pub doc: &'a Doc,
+    pub scroll: Scroll,
+    pub pane: usize,
+    pub focused: bool,
     pub viewport: &'a Cell<Size>,
 }
 
@@ -47,9 +50,10 @@ pub struct DragState {
 impl EditorView<'_> {
     fn hit(&self, p: Point) -> (usize, usize) {
         let doc = self.doc;
-        let line = (((p.y + doc.scroll_y) / LINE_H).floor().max(0.0) as usize)
+        let scroll = self.scroll.clamped(&doc.buffer, self.viewport.get());
+        let line = (((p.y + scroll.y) / LINE_H).floor().max(0.0) as usize)
             .min(doc.buffer.line_count() - 1);
-        let vcol = ((p.x - TEXT_X + doc.scroll_x) / CHAR_W).round().max(0.0) as usize;
+        let vcol = ((p.x - TEXT_X + scroll.x) / CHAR_W).round().max(0.0) as usize;
         (line, col_from_visual(&doc.buffer.line_text(line), vcol))
     }
 }
@@ -70,12 +74,14 @@ impl canvas::Program<Message> for EditorView<'_> {
                 let p = cursor.position_in(bounds)?;
                 state.dragging = true;
                 let (line, col) = self.hit(p);
-                Some(canvas::Action::publish(Message::Click { line, col, select: false }).and_capture())
+                let pane = self.pane;
+                Some(canvas::Action::publish(Message::Click { pane, line, col, select: false }).and_capture())
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) if state.dragging => {
                 let p = cursor.position_in(bounds)?;
                 let (line, col) = self.hit(p);
-                Some(canvas::Action::publish(Message::Click { line, col, select: true }).and_capture())
+                let pane = self.pane;
+                Some(canvas::Action::publish(Message::Click { pane, line, col, select: true }).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 state.dragging = false;
@@ -86,7 +92,7 @@ impl canvas::Program<Message> for EditorView<'_> {
                     mouse::ScrollDelta::Lines { y, .. } => y * LINE_H * 3.0,
                     mouse::ScrollDelta::Pixels { y, .. } => *y,
                 };
-                Some(canvas::Action::publish(Message::Scroll(dy)).and_capture())
+                Some(canvas::Action::publish(Message::Scroll { pane: self.pane, dy }).and_capture())
             }
             _ => None,
         }
@@ -105,17 +111,18 @@ impl canvas::Program<Message> for EditorView<'_> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         frame.fill_rectangle(Point::ORIGIN, bounds.size(), theme::EDITOR_BG);
 
-        let first = (doc.scroll_y / LINE_H).floor() as usize;
+        let scroll = self.scroll.clamped(buf, bounds.size());
+        let first = (scroll.y / LINE_H).floor() as usize;
         let last = (first + (bounds.height / LINE_H).ceil() as usize + 1).min(buf.line_count());
         let (cur_line, cur_col) = buf.cursor();
-        let text_x = TEXT_X - doc.scroll_x;
+        let text_x = TEXT_X - scroll.x;
 
         for line in first..last {
-            let y = line as f32 * LINE_H - doc.scroll_y;
+            let y = line as f32 * LINE_H - scroll.y;
             let text = buf.line_text(line);
             let len = text.chars().count();
 
-            if line == cur_line {
+            if line == cur_line && self.focused {
                 frame.fill_rectangle(Point::new(0.0, y), Size::new(bounds.width, LINE_H), CURRENT_LINE);
             }
             if let Some((s, e)) = buf.selection_on_line(line) {
@@ -176,9 +183,11 @@ impl canvas::Program<Message> for EditorView<'_> {
             });
         }
 
-        let cy = cur_line as f32 * LINE_H - doc.scroll_y;
+        let cy = cur_line as f32 * LINE_H - scroll.y;
         let cx = text_x + visual_col(&buf.line_text(cur_line), cur_col) as f32 * CHAR_W;
-        frame.fill_rectangle(Point::new(cx, cy + 1.0), Size::new(2.0, LINE_H - 2.0), theme::ACCENT);
+        frame.fill_rectangle(Point::new(cx, cy + 1.0), Size::new(2.0, LINE_H - 2.0),
+            if self.focused { theme::ACCENT } else { theme::TEXT_DIM },
+        );
 
         vec![frame.into_geometry()]
     }

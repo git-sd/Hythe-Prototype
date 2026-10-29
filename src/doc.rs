@@ -12,14 +12,12 @@ pub const GUTTER_COLS: usize = 5;
 pub const TEXT_X: f32 = GUTTER_COLS as f32 * CHAR_W + 12.0;
 pub const TAB_WIDTH: usize = 4;
 
-/// One open file: its text, highlighting and scroll position.
+/// One open file: its text and highlighting. Shared by every pane showing it.
 pub struct Doc {
     pub buffer: Buffer,
     pub path: Option<PathBuf>,
     pub dirty: bool,
     pub classes: Vec<u8>,
-    pub scroll_x: f32,
-    pub scroll_y: f32,
 }
 
 impl Doc {
@@ -40,8 +38,6 @@ impl Doc {
             path,
             dirty: false,
             classes: Vec::new(),
-            scroll_x: 0.0,
-            scroll_y: 0.0,
         }
     }
 
@@ -85,29 +81,42 @@ impl Doc {
         self.dirty = false;
         Ok(path)
     }
+}
 
-    pub fn ensure_cursor_visible(&mut self, vp: Size) {
-        let (line, col) = self.buffer.cursor();
-        let y = line as f32 * LINE_H;
-        if y < self.scroll_y {
-            self.scroll_y = y;
-        } else if y + LINE_H > self.scroll_y + vp.height {
-            self.scroll_y = y + LINE_H - vp.height;
+/// Scroll offset of one pane's view of a document, in pixels.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Scroll {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Scroll {
+    /// This offset limited to the document's extent, so a view stays valid
+    /// after edits made through another pane.
+    pub fn clamped(self, buf: &Buffer, vp: Size) -> Scroll {
+        let max = (buf.line_count() as f32 * LINE_H - vp.height + LINE_H * 3.0).max(0.0);
+        Scroll {
+            x: self.x.max(0.0),
+            y: self.y.clamp(0.0, max),
         }
-        let x = visual_col(&self.buffer.line_text(line), col) as f32 * CHAR_W;
-        let view_w = (vp.width - TEXT_X - 20.0).max(CHAR_W);
-        if x < self.scroll_x {
-            self.scroll_x = x;
-        } else if x > self.scroll_x + view_w {
-            self.scroll_x = x - view_w;
-        }
-        self.clamp_scroll(vp);
     }
 
-    pub fn clamp_scroll(&mut self, vp: Size) {
-        let max = (self.buffer.line_count() as f32 * LINE_H - vp.height + LINE_H * 3.0).max(0.0);
-        self.scroll_y = self.scroll_y.clamp(0.0, max);
-        self.scroll_x = self.scroll_x.max(0.0);
+    pub fn ensure_cursor_visible(&mut self, buf: &Buffer, vp: Size) {
+        let (line, col) = buf.cursor();
+        let y = line as f32 * LINE_H;
+        if y < self.y {
+            self.y = y;
+        } else if y + LINE_H > self.y + vp.height {
+            self.y = y + LINE_H - vp.height;
+        }
+        let x = visual_col(&buf.line_text(line), col) as f32 * CHAR_W;
+        let view_w = (vp.width - TEXT_X - 20.0).max(CHAR_W);
+        if x < self.x {
+            self.x = x;
+        } else if x > self.x + view_w {
+            self.x = x - view_w;
+        }
+        *self = self.clamped(buf, vp);
     }
 }
 

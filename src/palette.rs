@@ -1,3 +1,4 @@
+use crate::panes::Axis;
 use crate::Message;
 
 pub struct Palette {
@@ -32,6 +33,10 @@ fn all() -> Vec<Command> {
         c("Undo", "Ctrl+Z", Message::Undo),
         c("Redo", "Ctrl+Y", Message::Redo),
         c("Select All", "Ctrl+A", Message::SelectAll),
+        c("Split Right", "Ctrl+\\", Message::Split(Axis::Horizontal)),
+        c("Split Down", "Ctrl+Shift+\\", Message::Split(Axis::Vertical)),
+        c("Close Pane", "", Message::ClosePane),
+        c("Focus Next Pane", "Ctrl+1-9", Message::FocusNextPane),
         c("Toggle Explorer", "Ctrl+B", Message::ToggleSidebar),
         c("Toggle Assistant", "", Message::ToggleAi),
     ]
