@@ -86,7 +86,7 @@ impl App {
 
         let staged_count = s.staged().count();
         let changed = s.changes.len();
-        let can_commit = (staged_count > 0 || changed > 0) && !s.message.trim().is_empty();
+        let can_commit = !s.message.trim().is_empty();
         let files_word = |n: usize| format!("{n} file{}", if n == 1 { "" } else { "s" });
         let commit_box = column![
             text_input("Commit message", &s.message)
@@ -101,7 +101,7 @@ impl App {
                 } else if changed > 0 {
                     format!("Commit all {}", files_word(changed))
                 } else {
-                    "Commit".into()
+                    "Commit message".into()
                 })
                     .size(13)
                     .center()

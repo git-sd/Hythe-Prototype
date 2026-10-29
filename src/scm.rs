@@ -172,8 +172,21 @@ impl App {
         }
         if self.scm.staged().next().is_none() {
             if self.scm.changes.is_empty() {
-                self.status = "Nothing to commit".into();
-                return false;
+                // A clean tree still takes a message, as a commit with no file changes.
+                let ok = match repo.commit_empty(&self.scm.message) {
+                    Ok(sha) => {
+                        self.status = format!("Committed message {sha}");
+                        self.scm.message.clear();
+                        true
+                    }
+                    Err(e) => {
+                        self.status = e;
+                        false
+                    }
+                };
+                self.refresh_git();
+                self.scm.reload(repo);
+                return ok;
             }
             let paths: Vec<String> = self.scm.changes.iter().map(|c| c.path.clone()).collect();
             let refs: Vec<&str> = paths.iter().map(String::as_str).collect();

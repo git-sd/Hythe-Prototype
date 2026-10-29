@@ -286,6 +286,15 @@ impl Repo {
         self.git(&["rev-parse", "--short", "HEAD"]).map(|s| s.trim().to_string())
     }
 
+    /// A commit with a message and no file changes, to leave a note in the history.
+    pub fn commit_empty(&self, message: &str) -> Result<String> {
+        if message.trim().is_empty() {
+            return Err("write a commit message first".into());
+        }
+        self.git(&["commit", "--allow-empty", "-m", message])?;
+        self.git(&["rev-parse", "--short", "HEAD"]).map(|s| s.trim().to_string())
+    }
+
     // --- remotes ---
 
     pub fn push(&self) -> Result<String> {
