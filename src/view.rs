@@ -10,6 +10,7 @@ use iced::{Alignment, Color, Element, Length, Padding, Theme};
 use crate::editor::EditorView;
 use crate::icons::{icon, Icon};
 use crate::palette::{self, Palette};
+use crate::collab::CollabMsg;
 use crate::panes::Axis;
 use crate::scm::ScmMsg;
 use crate::terminal_view::TerminalView;
@@ -98,6 +99,9 @@ impl App {
             ]
             .into();
         }
+        if self.collab_ui.open {
+            return stack![base, self.collab_panel()].into();
+        }
         if self.scm.branch_menu {
             return stack![base, self.branch_menu()].into();
         }
@@ -123,6 +127,7 @@ impl App {
                 text(doc_name).size(13).color(theme::TEXT_DIM),
                 space::horizontal(),
                 icon_button(Icon::Eye, dim, false, Message::Unavailable("Follow mode")),
+                self.peer_dots(),
                 icon_button(Icon::Branch, dim, false, Message::GitRefresh),
                 button(
                     row![icon(Icon::Send, 14.0, dim), text("Share").size(13)]
@@ -131,7 +136,7 @@ impl App {
                 )
                 .padding([5, 10])
                 .style(theme::flat(false))
-                .on_press(Message::Unavailable("Sharing")),
+                .on_press(Message::Collab(CollabMsg::Panel(true))),
             ]
             .spacing(2)
             .align_y(Alignment::Center)
@@ -594,6 +599,7 @@ impl App {
                 viewport: &pane.viewport,
                 popup: if focused && !self.focus_term { self.completion.as_ref() } else { None },
                 blame: if focused { self.blame_text(doc) } else { None },
+                remotes: self.remote_cursors(tab.doc),
             })
             .width(Length::Fill)
             .height(Length::Fill)
@@ -792,7 +798,7 @@ impl App {
             icon_button(Icon::Terminal, dim, self.show_term, Message::ToggleTerminal),
             icon_button(Icon::Bug, dim, false, Message::Unavailable("The debugger")),
             icon_button(Icon::Outline, dim, false, Message::Unavailable("Outline")),
-            icon_button(Icon::Users, dim, false, Message::Unavailable("Collaboration")),
+            icon_button(Icon::Users, dim, self.collab.is_some(), Message::Collab(CollabMsg::Panel(true))),
             icon_button(Icon::Branch, dim, self.scm.open, Message::Scm(ScmMsg::Show)),
             icon_button(Icon::Panels, dim, self.show_sidebar, Message::ToggleSidebar),
         ]

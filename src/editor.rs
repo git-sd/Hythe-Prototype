@@ -47,6 +47,8 @@ pub struct EditorView<'a> {
     pub popup: Option<&'a CompletionUi>,
     /// Inline blame note for the cursor line.
     pub blame: Option<String>,
+    /// Collaborators' carets in this document.
+    pub remotes: Vec<crate::collab::RemoteCursor>,
 }
 
 #[derive(Default)]
@@ -226,6 +228,26 @@ impl canvas::Program<Message> for EditorView<'_> {
                     ..canvas::Text::default()
                 });
             }
+        }
+        for r in &self.remotes {
+            let (line, col) = buf.line_col(r.head);
+            if line < first || line >= last {
+                continue;
+            }
+            let x = text_x + visual_col(&buf.line_text(line), col) as f32 * CHAR_W;
+            let y = line as f32 * LINE_H - scroll.y;
+            frame.fill_rectangle(Point::new(x, y + 1.0), Size::new(2.0, LINE_H - 2.0), r.color);
+            let tag_w = r.name.chars().count() as f32 * 6.4 + 8.0;
+            let tag_y = if y < 14.0 { y + LINE_H - 2.0 } else { y - 13.0 };
+            frame.fill_rectangle(Point::new(x, tag_y), Size::new(tag_w, 13.0), r.color);
+            frame.fill_text(canvas::Text {
+                content: r.name.clone(),
+                position: Point::new(x + 4.0, tag_y + 1.0),
+                color: Color::from_rgb8(0x1b, 0x1e, 0x24),
+                size: Pixels(10.0),
+                font: Font::MONOSPACE,
+                ..canvas::Text::default()
+            });
         }
         if let Some(ui) = self.popup {
             let rect = self.popup_rect(ui, bounds.size());

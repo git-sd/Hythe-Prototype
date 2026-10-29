@@ -1,4 +1,5 @@
 mod buffer;
+mod collab;
 mod completion_ui;
 mod doc;
 mod editor;
@@ -23,6 +24,7 @@ use iced::{clipboard, window, Subscription, Task, Theme};
 
 use doc::{Doc, TAB_WIDTH};
 use explorer::Node;
+use collab::{Collab, CollabMsg, CollabUi};
 use completion_ui::CompletionUi;
 use highlight::Highlighter;
 use hythe_term::{Profile, SessionId, Snapshot, TerminalManager};
@@ -105,6 +107,9 @@ struct App {
     active_project: Option<usize>,
     /// Workspace shown when no repository is selected (the Home screen).
     home: Option<Workspace>,
+    /// Live collaboration for the open repository.
+    collab: Option<Collab>,
+    collab_ui: CollabUi,
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +152,8 @@ pub enum Message {
     TermTick,
     /// Source control: changes, commits, branches, blame.
     Scm(ScmMsg),
+    /// Live collaboration through a relay.
+    Collab(CollabMsg),
     /// Open a project from the sidebar's Projects list.
     OpenRecent(PathBuf),
     /// Click on a repository in the rail (None is the Home button).
@@ -196,8 +203,12 @@ impl App {
             projects: Vec::new(),
             active_project: None,
             home: None,
+            collab: None,
+            collab_ui: CollabUi::default(),
         };
         app.projects = app.persisted.projects.iter().map(|p| Project { path: p.clone(), ws: None }).collect();
+        // Scripted runs: HYTHE_COLLAB="ws://host:port|room|name" joins a room on startup.
+        let auto_join = std::env::var("HYTHE_COLLAB").ok();
         if let Some(arg) = std::env::args().nth(1) {
             let path = PathBuf::from(arg);
             if path.is_dir() {
@@ -207,6 +218,15 @@ impl App {
             }
         } else if let Some(i) = app.persisted.active.as_ref().and_then(|a| app.projects.iter().position(|p| &p.path == a)) {
             app.switch_project(Some(i));
+        }
+        if let Some(spec) = auto_join {
+            let mut parts = spec.splitn(3, '|');
+            if let (Some(url), Some(room), Some(name)) = (parts.next(), parts.next(), parts.next()) {
+                app.collab_ui.url = url.to_string();
+                app.collab_ui.room = room.to_string();
+                app.collab_ui.name = name.to_string();
+                let _ = app.collab_update(CollabMsg::Connect);
+            }
         }
         app
     }
@@ -252,6 +272,7 @@ impl App {
                 self.docs.push(doc);
                 self.panes.open_doc(self.docs.len() - 1);
                 self.load_blame(self.docs.len() - 1);
+                self.collab_open_doc(self.docs.len() - 1);
                 self.status = format!("Opened {}", path.display());
             }
             Err(e) => self.status = format!("Open failed: {e}"),
@@ -593,12 +614,20 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.update_inner(message);
+        // Anything that edited the text or moved the cursor is sent to collaborators.
+        self.collab_flush();
+        task
+    }
+
+    fn update_inner(&mut self, message: Message) -> Task<Message> {
         // The completion popup belongs to one cursor position; almost anything
         // other than typing, scrolling or picking an entry invalidates it.
         if !matches!(
             message,
             Message::Key(_)
                 | Message::TermTick
+                | Message::Collab(CollabMsg::Tick)
                 | Message::Scroll { .. }
                 | Message::TermScroll(_)
                 | Message::TermDrag { .. }
@@ -706,6 +735,7 @@ impl App {
             }
             Message::GitRefresh => self.refresh_git(),
             Message::Scm(m) => return self.scm_update(m),
+            Message::Collab(m) => return self.collab_update(m),
             Message::Unavailable(what) => self.status = format!("{what} isn't available yet"),
             Message::OpenFile(p) => self.open_file(p),
             Message::ToggleDir(p) => {
@@ -1022,6 +1052,10 @@ impl App {
             keyboard::listen().map(Message::Key),
             window::close_requests().map(|_| Message::CloseRequested),
         ];
+        // Collaboration: poll the connection for edits and cursors.
+        if self.collab.is_some() {
+            subs.push(iced::time::every(std::time::Duration::from_millis(40)).map(|_| Message::Collab(CollabMsg::Tick)));
+        }
         // Branch name and change counts drift as files are edited on disk.
         if self.root.is_some() {
             subs.push(iced::time::every(std::time::Duration::from_secs(6)).map(|_| Message::GitRefresh));

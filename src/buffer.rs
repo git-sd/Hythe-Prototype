@@ -9,6 +9,21 @@ pub struct Buffer {
     goal_col: Option<usize>,
     undo: Vec<Edit>,
     redo: Vec<Edit>,
+    /// Record edits for collaboration (see `drain_edits`).
+    track: bool,
+    outbox: Vec<EditOp>,
+}
+
+/// One edit as a collaboration peer sees it: UTF-16 offsets, replace `remove` units at `pos` with `insert`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditOp {
+    pub pos: u32,
+    pub remove: u32,
+    pub insert: String,
+}
+
+fn utf16_len(s: &str) -> u32 {
+    s.encode_utf16().count() as u32
 }
 
 /// One reversible change: `removed` was replaced by `inserted` at `pos`.
@@ -30,11 +45,71 @@ impl Buffer {
             goal_col: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            track: false,
+            outbox: Vec::new(),
         }
     }
 
     pub fn text(&self) -> String {
         self.rope.to_string()
+    }
+
+    // --- collaboration ---
+
+    /// Start or stop recording edits for `drain_edits`.
+    pub fn track_edits(&mut self, on: bool) {
+        self.track = on;
+        if !on {
+            self.outbox.clear();
+        }
+    }
+
+    /// Edits made since the last call, oldest first.
+    pub fn drain_edits(&mut self) -> Vec<EditOp> {
+        std::mem::take(&mut self.outbox)
+    }
+
+    /// Cursor and selection anchor as UTF-16 offsets into the document.
+    pub fn cursor_utf16(&self) -> (u32, u32) {
+        (self.rope.char_to_utf16_cu(self.head) as u32, self.rope.char_to_utf16_cu(self.anchor) as u32)
+    }
+
+    /// Character index for a UTF-16 offset (clamped to the document).
+    pub fn utf16_to_char(&self, offset: u32) -> usize {
+        self.rope.utf16_cu_to_char((offset as usize).min(self.rope.len_utf16_cu()))
+    }
+
+    /// Apply edits made by someone else: `(utf16 position, utf16 units to remove, text)`,
+    /// each in the text as left by the previous one. Our cursor and selection move
+    /// with the text. Undo history is dropped, since its positions no longer apply.
+    pub fn apply_remote<'a>(&mut self, changes: impl IntoIterator<Item = (u32, u32, &'a str)>) {
+        fn shift(pos: usize, start: usize, removed: usize, inserted: usize) -> usize {
+            if pos <= start {
+                pos
+            } else if pos < start + removed {
+                start + inserted
+            } else {
+                pos - removed + inserted
+            }
+        }
+        for (pos, remove, insert) in changes {
+            let units = self.rope.len_utf16_cu();
+            let start = self.rope.utf16_cu_to_char((pos as usize).min(units));
+            let end = self.rope.utf16_cu_to_char(((pos + remove) as usize).min(units)).max(start);
+            let removed = end - start;
+            let inserted = insert.chars().count();
+            if removed > 0 {
+                self.rope.remove(start..end);
+            }
+            if inserted > 0 {
+                self.rope.insert(start, insert);
+            }
+            self.head = shift(self.head, start, removed, inserted);
+            self.anchor = shift(self.anchor, start, removed, inserted);
+        }
+        self.undo.clear();
+        self.redo.clear();
+        self.goal_col = None;
     }
 
     pub fn byte_len(&self) -> usize {
@@ -133,6 +208,13 @@ impl Buffer {
     /// recording the change for undo. Runs of typing or deleting coalesce.
     fn replace(&mut self, start: usize, end: usize, text: &str) {
         let removed = self.rope.slice(start..end).to_string();
+        if self.track {
+            self.outbox.push(EditOp {
+                pos: self.rope.char_to_utf16_cu(start) as u32,
+                remove: utf16_len(&removed),
+                insert: text.to_string(),
+            });
+        }
         let before = (self.head, self.anchor);
         if end > start {
             self.rope.remove(start..end);
@@ -193,6 +275,13 @@ impl Buffer {
             return false;
         };
         let n = e.inserted.chars().count();
+        if self.track {
+            self.outbox.push(EditOp {
+                pos: self.rope.char_to_utf16_cu(e.pos) as u32,
+                remove: utf16_len(&e.inserted),
+                insert: e.removed.clone(),
+            });
+        }
         if n > 0 {
             self.rope.remove(e.pos..e.pos + n);
         }
@@ -210,6 +299,13 @@ impl Buffer {
             return false;
         };
         let n = e.removed.chars().count();
+        if self.track {
+            self.outbox.push(EditOp {
+                pos: self.rope.char_to_utf16_cu(e.pos) as u32,
+                remove: utf16_len(&e.removed),
+                insert: e.inserted.clone(),
+            });
+        }
         if n > 0 {
             self.rope.remove(e.pos..e.pos + n);
         }
@@ -461,6 +557,56 @@ mod tests {
         assert_eq!(b.line_col(2), (0, 2));
     }
 
+    #[test]
+    fn tracked_edits_replay_into_another_buffer_with_unicode_and_undo() {
+        let mut a = Buffer::new("héllo");
+        a.track_edits(true);
+        a.doc_end(false);
+        a.insert(" 😀 world");
+        a.insert_newline();
+        a.insert("end");
+        a.set_cursor(0, 1, false);
+        a.delete();
+        a.undo();
+        a.undo();
+        a.redo();
+        let mut b = Buffer::new("héllo");
+        let ops = a.drain_edits();
+        assert!(!ops.is_empty());
+        b.apply_remote(ops.iter().map(|o| (o.pos, o.remove, o.insert.as_str())));
+        assert_eq!(b.text(), a.text());
+        assert!(a.drain_edits().is_empty());
+    }
+
+    #[test]
+    fn remote_edits_move_the_cursor_with_the_text() {
+        let mut b = Buffer::new("hello world");
+        b.set_cursor(0, 6, false);
+        // Someone inserts before our cursor, then deletes a range around part of it.
+        b.apply_remote([(0, 0, ">>> ")]);
+        assert_eq!(b.cursor(), (0, 10));
+        // Deleting "hello " (which ends exactly at the cursor) pulls the cursor back to the gap.
+        b.apply_remote([(4, 6, "")]);
+        assert_eq!(b.text(), ">>> world");
+        assert_eq!(b.cursor(), (0, 4));
+        // Inserting exactly at the cursor leaves the cursor before the new text.
+        let (_, col) = b.cursor();
+        b.apply_remote([(col as u32, 0, "XY")]);
+        assert_eq!(b.cursor().1, col);
+        // Our own undo history is not applied on top of foreign edits.
+        assert!(!b.undo());
+    }
+
+    #[test]
+    fn untracked_buffers_record_nothing() {
+        let mut a = Buffer::new("");
+        a.insert("x");
+        assert!(a.drain_edits().is_empty());
+        a.track_edits(true);
+        a.insert("y");
+        a.track_edits(false);
+        assert!(a.drain_edits().is_empty());
+    }
     #[test]
     fn crlf_handling() {
         let mut b = Buffer::new("a\r\nb");

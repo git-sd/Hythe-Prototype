@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use hythe_term::{SessionId, Snapshot, TerminalManager};
 
+use crate::collab::Collab;
 use crate::doc::Doc;
 use crate::explorer::Node;
 use crate::panes::Panes;
@@ -25,6 +26,7 @@ pub struct Workspace {
     pub git: Option<GitInfo>,
     pub scm: Scm,
     pub focus_term: bool,
+    pub collab: Option<Collab>,
 }
 
 impl Workspace {
@@ -40,6 +42,7 @@ impl Workspace {
             git: None,
             scm: Scm::default(),
             focus_term: false,
+            collab: None,
         }
     }
 
@@ -76,6 +79,7 @@ impl App {
             git: self.git.take(),
             scm: std::mem::take(&mut self.scm),
             focus_term: std::mem::take(&mut self.focus_term),
+            collab: self.collab.take(),
         }
     }
 
@@ -90,6 +94,7 @@ impl App {
         self.git = ws.git;
         self.scm = ws.scm;
         self.focus_term = ws.focus_term;
+        self.collab = ws.collab;
     }
 
     /// Open the repository at rail position `target`, or the home screen for `None`.
