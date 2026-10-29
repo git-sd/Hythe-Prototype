@@ -1,0 +1,15 @@
+[package]
+name = "hythe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+iced = { version = "0.14", features = ["canvas"] }
+ropey = "1.6"
+tree-sitter = "0.27"
+tree-sitter-highlight = "0.27"
+tree-sitter-rust = "0.24"
+rfd = "0.17"
+
+[profile.dev]
+opt-level = 1

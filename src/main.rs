@@ -1,0 +1,532 @@
+mod buffer;
+mod doc;
+mod editor;
+mod explorer;
+mod highlight;
+mod theme;
+
+use std::cell::Cell;
+use std::path::PathBuf;
+
+use iced::keyboard::{self, key::Named, Key};
+use iced::widget::canvas::Canvas;
+use iced::widget::{button, column, container, row, scrollable, space, text};
+use iced::{clipboard, Alignment, Element, Length, Size, Subscription, Task, Theme};
+
+use doc::{Doc, TAB_WIDTH};
+use editor::EditorView;
+use explorer::Node;
+use highlight::RustHighlighter;
+
+fn main() -> iced::Result {
+    iced::application(App::new, App::update, App::view)
+        .title(App::title)
+        .subscription(App::subscription)
+        .theme(|_: &App| Theme::Dark)
+        .window_size((1200.0, 760.0))
+        .run()
+}
+
+struct App {
+    docs: Vec<Doc>,
+    active: usize,
+    root: Option<Node>,
+    show_sidebar: bool,
+    show_ai: bool,
+    status: String,
+    highlighter: RustHighlighter,
+    viewport: Cell<Size>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    Key(keyboard::Event),
+    Click { line: usize, col: usize, select: bool },
+    Scroll(f32),
+    Paste(Option<String>),
+    NewFile,
+    OpenFileDialog,
+    OpenFolderDialog,
+    OpenFile(PathBuf),
+    ToggleDir(PathBuf),
+    SelectTab(usize),
+    CloseTab(usize),
+    ToggleSidebar,
+    ToggleAi,
+}
+
+impl App {
+    fn new() -> Self {
+        let mut app = App {
+            docs: Vec::new(),
+            active: 0,
+            root: None,
+            show_sidebar: true,
+            show_ai: true,
+            status: String::new(),
+            highlighter: RustHighlighter::new(),
+            viewport: Cell::new(Size::new(800.0, 600.0)),
+        };
+        if let Some(arg) = std::env::args().nth(1) {
+            let path = PathBuf::from(arg);
+            if path.is_dir() {
+                app.root = Some(Node::root(path));
+            } else {
+                app.open_file(path);
+            }
+        }
+        app
+    }
+
+    fn title(&self) -> String {
+        match self.docs.get(self.active) {
+            Some(d) => format!("{}{} — Hythe", d.name(), if d.dirty { " •" } else { "" }),
+            None => "Hythe".into(),
+        }
+    }
+
+    fn open_file(&mut self, path: PathBuf) {
+        if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
+            self.active = i;
+            return;
+        }
+        match Doc::open(path.clone(), &mut self.highlighter) {
+            Ok(doc) => {
+                self.docs.push(doc);
+                self.active = self.docs.len() - 1;
+                self.status = format!("Opened {}", path.display());
+            }
+            Err(e) => self.status = format!("Open failed: {e}"),
+        }
+    }
+
+    fn close_tab(&mut self, index: usize) {
+        if index < self.docs.len() {
+            self.docs.remove(index);
+            if self.active > index || self.active >= self.docs.len() {
+                self.active = self.active.saturating_sub(1);
+            }
+        }
+    }
+
+    fn update(&mut self, message: Message) -> Task<Message> {
+        let vp = self.viewport.get();
+        match message {
+            Message::Scroll(dy) => {
+                if let Some(d) = self.docs.get_mut(self.active) {
+                    d.scroll_y -= dy;
+                    d.clamp_scroll(vp);
+                }
+            }
+            Message::Click { line, col, select } => {
+                if let Some(d) = self.docs.get_mut(self.active) {
+                    d.buffer.set_cursor(line, col, select);
+                }
+            }
+            Message::Paste(Some(text)) => {
+                if let Some(d) = self.docs.get_mut(self.active) {
+                    d.buffer.insert(&text.replace("\r\n", "\n"));
+                    d.edited(&mut self.highlighter);
+                    d.ensure_cursor_visible(vp);
+                }
+            }
+            Message::Paste(None) => {}
+            Message::Key(keyboard::Event::KeyPressed { key, modifiers, text, .. }) => {
+                let task = self.handle_key(key, modifiers, text.as_deref());
+                if let Some(d) = self.docs.get_mut(self.active) {
+                    d.ensure_cursor_visible(vp);
+                }
+                return task;
+            }
+            Message::Key(_) => {}
+            Message::NewFile => {
+                self.docs.push(Doc::empty());
+                self.active = self.docs.len() - 1;
+            }
+            Message::OpenFileDialog => {
+                if let Some(p) = rfd::FileDialog::new().pick_file() {
+                    self.open_file(p);
+                }
+            }
+            Message::OpenFolderDialog => {
+                if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                    self.root = Some(Node::root(p));
+                    self.show_sidebar = true;
+                }
+            }
+            Message::OpenFile(p) => self.open_file(p),
+            Message::ToggleDir(p) => {
+                if let Some(root) = &mut self.root {
+                    root.toggle(&p);
+                }
+            }
+            Message::SelectTab(i) => self.active = i.min(self.docs.len().saturating_sub(1)),
+            Message::CloseTab(i) => self.close_tab(i),
+            Message::ToggleSidebar => self.show_sidebar = !self.show_sidebar,
+            Message::ToggleAi => self.show_ai = !self.show_ai,
+        }
+        Task::none()
+    }
+
+    fn handle_key(&mut self, key: Key, mods: keyboard::Modifiers, text: Option<&str>) -> Task<Message> {
+        let shift = mods.shift();
+        let ctrl = mods.command();
+
+        if ctrl {
+            if let Key::Character(c) = key.as_ref() {
+                match (c, shift) {
+                    ("n", _) => return self.update(Message::NewFile),
+                    ("o", false) => return self.update(Message::OpenFileDialog),
+                    ("o", true) => return self.update(Message::OpenFolderDialog),
+                    ("b", _) => self.show_sidebar = !self.show_sidebar,
+                    ("w", _) => self.close_tab(self.active),
+                    ("s", _) => {
+                        if let Some(d) = self.docs.get_mut(self.active) {
+                            self.status = match d.save() {
+                                Ok(p) => format!("Saved {}", p.display()),
+                                Err(e) => e,
+                            };
+                        }
+                    }
+                    ("a", _) => {
+                        if let Some(d) = self.docs.get_mut(self.active) {
+                            d.buffer.select_all();
+                        }
+                    }
+                    ("c", _) => {
+                        if let Some(t) = self.docs.get(self.active).and_then(|d| d.buffer.selected_text()) {
+                            return clipboard::write(t);
+                        }
+                    }
+                    ("x", _) => {
+                        if let Some(d) = self.docs.get_mut(self.active) {
+                            if let Some(t) = d.buffer.selected_text() {
+                                d.buffer.delete_selection();
+                                d.edited(&mut self.highlighter);
+                                return clipboard::write(t);
+                            }
+                        }
+                    }
+                    ("v", _) => return clipboard::read().map(Message::Paste),
+                    _ => {}
+                }
+                return Task::none();
+            }
+        }
+
+        let vp = self.viewport.get();
+        let Some(d) = self.docs.get_mut(self.active) else {
+            return Task::none();
+        };
+        let hl = &mut self.highlighter;
+
+        if let Key::Named(named) = key.as_ref() {
+            let page = (vp.height / doc::LINE_H) as isize - 1;
+            match named {
+                Named::ArrowLeft => d.buffer.move_left(shift),
+                Named::ArrowRight => d.buffer.move_right(shift),
+                Named::ArrowUp => d.buffer.move_vertical(-1, shift),
+                Named::ArrowDown => d.buffer.move_vertical(1, shift),
+                Named::PageUp => d.buffer.move_vertical(-page, shift),
+                Named::PageDown => d.buffer.move_vertical(page, shift),
+                Named::Home if ctrl => d.buffer.doc_start(shift),
+                Named::End if ctrl => d.buffer.doc_end(shift),
+                Named::Home => d.buffer.home(shift),
+                Named::End => d.buffer.end(shift),
+                Named::Backspace => {
+                    d.buffer.backspace();
+                    d.edited(hl);
+                }
+                Named::Delete => {
+                    d.buffer.delete();
+                    d.edited(hl);
+                }
+                Named::Enter => {
+                    d.buffer.insert_newline();
+                    d.edited(hl);
+                }
+                Named::Tab => {
+                    d.buffer.insert(&" ".repeat(TAB_WIDTH));
+                    d.edited(hl);
+                }
+                Named::Space => {
+                    d.buffer.insert(" ");
+                    d.edited(hl);
+                }
+                _ => {}
+            }
+            return Task::none();
+        }
+
+        if let Some(t) = text {
+            let t: String = t.chars().filter(|c| !c.is_control()).collect();
+            if !t.is_empty() && !mods.control() && !mods.alt() || mods.control() && mods.alt() {
+                d.buffer.insert(&t);
+                d.edited(hl);
+            }
+        }
+        Task::none()
+    }
+
+    // --- view ---
+
+    fn view(&self) -> Element<'_, Message> {
+        let mut body = row![].height(Length::Fill);
+        if self.show_sidebar {
+            body = body.push(self.sidebar()).push(divider_v());
+        }
+        body = body.push(self.center());
+        if self.show_ai {
+            body = body.push(divider_v()).push(self.ai_panel());
+        }
+        column![self.top_bar(), divider_h(), body, divider_h(), self.status_bar()].into()
+    }
+
+    fn top_bar(&self) -> Element<'_, Message> {
+        let project = self.root.as_ref().map(|r| r.name.as_str()).unwrap_or("No folder open");
+        container(
+            row![
+                button(text(format!("◆  {project}")).size(13))
+                    .style(theme::flat(false))
+                    .padding([3, 10])
+                    .on_press(Message::OpenFolderDialog),
+                space::horizontal(),
+                text(self.docs.get(self.active).map(|d| d.name()).unwrap_or_default())
+                    .size(12)
+                    .color(theme::TEXT_DIM),
+                space::horizontal().width(Length::Fixed(80.0)),
+            ]
+            .align_y(Alignment::Center)
+            .padding([4, 8]),
+        )
+        .width(Length::Fill)
+        .style(theme::bg(theme::BAR_BG))
+        .into()
+    }
+
+    fn sidebar(&self) -> Element<'_, Message> {
+        let content: Element<'_, Message> = match &self.root {
+            None => column![
+                text("No folder open").size(13).color(theme::TEXT_DIM),
+                button(text("Open Folder").size(13))
+                    .style(theme::flat(false))
+                    .padding([4, 10])
+                    .on_press(Message::OpenFolderDialog),
+            ]
+            .spacing(10)
+            .padding(16)
+            .into(),
+            Some(root) => {
+                let mut rows = Vec::new();
+                root.rows(0, &mut rows);
+                let active_path = self.docs.get(self.active).and_then(|d| d.path.as_ref());
+                let list = column(rows.into_iter().map(|(depth, node)| {
+                    let arrow = if !node.is_dir {
+                        " "
+                    } else if node.expanded {
+                        "▾"
+                    } else {
+                        "▸"
+                    };
+                    let msg = if node.is_dir {
+                        Message::ToggleDir(node.path.clone())
+                    } else {
+                        Message::OpenFile(node.path.clone())
+                    };
+                    let selected = active_path == Some(&node.path);
+                    button(
+                        row![
+                            space::horizontal().width(Length::Fixed(depth as f32 * 12.0)),
+                            text(arrow).size(11),
+                            text(node.name.clone()).size(13),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                    )
+                    .width(Length::Fill)
+                    .padding([3, 8])
+                    .style(theme::flat(selected))
+                    .on_press(msg)
+                    .into()
+                }))
+                .padding([0, 6]);
+                column![
+                    text(root.name.to_uppercase())
+                        .size(11)
+                        .color(theme::TEXT_DIM)
+                        .width(Length::Fill),
+                    scrollable(list).height(Length::Fill),
+                ]
+                .spacing(8)
+                .padding([10, 6])
+                .into()
+            }
+        };
+        container(content)
+            .width(Length::Fixed(240.0))
+            .height(Length::Fill)
+            .style(theme::bg(theme::PANEL_BG))
+            .into()
+    }
+
+    fn center(&self) -> Element<'_, Message> {
+        let content: Element<'_, Message> = match self.docs.get(self.active) {
+            Some(doc) => column![
+                self.tab_bar(),
+                divider_h(),
+                Canvas::new(EditorView { doc, viewport: &self.viewport })
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            ]
+            .into(),
+            None => self.welcome(),
+        };
+        container(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(theme::bg(theme::EDITOR_BG))
+            .into()
+    }
+
+    fn tab_bar(&self) -> Element<'_, Message> {
+        let tabs = self.docs.iter().enumerate().map(|(i, d)| {
+            let active = i == self.active;
+            let marker = if d.dirty { "●" } else { "×" };
+            let tab = row![
+                button(text(d.name()).size(13))
+                    .padding([6, 4])
+                    .style(theme::flat(false))
+                    .on_press(Message::SelectTab(i)),
+                button(text(marker).size(12))
+                    .padding([6, 6])
+                    .style(theme::flat(false))
+                    .on_press(Message::CloseTab(i)),
+            ]
+            .align_y(Alignment::Center)
+            .padding([0, 6]);
+            let accent = container(space::vertical().height(Length::Fixed(2.0)))
+                .width(Length::Fill)
+                .style(theme::bg(if active { theme::ACCENT } else { theme::PANEL_BG }));
+            container(column![accent, tab])
+                .style(theme::bg(if active { theme::EDITOR_BG } else { theme::PANEL_BG }))
+                .into()
+        });
+        container(scrollable(row(tabs)).direction(scrollable::Direction::Horizontal(
+            scrollable::Scrollbar::new().width(0).scroller_width(0),
+        )))
+        .width(Length::Fill)
+        .style(theme::bg(theme::PANEL_BG))
+        .into()
+    }
+
+    fn welcome(&self) -> Element<'_, Message> {
+        let action = |label: &'static str, hint: &'static str, msg: Message| {
+            button(
+                row![text(label).size(14), space::horizontal(), text(hint).size(12).color(theme::TEXT_DIM)]
+                    .align_y(Alignment::Center),
+            )
+            .width(Length::Fixed(340.0))
+            .padding([8, 12])
+            .style(theme::flat(false))
+            .on_press(msg)
+        };
+        container(
+            column![
+                text("Hythe").size(34).color(theme::ACCENT),
+                text("a fast editor, built in Rust").size(14).color(theme::TEXT_DIM),
+                space::vertical().height(Length::Fixed(24.0)),
+                action("New File", "Ctrl+N", Message::NewFile),
+                action("Open File", "Ctrl+O", Message::OpenFileDialog),
+                action("Open Folder", "Ctrl+Shift+O", Message::OpenFolderDialog),
+                space::vertical().height(Length::Fixed(14.0)),
+                text("Ctrl+B toggles the sidebar").size(12).color(theme::TEXT_DIM),
+            ]
+            .spacing(4)
+            .align_x(Alignment::Center),
+        )
+        .center(Length::Fill)
+        .into()
+    }
+
+    fn ai_panel(&self) -> Element<'_, Message> {
+        container(
+            column![
+                text("ASSISTANT").size(11).color(theme::TEXT_DIM),
+                space::vertical().height(Length::Fill),
+                text("Connect Claude or OpenAI to chat about your code.")
+                    .size(13)
+                    .color(theme::TEXT_DIM),
+                text("Coming in Phase 3.").size(12).color(theme::TEXT_DIM),
+                space::vertical().height(Length::Fill),
+                container(text("Ask anything…").size(13).color(theme::TEXT_DIM))
+                    .padding(10)
+                    .width(Length::Fill)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::EDITOR_BG.into()),
+                        border: iced::Border {
+                            color: theme::BORDER,
+                            width: 1.0,
+                            radius: 6.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+            ]
+            .spacing(8)
+            .padding(12),
+        )
+        .width(Length::Fixed(320.0))
+        .height(Length::Fill)
+        .style(theme::bg(theme::PANEL_BG))
+        .into()
+    }
+
+    fn status_bar(&self) -> Element<'_, Message> {
+        let toggle = |label: &'static str, on: bool, msg: Message| {
+            button(text(label).size(12))
+                .padding([2, 8])
+                .style(theme::flat(on))
+                .on_press(msg)
+        };
+        let position = self
+            .docs
+            .get(self.active)
+            .map(|d| {
+                let (l, c) = d.buffer.cursor();
+                format!("Ln {}, Col {}    {}", l + 1, c + 1, d.language())
+            })
+            .unwrap_or_default();
+        container(
+            row![
+                toggle("Explorer", self.show_sidebar, Message::ToggleSidebar),
+                text(self.status.clone()).size(12).color(theme::TEXT_DIM),
+                space::horizontal(),
+                text(position).size(12).color(theme::TEXT_DIM),
+                toggle("Assistant", self.show_ai, Message::ToggleAi),
+            ]
+            .spacing(14)
+            .align_y(Alignment::Center)
+            .padding([3, 8]),
+        )
+        .width(Length::Fill)
+        .style(theme::bg(theme::BAR_BG))
+        .into()
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        keyboard::listen().map(Message::Key)
+    }
+}
+
+fn divider_v<'a>() -> Element<'a, Message> {
+    container(space::horizontal().width(Length::Fixed(1.0)))
+        .height(Length::Fill)
+        .style(theme::bg(theme::BORDER))
+        .into()
+}
+
+fn divider_h<'a>() -> Element<'a, Message> {
+    container(space::vertical().height(Length::Fixed(1.0)))
+        .width(Length::Fill)
+        .style(theme::bg(theme::BORDER))
+        .into()
+}
