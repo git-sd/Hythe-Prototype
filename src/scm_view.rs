@@ -6,7 +6,7 @@ use iced::{Alignment, Color, Element, Font, Length, Padding, Theme};
 
 use crate::icons::{icon, Icon};
 use crate::scm::{ScmMsg, ScmTab};
-use crate::view::{divider_h, divider_v, icon_button, list_row, BAR_H, SIDEBAR_W};
+use crate::view::{divider_h, divider_v, icon_button, list_row, BAR_H};
 use crate::{theme, App, Message};
 
 const MAX_DIFF_LINES: usize = 3000;
@@ -400,7 +400,7 @@ impl App {
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .align_y(Alignment::End)
-                .padding(Padding { bottom: BAR_H + 6.0, left: SIDEBAR_W + 8.0, ..Padding::ZERO }),
+                .padding(Padding { bottom: BAR_H + 6.0, left: self.sidebar_w() + 8.0, ..Padding::ZERO }),
         ]
         .into()
     }

@@ -24,6 +24,8 @@ pub struct Pane {
     pub active: usize,
     /// Size of the editor area, recorded while the pane is drawn.
     pub viewport: Cell<Size>,
+    /// Share of the editor area, relative to the other panes.
+    pub weight: f32,
 }
 
 impl Pane {
@@ -32,6 +34,7 @@ impl Pane {
             tabs: Vec::new(),
             active: 0,
             viewport: Cell::new(Size::new(600.0, 600.0)),
+            weight: 1.0,
         }
     }
 
@@ -96,6 +99,9 @@ impl Panes {
         }
         self.axis = axis;
         self.list.insert(self.focus + 1, pane);
+        for p in &mut self.list {
+            p.weight = 1.0;
+        }
         self.focus += 1;
     }
 
@@ -126,8 +132,33 @@ impl Panes {
         docs
     }
 
+    /// Move the divider between pane `i` and `i + 1` by `delta` screen pixels.
+    pub fn drag_divider(&mut self, i: usize, delta: f32) {
+        const MIN_PX: f32 = 120.0;
+        if i + 1 >= self.list.len() {
+            return;
+        }
+        let px = |p: &Pane| match self.axis {
+            Axis::Horizontal => p.viewport.get().width,
+            Axis::Vertical => p.viewport.get().height,
+        };
+        let (a, b) = (px(&self.list[i]), px(&self.list[i + 1]));
+        let (wa, wb) = (self.list[i].weight, self.list[i + 1].weight);
+        if a <= 0.0 || b <= 0.0 {
+            return;
+        }
+        // Pixels to weight, using the pair's own scale.
+        let scale = (wa + wb) / (a + b);
+        let delta = delta.clamp(MIN_PX.min(a) - a, b - MIN_PX.min(b));
+        self.list[i].weight = wa + delta * scale;
+        self.list[i + 1].weight = wb - delta * scale;
+    }
+
     fn remove_pane(&mut self, i: usize) {
         self.list.remove(i);
+        for p in &mut self.list {
+            p.weight = 1.0;
+        }
         if self.focus > i || self.focus >= self.list.len() {
             self.focus = self.focus.saturating_sub(1);
         }
@@ -163,6 +194,20 @@ impl Panes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dragging_a_divider_trades_width_between_neighbours() {
+        let mut p = Panes::new();
+        p.split(Axis::Horizontal);
+        for pane in &p.list {
+            pane.viewport.set(Size::new(500.0, 400.0));
+        }
+        p.drag_divider(0, 100.0);
+        assert!(p.list[0].weight > 1.0 && p.list[1].weight < 1.0);
+        assert!((p.list[0].weight + p.list[1].weight - 2.0).abs() < 1e-4);
+        p.drag_divider(0, 10_000.0);
+        assert!(p.list[1].weight > 0.0, "the neighbour keeps a minimum size");
+    }
 
     #[test]
     fn split_close_and_renumber() {

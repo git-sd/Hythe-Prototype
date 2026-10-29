@@ -15,15 +15,15 @@ use crate::collab::CollabMsg;
 use crate::panes::Axis;
 use crate::scm::ScmMsg;
 use crate::terminal_view::TerminalView;
-use crate::{menus, theme, App, Message};
+use crate::{menus, theme, App, Message, Split};
 
 pub(crate) const TITLE_H: f32 = 38.0;
 pub(crate) const BAR_H: f32 = 32.0;
 pub(crate) const TAB_H: f32 = 36.0;
 pub(crate) const RAIL_W: f32 = 52.0;
 pub(crate) const LIST_W: f32 = 232.0;
-pub(crate) const SIDEBAR_W: f32 = RAIL_W + LIST_W;
-const AGENT_W: f32 = 470.0;
+pub(crate) const AGENT_W: f32 = 470.0;
+pub(crate) const GRIP: f32 = 5.0;
 
 pub(crate) fn divider_v<'a>() -> Element<'a, Message> {
     container(space::horizontal().width(Length::Fixed(1.0)))
@@ -37,6 +37,69 @@ pub(crate) fn divider_h<'a>() -> Element<'a, Message> {
         .width(Length::Fill)
         .style(theme::bg(theme::BORDER))
         .into()
+}
+
+/// Weights become `FillPortion`s (scaled so small fractions survive the integer type).
+fn portion(axis: Axis, along: Axis, weight: f32) -> Length {
+    if axis == along {
+        Length::FillPortion((weight * 1000.0).round().clamp(1.0, u16::MAX as f32) as u16)
+    } else {
+        Length::Fill
+    }
+}
+
+/// A 1px divider with a wider invisible grab area; drag it to resize.
+pub(crate) fn grip_v<'a>(split: Split) -> Element<'a, Message> {
+    mouse_area(
+        container(container(space::horizontal().width(Length::Fixed(1.0))).height(Length::Fill).style(theme::bg(theme::BORDER)))
+            .width(Length::Fixed(GRIP))
+            .height(Length::Fill)
+            .center_x(Length::Fixed(GRIP)),
+    )
+    .interaction(iced::mouse::Interaction::ResizingHorizontally)
+    .on_press(Message::SplitStart(split))
+    .into()
+}
+
+pub(crate) fn grip_h<'a>(split: Split) -> Element<'a, Message> {
+    mouse_area(
+        container(container(space::vertical().height(Length::Fixed(1.0))).width(Length::Fill).style(theme::bg(theme::BORDER)))
+            .height(Length::Fixed(GRIP))
+            .width(Length::Fill)
+            .center_y(Length::Fixed(GRIP)),
+    )
+    .interaction(iced::mouse::Interaction::ResizingVertically)
+    .on_press(Message::SplitStart(split))
+    .into()
+}
+
+/// Invisible handles around the borderless window that start an OS resize.
+fn window_edges<'a>() -> Element<'a, Message> {
+    use iced::mouse::Interaction as I;
+    use iced::window::Direction as D;
+    const E: f32 = 5.0;
+    const C: f32 = 10.0;
+    let handle = |w: Length, h: Length, d: D, i: I| -> Element<'a, Message> {
+        mouse_area(space::horizontal().width(w).height(h)).interaction(i).on_press(Message::ResizeWindow(d)).into()
+    };
+    let (f, fx) = (Length::Fill, |v: f32| Length::Fixed(v));
+    let top = row![
+        handle(fx(C), fx(E), D::NorthWest, I::ResizingDiagonallyDown),
+        handle(f, fx(E), D::North, I::ResizingVertically),
+        handle(fx(C), fx(E), D::NorthEast, I::ResizingDiagonallyUp),
+    ];
+    let bottom = row![
+        handle(fx(C), fx(E), D::SouthWest, I::ResizingDiagonallyUp),
+        handle(f, fx(E), D::South, I::ResizingVertically),
+        handle(fx(C), fx(E), D::SouthEast, I::ResizingDiagonallyDown),
+    ];
+    let middle = row![
+        handle(fx(E), f, D::West, I::ResizingHorizontally),
+        space::horizontal().width(f),
+        handle(fx(E), f, D::East, I::ResizingHorizontally),
+    ]
+    .height(f);
+    column![top, middle, bottom].into()
 }
 
 /// A square icon button; `on` highlights it (an open panel, say).
@@ -72,18 +135,20 @@ impl App {
         let mut main = row![].height(Length::Fill);
         // Source Control wants the width for diffs, so the thread column steps aside.
         if self.show_term {
-            main = main.push(self.agent_panel()).push(divider_v());
+            main = main.push(self.agent_panel()).push(grip_v(Split::Agent));
         }
         main = main.push(self.editor_area());
         let right = column![main, divider_h(), self.bottom_bar()].width(Length::Fill);
 
         let mut body = row![].height(Length::Fill);
         if self.show_sidebar {
-            body = body.push(self.left_block()).push(divider_v());
+            body = body.push(self.left_block()).push(grip_v(Split::Sidebar));
         }
         body = body.push(right);
 
-        let base = column![self.title_bar(), divider_h(), body];        if let Some(p) = &self.palette {
+        let base = column![self.title_bar(), divider_h(), body];
+        let base = stack![base, window_edges()];
+        if let Some(p) = &self.palette {
             return stack![
                 base,
                 mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
@@ -241,13 +306,13 @@ impl App {
                 .into()
         };
         // Each menu opens beside the button that asked for it.
-        let sidebar_left = if self.show_sidebar { SIDEBAR_W + 1.0 } else { 0.0 };
+        let sidebar_left = if self.show_sidebar { self.sidebar_w() + 1.0 } else { 0.0 };
         let (align_x, align_y, pad) = match kind {
             // Thread column "…": right-aligned under the column header.
             1 => (
                 Alignment::Start,
                 Alignment::Start,
-                Padding { top: TITLE_H + 42.0, left: (sidebar_left + AGENT_W - 300.0 - 8.0).max(8.0), ..Padding::ZERO },
+                Padding { top: TITLE_H + 42.0, left: (sidebar_left + self.agent_w - 300.0 - 8.0).max(8.0), ..Padding::ZERO },
             ),
             // Editor tabs "…": right edge of the window, under the tab bar.
             2 => (Alignment::End, Alignment::Start, Padding { top: TITLE_H + 40.0, right: 8.0, ..Padding::ZERO }),
@@ -328,7 +393,7 @@ impl App {
             row![self.rail(), self.channel_list()].height(Length::Fill),
             self.account_chip(),
         ])
-        .width(Length::Fixed(SIDEBAR_W))
+        .width(Length::Fixed(self.sidebar_w()))
         .height(Length::Fill)
         .into()
     }
@@ -494,7 +559,7 @@ impl App {
         }
 
         container(column![header, divider_h(), scrollable(list).height(Length::Fill)])
-            .width(Length::Fixed(LIST_W))
+            .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))
             .into()
@@ -650,7 +715,7 @@ impl App {
             .width(Length::Fill)
             .style(theme::bg(if self.focus_term { theme::ACCENT } else { theme::AGENT_BG }));
         container(column![focus_line, header, divider_h(), body])
-            .width(Length::Fixed(AGENT_W))
+            .width(Length::Fixed(self.agent_w))
             .height(Length::Fill)
             .style(theme::bg(theme::AGENT_BG))
             .into()
@@ -678,8 +743,8 @@ impl App {
         for i in 0..self.panes.list.len() {
             if i > 0 {
                 views.push(match self.panes.axis {
-                    Axis::Horizontal => divider_v(),
-                    Axis::Vertical => divider_h(),
+                    Axis::Horizontal => grip_v(Split::Pane(i - 1)),
+                    Axis::Vertical => grip_h(Split::Pane(i - 1)),
                 });
             }
             views.push(self.pane_view(i));
@@ -718,8 +783,8 @@ impl App {
             col = col.push(b);
         }
         container(col.push(body))
-            .width(Length::FillPortion(1))
-            .height(Length::FillPortion(1))
+            .width(portion(self.panes.axis, Axis::Horizontal, pane.weight))
+            .height(portion(self.panes.axis, Axis::Vertical, pane.weight))
             .style(theme::bg(theme::EDITOR_BG))
             .into()
     }

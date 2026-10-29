@@ -55,6 +55,21 @@ fn main() -> iced::Result {
         .run()
 }
 
+/// A divider that can be dragged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Split {
+    Sidebar,
+    Agent,
+    /// Between editor pane `n` and `n + 1`.
+    Pane(usize),
+}
+
+/// A divider drag in progress; `last` is the cursor at the previous move.
+struct Drag {
+    split: Split,
+    last: Option<iced::Point>,
+}
+
 pub(crate) enum Unsaved {
     Save,
     Discard,
@@ -88,6 +103,11 @@ struct App {
     panes: Panes,
     root: Option<Node>,
     show_sidebar: bool,
+    /// Width of the file list beside the repository rail.
+    list_w: f32,
+    /// Width of the agent/terminal column.
+    agent_w: f32,
+    drag: Option<Drag>,
     show_term: bool,
     /// Keyboard focus is in the terminal panel rather than the editor.
     focus_term: bool,
@@ -195,6 +215,10 @@ pub enum Message {
     FitWindow(window::Id, Option<iced::Size>),
     ResetWindow,
     DragWindow,
+    ResizeWindow(window::Direction),
+    SplitStart(Split),
+    SplitMove(iced::Point),
+    SplitEnd,
     MinimizeWindow,
     ToggleMaximize,
     AvatarReady(Option<PathBuf>),
@@ -215,6 +239,9 @@ impl App {
             panes: Panes::new(),
             root: None,
             show_sidebar: true,
+            list_w: view::LIST_W,
+            agent_w: view::AGENT_W,
+            drag: None,
             show_term: true,
             focus_term: false,
             terms: TerminalManager::default(),
@@ -829,6 +856,10 @@ impl App {
                 ]);
             }
             Message::DragWindow => return window::oldest().and_then(window::drag),
+            Message::ResizeWindow(d) => return window::oldest().and_then(move |id| window::drag_resize(id, d)),
+            Message::SplitStart(split) => self.drag = Some(Drag { split, last: None }),
+            Message::SplitEnd => self.drag = None,
+            Message::SplitMove(at) => self.drag_split(at),
             Message::MinimizeWindow => return window::oldest().and_then(|id| window::minimize(id, true)),
             Message::ResetWindow => return self.fit_window_task(),
             Message::ToggleMaximize => return window::oldest().and_then(window::toggle_maximize),
@@ -1164,6 +1195,32 @@ impl App {
         if self.show_term && !self.terms.sessions().is_empty() {
             subs.push(iced::time::every(std::time::Duration::from_millis(16)).map(|_| Message::TermTick));
         }
+        if self.drag.is_some() {
+            subs.push(iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::SplitMove(position)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::SplitEnd),
+                _ => None,
+            }));
+        }
         Subscription::batch(subs)
+    }
+
+    pub(crate) fn sidebar_w(&self) -> f32 {
+        view::RAIL_W + self.list_w
+    }
+
+    fn drag_split(&mut self, at: iced::Point) {
+        let Some(drag) = &mut self.drag else { return };
+        let dx = drag.last.map_or(0.0, |l| at.x - l.x);
+        let dy = drag.last.map_or(0.0, |l| at.y - l.y);
+        drag.last = Some(at);
+        match drag.split {
+            Split::Sidebar => self.list_w = (self.list_w + dx).clamp(140.0, 600.0),
+            Split::Agent => self.agent_w = (self.agent_w + dx).clamp(240.0, 1000.0),
+            Split::Pane(i) => {
+                let d = if self.panes.axis == Axis::Horizontal { dx } else { dy };
+                self.panes.drag_divider(i, d);
+            }
+        }
     }
 }
