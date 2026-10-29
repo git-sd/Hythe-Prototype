@@ -1483,9 +1483,9 @@ impl App {
                 self.agent_w = (p.x - sidebar - chat_l).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
             }
             Handle::Chat if self.chat_right => {
-                self.chat_w = (win.width - p.x).clamp(220.0, (win.width - sidebar - 300.0).clamp(220.0, 600.0))
+                self.chat_w = (win.width - p.x).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0))
             }
-            Handle::Chat => self.chat_w = (p.x - sidebar).clamp(220.0, (win.width - sidebar - 300.0).clamp(220.0, 600.0)),
+            Handle::Chat => self.chat_w = (p.x - sidebar).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0)),
             Handle::Dock => self.agent_right = p.x > win.width / 2.0,
             Handle::ChatDock => self.chat_right = p.x > win.width / 2.0,
             Handle::Scm => self.scm_w = (p.x - left).clamp(220.0, (win.width - left - 300.0).clamp(220.0, 700.0)),

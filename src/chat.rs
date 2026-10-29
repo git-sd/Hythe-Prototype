@@ -228,26 +228,28 @@ impl App {
         let msg = |m: ChatMsg| Message::Chat(m);
         let repo_name = self.git.as_ref().map(|g| g.repo.clone()).unwrap_or_else(|| "chat".into());
 
-        let status: Element<'_, Message> = match (c.busy, &c.note) {
-            (Some(b), _) => text(b).size(12).color(dim).wrapping(text::Wrapping::None).into(),
-            (None, Some(n)) => text(n.clone()).size(12).color(theme::REMOVED).wrapping(text::Wrapping::None).into(),
-            _ => text("Shared through git").size(12).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None).into(),
+        // Busy and error text replace the name for a moment; long text is cut off
+        // rather than pushing Sync and the X out of view.
+        let (title, title_color) = match (c.busy, &c.note) {
+            (Some(b), _) => (b.to_string(), theme::TEXT_DIM),
+            (None, Some(n)) => (n.clone(), theme::REMOVED),
+            _ => (repo_name.clone(), theme::TEXT),
         };
         let header = container(
             row![
-                icon(Icon::Chat, 16.0, dim),
-                text(repo_name.clone()).size(14).wrapping(text::Wrapping::None),
-                // Long text is cut off rather than pushing Sync and the X out of view.
-                container(status).width(Length::Fill).clip(true),
-                button(text("Sync").size(12))
-                    .padding([4, 10])
+                icon(Icon::Chat, 13.0, dim),
+                container(text(title).size(12).color(title_color).wrapping(text::Wrapping::None))
+                    .width(Length::Fill)
+                    .clip(true),
+                button(text("Sync").size(10))
+                    .padding([2, 6])
                     .style(theme::flat(false))
                     .on_press_maybe(c.busy.is_none().then(|| msg(ChatMsg::Sync))),
                 icon_button(Icon::Close, theme::TEXT_FAINT, false, msg(ChatMsg::Hide)),
             ]
-            .spacing(10)
+            .spacing(6)
             .align_y(Alignment::Center)
-            .padding([0, 12]),
+            .padding([0, 8]),
         )
         .height(Length::Fixed(TAB_H))
         .width(Length::Fill)
@@ -255,31 +257,31 @@ impl App {
         let header = mouse_area(header).on_press(Message::DragStart(Handle::ChatDock)).interaction(iced::mouse::Interaction::Grab);
 
         let now = now_secs();
-        let mut list = column![].spacing(14).padding(Padding { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 });
+        let mut list = column![].spacing(9).padding(Padding { top: 8.0, right: 8.0, bottom: 8.0, left: 8.0 });
         if c.messages.is_empty() {
             list = list.push(
                 container(
                     column![
-                        text(format!("Welcome to #{repo_name}")).size(18),
-                        text("Messages and files you send here are saved in this repository and shared when you sync.")
-                            .size(13)
+                        text(format!("#{repo_name}")).size(13),
+                        text("Messages and files are saved in this repo and shared when you sync.")
+                            .size(11)
                             .color(dim),
                     ]
-                    .spacing(4),
+                    .spacing(3),
                 )
-                .padding([40, 0]),
+                .padding([16, 0]),
             );
         }
         for m in &c.messages {
             list = list.push(self.chat_message(m, now));
         }
 
-        let mut attached = row![].spacing(6);
+        let mut attached = column![].spacing(3);
         for (i, f) in c.files.iter().enumerate() {
             let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             attached = attached.push(
-                button(row![icon(Icon::File, 12.0, dim), text(name).size(12), icon(Icon::Close, 11.0, theme::TEXT_FAINT)].spacing(6).align_y(Alignment::Center))
-                    .padding([3, 8])
+                button(row![icon(Icon::File, 11.0, dim), text(name).size(11).wrapping(text::Wrapping::None), icon(Icon::Close, 10.0, theme::TEXT_FAINT)].spacing(4).align_y(Alignment::Center))
+                    .padding([2, 6])
                     .style(theme::flat(false))
                     .on_press(msg(ChatMsg::Unattach(i))),
             );
@@ -288,23 +290,23 @@ impl App {
         let composer = column![
             attached,
             row![
-                icon_button(Icon::Paperclip, dim, false, msg(ChatMsg::Attach)),
-                text_input(&format!("Message #{repo_name}"), &c.input)
+                button(icon(Icon::Paperclip, 13.0, dim)).padding(3).style(theme::flat(false)).on_press(msg(ChatMsg::Attach)),
+                text_input("Message", &c.input)
                     .on_input(|s| Message::Chat(ChatMsg::Input(s)))
                     .on_submit(msg(ChatMsg::Send))
-                    .padding(9)
-                    .size(13)
+                    .padding([4, 6])
+                    .size(12)
                     .style(theme::input),
-                button(icon(Icon::Send, 16.0, if can_send { theme::ACCENT } else { theme::TEXT_FAINT }))
-                    .padding([6, 9])
+                button(icon(Icon::Send, 13.0, if can_send { theme::ACCENT } else { theme::TEXT_FAINT }))
+                    .padding(3)
                     .style(theme::flat(false))
                     .on_press_maybe(can_send.then(|| msg(ChatMsg::Send))),
             ]
-            .spacing(6)
+            .spacing(3)
             .align_y(Alignment::Center),
         ]
-        .spacing(6)
-        .padding(12);
+        .spacing(4)
+        .padding(6);
 
         // The 2px matches the focus line above the thread column, so the rules line up.
         container(column![space::vertical().height(Length::Fixed(2.0)), header, divider_h(), scrollable(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
@@ -318,29 +320,30 @@ impl App {
         let c = &self.chat;
         let hue = m.author.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
         let avatar: Element<'a, Message> = match m.login.as_ref().and_then(|l| self.member_avatars.get(l)) {
-            Some(h) => iced::widget::image(h.clone()).width(Length::Fixed(30.0)).height(Length::Fixed(30.0)).border_radius(15.0).into(),
+            Some(h) => iced::widget::image(h.clone()).width(Length::Fixed(22.0)).height(Length::Fixed(22.0)).border_radius(11.0).into(),
             None => {
                 let color = crate::view::hsv(hue as f32);
-                container(text(m.author.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()).size(13).color(Color::WHITE))
-                    .center(Length::Fixed(30.0))
+                container(text(m.author.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()).size(10).color(Color::WHITE))
+                    .center(Length::Fixed(22.0))
                     .style(move |_: &Theme| container::Style {
                         background: Some(color.into()),
-                        border: iced::Border { radius: 15.0.into(), ..Default::default() },
+                        border: iced::Border { radius: 11.0.into(), ..Default::default() },
                         ..Default::default()
                     })
                     .into()
             }
         };
 
-        let mut who = row![text(m.author.clone()).size(14)].spacing(8).align_y(Alignment::Center);
-        if let Some(l) = &m.login {
-            who = who.push(text(format!("@{l}")).size(12).color(theme::TEXT_FAINT));
-        }
-        who = who.push(text(hythe_git::time_ago(m.time_ms / 1000, now)).size(11).color(theme::TEXT_FAINT));
+        let who = row![
+            text(m.author.clone()).size(12).wrapping(text::Wrapping::None),
+            text(hythe_git::time_ago(m.time_ms / 1000, now)).size(9).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
 
-        let mut body = column![who].spacing(3);
+        let mut body = column![who].spacing(1);
         if !m.body.trim().is_empty() {
-            body = body.push(text(m.body.clone()).size(13));
+            body = body.push(text(m.body.clone()).size(12));
         }
         for att in &m.attachments {
             let save = Message::Chat(ChatMsg::Save(att.entry.clone(), att.name.clone()));
@@ -350,7 +353,7 @@ impl App {
                         button(
                             container(iced::widget::image(h.clone()).content_fit(iced::ContentFit::Contain))
                                 .width(Length::Fill)
-                                .height(Length::Fixed(170.0))
+                                .height(Length::Fixed(100.0))
                                 .align_x(Alignment::Start),
                         )
                         .padding(0)
@@ -361,17 +364,17 @@ impl App {
                 None => {
                     body = body.push(
                         button(
-                            row![icon(Icon::File, 15.0, theme::TEXT_DIM), text(att.name.clone()).size(13), text("Save…").size(11).color(theme::TEXT_FAINT)]
-                                .spacing(8)
+                            row![icon(Icon::File, 12.0, theme::TEXT_DIM), text(att.name.clone()).size(11).wrapping(text::Wrapping::None)]
+                                .spacing(5)
                                 .align_y(Alignment::Center),
                         )
-                        .padding([6, 10])
+                        .padding([3, 6])
                         .style(theme::flat(false))
                         .on_press(save),
                     );
                 }
             }
         }
-        row![avatar, body.width(Length::Fill)].spacing(10).into()
+        row![avatar, body.width(Length::Fill)].spacing(7).into()
     }
 }
