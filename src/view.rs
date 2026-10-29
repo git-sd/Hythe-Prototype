@@ -1,0 +1,721 @@
+//! Everything drawn on screen: title bar, sidebar, agent panel, editor
+//! panes, bottom bar and overlays. Laid out after Zed's three-column window.
+
+use iced::widget::canvas::Canvas;
+use iced::widget::{
+    button, column, container, mouse_area, opaque, row, scrollable, space, stack, text,
+};
+use iced::{Alignment, Color, Element, Length, Padding, Theme};
+
+use crate::editor::EditorView;
+use crate::icons::{icon, Icon};
+use crate::palette::{self, Palette};
+use crate::panes::Axis;
+use crate::terminal_view::TerminalView;
+use crate::{menus, theme, App, Message};
+
+const TITLE_H: f32 = 38.0;
+const BAR_H: f32 = 32.0;
+const TAB_H: f32 = 36.0;
+const SIDEBAR_W: f32 = 276.0;
+const AGENT_W: f32 = 470.0;
+
+fn divider_v<'a>() -> Element<'a, Message> {
+    container(space::horizontal().width(Length::Fixed(1.0)))
+        .height(Length::Fill)
+        .style(theme::bg(theme::BORDER))
+        .into()
+}
+
+fn divider_h<'a>() -> Element<'a, Message> {
+    container(space::vertical().height(Length::Fixed(1.0)))
+        .width(Length::Fill)
+        .style(theme::bg(theme::BORDER))
+        .into()
+}
+
+/// A square icon button; `on` highlights it (an open panel, say).
+fn icon_button<'a>(glyph: Icon, color: Color, on: bool, msg: Message) -> Element<'a, Message> {
+    button(container(icon(glyph, 16.0, if on { theme::TEXT } else { color })).center(Length::Shrink))
+        .padding([5, 7])
+        .style(theme::flat(on))
+        .on_press(msg)
+        .into()
+}
+
+fn section_header<'a>(label: &'a str) -> Element<'a, Message> {
+    container(text(label).size(13).color(theme::TEXT_DIM))
+        .padding(Padding { top: 12.0, right: 8.0, bottom: 4.0, left: 8.0 })
+        .into()
+}
+
+fn list_row<'a>(content: Element<'a, Message>, selected: bool, msg: Message) -> Element<'a, Message> {
+    button(content)
+        .width(Length::Fill)
+        .padding([5, 8])
+        .style(theme::row(selected))
+        .on_press(msg)
+        .into()
+}
+
+fn dot<'a>(color: Color) -> Element<'a, Message> {
+    container(space::horizontal().width(Length::Fixed(7.0)).height(Length::Fixed(7.0)))
+        .style(move |_: &Theme| container::Style {
+            background: Some(color.into()),
+            border: iced::Border { radius: 3.5.into(), ..Default::default() },
+            ..Default::default()
+        })
+        .into()
+}
+
+impl App {
+    pub(crate) fn view(&self) -> Element<'_, Message> {
+        let mut columns = row![].height(Length::Fill);
+        if self.show_sidebar {
+            columns = columns.push(self.sidebar()).push(divider_v());
+        }
+        if self.show_term {
+            columns = columns.push(self.agent_panel()).push(divider_v());
+        }
+        columns = columns.push(self.editor_area());
+
+        let base = column![self.title_bar(), divider_h(), columns, divider_h(), self.bottom_bar()];
+        if let Some(p) = &self.palette {
+            return stack![
+                base,
+                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
+                    .on_press(Message::ClosePalette),
+                self.palette_view(p),
+            ]
+            .into();
+        }
+        if self.menu.is_some() {
+            return stack![
+                base,
+                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
+                    .on_press(Message::CloseMenu),
+                self.menu_dropdown(),
+            ]
+            .into();
+        }
+        base.into()
+    }
+
+    // --- title bar ---
+
+    fn title_bar(&self) -> Element<'_, Message> {
+        let dim = theme::TEXT_DIM;
+        let doc_name = self
+            .docs
+            .get(self.panes.cur())
+            .map(|d| d.name())
+            .unwrap_or_default();
+        container(
+            row![
+                icon_button(Icon::Menu, dim, self.menu.is_some(), Message::OpenMenu(0)),
+                icon_button(Icon::Sidebar, dim, self.show_sidebar, Message::ToggleSidebar),
+                icon_button(Icon::Search, dim, false, Message::OpenPalette),
+                icon_button(Icon::History, dim, false, Message::Unavailable("History")),
+                space::horizontal(),
+                text(doc_name).size(13).color(theme::TEXT_DIM),
+                space::horizontal(),
+                icon_button(Icon::Eye, dim, false, Message::Unavailable("Follow mode")),
+                icon_button(Icon::Branch, dim, false, Message::GitRefresh),
+                button(
+                    row![icon(Icon::Send, 14.0, dim), text("Share").size(13)]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
+                )
+                .padding([5, 10])
+                .style(theme::flat(false))
+                .on_press(Message::Unavailable("Sharing")),
+            ]
+            .spacing(2)
+            .align_y(Alignment::Center)
+            .padding([0, 8]),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(TITLE_H))
+        .align_y(Alignment::Center)
+        .style(theme::bg(theme::BAR_BG))
+        .into()
+    }
+
+    fn menu_dropdown(&self) -> Element<'_, Message> {
+        let rows = menus::all_entries(&self.agent_names()).into_iter().map(|entry| match entry {
+            menus::Entry::Separator => container(divider_h()).padding([4, 6]).into(),
+            menus::Entry::Header(title) => container(text(title).size(11).color(theme::TEXT_FAINT))
+                .padding(Padding { top: 6.0, right: 12.0, bottom: 2.0, left: 12.0 })
+                .into(),
+            menus::Entry::Item(it) => button(
+                row![
+                    text(it.label).size(13),
+                    space::horizontal(),
+                    text(it.shortcut).size(11).color(theme::TEXT_DIM),
+                ]
+                .spacing(24)
+                .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .padding([5, 12])
+            .style(theme::row(false))
+            .on_press(Message::MenuPick(Box::new(it.message)))
+            .into(),
+        });
+        let panel = container(scrollable(column(rows).padding(4)).height(Length::Shrink))
+            .width(Length::Fixed(300.0))
+            .max_height(560.0)
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::PANEL_BG.into()),
+                border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 8.0.into() },
+                shadow: iced::Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 24.0,
+                },
+                ..Default::default()
+            });
+        container(opaque(panel))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(Padding { top: TITLE_H + 4.0, left: 8.0, ..Padding::ZERO })
+            .into()
+    }
+
+    fn palette_view(&self, p: &Palette) -> Element<'_, Message> {
+        let results = palette::filter(&p.query, &self.agent_names());
+        let list: Element<'_, Message> = if results.is_empty() {
+            container(text("No matching commands").size(13).color(theme::TEXT_DIM))
+                .padding(12)
+                .into()
+        } else {
+            column(results.into_iter().enumerate().map(|(i, cmd)| {
+                button(
+                    row![
+                        text(cmd.label).size(14),
+                        space::horizontal(),
+                        text(cmd.shortcut).size(12).color(theme::TEXT_DIM),
+                    ]
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding([7, 12])
+                .style(theme::flat(i == p.selected))
+                .on_press(Message::RunPalette(i))
+                .into()
+            }))
+            .padding(4)
+            .into()
+        };
+        let input = container(
+            text(if p.query.is_empty() {
+                "Type a command…".to_string()
+            } else {
+                format!("{}▏", p.query)
+            })
+            .size(15)
+            .color(if p.query.is_empty() { theme::TEXT_DIM } else { theme::TEXT }),
+        )
+        .padding([10, 14])
+        .width(Length::Fill);
+        let panel = container(column![input, divider_h(), list])
+            .width(Length::Fixed(520.0))
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::PANEL_BG.into()),
+                border: iced::Border {
+                    color: theme::BORDER,
+                    width: 1.0,
+                    radius: 8.0.into(),
+                },
+                shadow: iced::Shadow {
+                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 24.0,
+                },
+                ..Default::default()
+            });
+        container(opaque(panel))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .padding(iced::Padding::ZERO.top(70.0))
+            .into()
+    }
+
+    // --- sidebar: Pinned / Projects / Threads ---
+
+    fn sidebar(&self) -> Element<'_, Message> {
+        let dim = theme::TEXT_DIM;
+        let mut list = column![].spacing(1).padding([2, 8]);
+
+        // Pinned files.
+        list = list.push(section_header("Pinned"));
+        if self.persisted.pinned.is_empty() {
+            list = list.push(
+                container(text("Nothing pinned — File ▸ Pin / Unpin").size(12).color(theme::TEXT_FAINT))
+                    .padding([2, 8]),
+            );
+        }
+        let active_path = self.docs.get(self.panes.cur()).and_then(|d| d.path.as_ref());
+        for path in &self.persisted.pinned {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            list = list.push(list_row(
+                row![icon(Icon::Pin, 13.0, dim), text(name).size(13)]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into(),
+                active_path == Some(path),
+                Message::OpenFile(path.clone()),
+            ));
+        }
+
+        // Projects: the open one expands into its file tree.
+        list = list.push(section_header("Projects"));
+        let root_path = self.root.as_ref().map(|r| &r.path);
+        let mut projects: Vec<&std::path::PathBuf> = self.persisted.recents.iter().collect();
+        if let Some(r) = root_path {
+            if !projects.contains(&r) {
+                projects.insert(0, r);
+            }
+        }
+        if projects.is_empty() {
+            list = list.push(list_row(
+                row![icon(Icon::Folder, 14.0, dim), text("Open a folder…").size(13)]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into(),
+                false,
+                Message::OpenFolderDialog,
+            ));
+        }
+        for path in projects {
+            let is_open = root_path == Some(path);
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let expanded = is_open && self.root.as_ref().is_some_and(|r| r.expanded);
+            let chevron = if expanded { Icon::ChevronDown } else { Icon::ChevronRight };
+            let msg = if is_open { Message::ToggleDir(path.clone()) } else { Message::OpenRecent(path.clone()) };
+            list = list.push(list_row(
+                row![icon(chevron, 12.0, dim), icon(Icon::Folder, 14.0, dim), text(name).size(13)]
+                    .spacing(7)
+                    .align_y(Alignment::Center)
+                    .into(),
+                is_open,
+                msg,
+            ));
+            if expanded {
+                if let Some(root) = &self.root {
+                    let mut rows = Vec::new();
+                    root.rows(0, &mut rows);
+                    for (depth, node) in rows {
+                        let lead = space::horizontal().width(Length::Fixed(14.0 + depth as f32 * 14.0));
+                        let (marker, msg) = if node.is_dir {
+                            (
+                                icon(if node.expanded { Icon::ChevronDown } else { Icon::ChevronRight }, 11.0, dim),
+                                Message::ToggleDir(node.path.clone()),
+                            )
+                        } else {
+                            (icon(Icon::File, 12.0, theme::TEXT_FAINT), Message::OpenFile(node.path.clone()))
+                        };
+                        list = list.push(list_row(
+                            row![lead, marker, text(node.name.clone()).size(13)]
+                                .spacing(7)
+                                .align_y(Alignment::Center)
+                                .into(),
+                            active_path == Some(&node.path),
+                            msg,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Threads: terminals and the agents running in them.
+        list = list.push(
+            row![
+                container(text("Threads").size(13).color(theme::TEXT_DIM)).padding(Padding {
+                    top: 12.0,
+                    right: 8.0,
+                    bottom: 4.0,
+                    left: 8.0
+                }),
+                space::horizontal(),
+                icon_button(Icon::Plus, dim, false, Message::NewTerminal(None)),
+            ]
+            .align_y(Alignment::Center),
+        );
+        for info in self.terms.list() {
+            let glyph = if self.agents.iter().any(|a| a.name == info.name) { Icon::Sparkle } else { Icon::Terminal };
+            list = list.push(list_row(
+                row![
+                    icon(glyph, 14.0, dim),
+                    text(info.name.clone()).size(13),
+                    space::horizontal(),
+                    dot(if info.running { theme::ACCENT } else { theme::TEXT_FAINT }),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .into(),
+                self.term_active == Some(info.id),
+                Message::TermSelect(info.id),
+            ));
+        }
+        for (i, agent) in self.agents.iter().enumerate() {
+            list = list.push(list_row(
+                row![icon(Icon::Sparkle, 14.0, theme::TEXT_FAINT), text(format!("Start {}", agent.name)).size(13).color(dim)]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into(),
+                false,
+                Message::NewTerminal(Some(i)),
+            ));
+        }
+
+        container(scrollable(list).height(Length::Fill))
+            .width(Length::Fixed(SIDEBAR_W))
+            .height(Length::Fill)
+            .style(theme::bg(theme::PANEL_BG))
+            .into()
+    }
+
+    // --- agent / terminal panel ---
+
+    fn agent_panel(&self) -> Element<'_, Message> {
+        let session = self.term_active.and_then(|id| self.terms.get(id));
+        let title = session.as_ref().map(|s| s.name().to_string()).unwrap_or_else(|| "New Thread".into());
+        let dim = theme::TEXT_DIM;
+
+        let header = container(
+            row![
+                text(title).size(14),
+                space::horizontal(),
+                icon_button(Icon::Plus, dim, false, Message::NewTerminal(None)),
+                icon_button(Icon::Expand, dim, false, Message::Unavailable("Zoom")),
+                icon_button(Icon::More, dim, false, Message::OpenMenu(0)),
+            ]
+            .spacing(2)
+            .align_y(Alignment::Center)
+            .padding([0, 10]),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(TAB_H))
+        .align_y(Alignment::Center);
+
+        let body: Element<'_, Message> = match (&self.term_snap, session) {
+            (Some(snap), Some(session)) => Canvas::new(TerminalView { snap, session, focused: self.focus_term })
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+            _ => {
+                let mut starters = column![
+                    text("Start a thread").size(15),
+                    text("Run a shell or a coding agent in this folder.").size(12).color(theme::TEXT_DIM),
+                    space::vertical().height(Length::Fixed(10.0)),
+                    list_row(
+                        row![icon(Icon::Terminal, 15.0, theme::TEXT_DIM), text("New Terminal").size(13)]
+                            .spacing(10)
+                            .align_y(Alignment::Center)
+                            .into(),
+                        false,
+                        Message::NewTerminal(None),
+                    ),
+                ]
+                .spacing(4)
+                .width(Length::Fixed(280.0));
+                for (i, agent) in self.agents.iter().enumerate() {
+                    starters = starters.push(list_row(
+                        row![icon(Icon::Sparkle, 15.0, theme::ACCENT), text(agent.name.clone()).size(13)]
+                            .spacing(10)
+                            .align_y(Alignment::Center)
+                            .into(),
+                        false,
+                        Message::NewTerminal(Some(i)),
+                    ));
+                }
+                container(starters).center(Length::Fill).into()
+            }
+        };
+
+        let focus_line = container(space::vertical().height(Length::Fixed(2.0)))
+            .width(Length::Fill)
+            .style(theme::bg(if self.focus_term { theme::ACCENT } else { theme::AGENT_BG }));
+        container(column![focus_line, header, divider_h(), body])
+            .width(Length::Fixed(AGENT_W))
+            .height(Length::Fill)
+            .style(theme::bg(theme::AGENT_BG))
+            .into()
+    }
+
+    // --- editor area ---
+
+    fn editor_area(&self) -> Element<'_, Message> {
+        if self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty() {
+            return container(self.welcome())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(theme::bg(theme::EDITOR_BG))
+                .into();
+        }
+        let mut views = Vec::new();
+        for i in 0..self.panes.list.len() {
+            if i > 0 {
+                views.push(match self.panes.axis {
+                    Axis::Horizontal => divider_v(),
+                    Axis::Vertical => divider_h(),
+                });
+            }
+            views.push(self.pane_view(i));
+        }
+        match self.panes.axis {
+            Axis::Horizontal => row(views).width(Length::Fill).height(Length::Fill).into(),
+            Axis::Vertical => column(views).width(Length::Fill).height(Length::Fill).into(),
+        }
+    }
+
+    fn pane_view(&self, index: usize) -> Element<'_, Message> {
+        let pane = &self.panes.list[index];
+        let focused = index == self.panes.focus;
+        let current = pane.current().and_then(|t| self.docs.get(t.doc).map(|d| (t, d)));
+        let body: Element<'_, Message> = match current {
+            Some((tab, doc)) => Canvas::new(EditorView {
+                doc,
+                scroll: tab.scroll,
+                pane: index,
+                focused,
+                viewport: &pane.viewport,
+                popup: if focused && !self.focus_term { self.completion.as_ref() } else { None },
+            })
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+            None => container(text("Open a file here").size(13).color(theme::TEXT_DIM))
+                .center(Length::Fill)
+                .into(),
+        };
+        let breadcrumb = current.map(|(_, doc)| self.breadcrumb(doc.path.as_deref(), doc.name()));
+        let mut col = column![self.tab_bar(index)];
+        if let Some(b) = breadcrumb {
+            col = col.push(b);
+        }
+        container(col.push(body))
+            .width(Length::FillPortion(1))
+            .height(Length::FillPortion(1))
+            .style(theme::bg(theme::EDITOR_BG))
+            .into()
+    }
+
+    /// Path of the file below the project root, with a search button at the end.
+    fn breadcrumb(&self, path: Option<&std::path::Path>, name: String) -> Element<'_, Message> {
+        let label = match (path, &self.root) {
+            (Some(p), Some(root)) => p
+                .strip_prefix(&root.path)
+                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| p.to_string_lossy().replace('\\', "/")),
+            _ => name,
+        };
+        container(
+            row![
+                text(label).size(13).color(theme::TEXT_DIM),
+                space::horizontal(),
+                icon_button(Icon::Search, theme::TEXT_FAINT, false, Message::OpenPalette),
+            ]
+            .align_y(Alignment::Center)
+            .padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 16.0 }),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(30.0))
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    fn tab_bar(&self, pane_index: usize) -> Element<'_, Message> {
+        let pane = &self.panes.list[pane_index];
+        let tabs = pane.tabs.iter().enumerate().filter_map(|(i, t)| {
+            let d = self.docs.get(t.doc)?;
+            let active = i == pane.active;
+            let end: Element<'_, Message> = if d.dirty {
+                button(container(dot(theme::TEXT_DIM)).center(Length::Shrink))
+                    .padding([8, 8])
+                    .style(theme::flat(false))
+                    .on_press(Message::CloseTab { pane: pane_index, tab: i })
+                    .into()
+            } else {
+                icon_button(Icon::Close, theme::TEXT_FAINT, false, Message::CloseTab { pane: pane_index, tab: i })
+            };
+            let tab = row![
+                button(text(d.name()).size(13).color(if active { theme::TEXT } else { theme::TEXT_DIM }))
+                    .padding([8, 6])
+                    .style(theme::flat(false))
+                    .on_press(Message::SelectTab { pane: pane_index, tab: i }),
+                end,
+            ]
+            .align_y(Alignment::Center)
+            .padding([0, 4]);
+            Some(
+                container(tab)
+                    .height(Length::Fixed(TAB_H))
+                    .align_y(Alignment::Center)
+                    .style(theme::bg(if active { theme::EDITOR_BG } else { theme::TAB_BAR_BG }))
+                    .into(),
+            )
+        });
+        let tabs = scrollable(row(tabs)).direction(scrollable::Direction::Horizontal(
+            scrollable::Scrollbar::new().width(0).scroller_width(0),
+        ));
+        container(
+            row![
+                tabs,
+                space::horizontal(),
+                icon_button(Icon::Split, theme::TEXT_DIM, self.panes.list.len() > 1, Message::Split(Axis::Horizontal)),
+                icon_button(Icon::More, theme::TEXT_DIM, false, Message::OpenMenu(0)),
+            ]
+            .align_y(Alignment::Center)
+            .padding([0, 6]),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(TAB_H))
+        .style(theme::bg(theme::TAB_BAR_BG))
+        .into()
+    }
+
+    fn welcome(&self) -> Element<'_, Message> {
+        let action = |glyph: Icon, label: &'static str, hint: &'static str, msg: Message| {
+            button(
+                row![
+                    icon(glyph, 15.0, theme::TEXT_DIM),
+                    text(label).size(14),
+                    space::horizontal(),
+                    text(hint).size(12).color(theme::TEXT_DIM),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            )
+            .width(Length::Fixed(360.0))
+            .padding([8, 12])
+            .style(theme::row(false))
+            .on_press(msg)
+        };
+        container(
+            column![
+                text("Hythe").size(34).color(theme::ACCENT),
+                text("a fast editor, built in Rust").size(14).color(theme::TEXT_DIM),
+                space::vertical().height(Length::Fixed(24.0)),
+                action(Icon::File, "New File", "Ctrl+N", Message::NewFile),
+                action(Icon::File, "Open File", "Ctrl+O", Message::OpenFileDialog),
+                action(Icon::Folder, "Open Folder", "Ctrl+Shift+O", Message::OpenFolderDialog),
+                action(Icon::Search, "Command Palette", "Ctrl+Shift+P", Message::OpenPalette),
+                action(Icon::Terminal, "Toggle Terminal", "Ctrl+`", Message::ToggleTerminal),
+            ]
+            .spacing(4)
+            .align_x(Alignment::Center),
+        )
+        .center(Length::Fill)
+        .into()
+    }
+
+    // --- bottom bar ---
+
+    fn bottom_bar(&self) -> Element<'_, Message> {
+        let dim = theme::TEXT_DIM;
+
+        // Account chip, as wide as the sidebar above it.
+        let initial = self.user.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
+        let avatar = container(text(initial).size(11).color(Color::WHITE))
+            .center(Length::Fixed(20.0))
+            .style(|_: &Theme| container::Style {
+                background: Some(Color::from_rgb8(0x5a, 0x7f, 0xb8).into()),
+                border: iced::Border { radius: 10.0.into(), ..Default::default() },
+                ..Default::default()
+            });
+        let account = container(
+            row![
+                avatar,
+                text(self.user.clone()).size(13),
+                text("Hythe").size(12).color(theme::TEXT_DIM),
+                space::horizontal(),
+                icon(Icon::ChevronDown, 12.0, dim),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .padding([0, 12]),
+        )
+        .width(if self.show_sidebar { Length::Fixed(SIDEBAR_W) } else { Length::Shrink })
+        .height(Length::Fill)
+        .align_y(Alignment::Center);
+
+        // Repository, branch and uncommitted changes.
+        let git: Element<'_, Message> = match &self.git {
+            Some(g) => button(
+                row![
+                    icon(Icon::Folder, 13.0, dim),
+                    text(g.repo.clone()).size(12),
+                    text("/").size(12).color(theme::TEXT_FAINT),
+                    text(g.branch.clone()).size(12),
+                    text(format!("+{}", g.added)).size(12).color(theme::ADDED),
+                    text(format!("−{}", g.removed)).size(12).color(theme::REMOVED),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .padding([3, 8])
+            .style(theme::flat(false))
+            .on_press(Message::GitRefresh)
+            .into(),
+            None => text("No repository").size(12).color(theme::TEXT_FAINT).into(),
+        };
+
+        let position = self
+            .docs
+            .get(self.panes.cur())
+            .map(|d| {
+                let (l, c) = d.buffer.cursor();
+                format!("Ln {}, Col {}   {}", l + 1, c + 1, d.language_name())
+            })
+            .unwrap_or_default();
+
+        let session_state: Element<'_, Message> = match self.term_active.and_then(|id| self.terms.get(id)) {
+            Some(s) => row![
+                dot(if s.is_running() { theme::ACCENT } else { theme::TEXT_FAINT }),
+                text(if s.is_running() { "Running" } else { "Exited" }).size(12).color(dim),
+                text(s.name().to_string()).size(12).color(dim),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into(),
+            None => space::horizontal().width(Length::Shrink).into(),
+        };
+
+        let icons = row![
+            icon_button(Icon::Terminal, dim, self.show_term, Message::ToggleTerminal),
+            icon_button(Icon::Bug, dim, false, Message::Unavailable("The debugger")),
+            icon_button(Icon::Outline, dim, false, Message::Unavailable("Outline")),
+            icon_button(Icon::Users, dim, false, Message::Unavailable("Collaboration")),
+            icon_button(Icon::Branch, dim, false, Message::Unavailable("Source control")),
+            icon_button(Icon::Panels, dim, self.show_sidebar, Message::ToggleSidebar),
+        ]
+        .spacing(0);
+
+        container(
+            row![
+                account,
+                git,
+                container(text(self.status.clone()).size(12).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None))
+                    .width(Length::Fill)
+                    .clip(true)
+                    .padding([0, 10]),
+                session_state,
+                text(position).size(12).color(dim),
+                icons,
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(BAR_H))
+        .align_y(Alignment::Center)
+        .style(theme::bg(theme::BAR_BG))
+        .into()
+    }
+}

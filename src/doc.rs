@@ -5,8 +5,8 @@ use iced::Size;
 use crate::buffer::Buffer;
 use crate::highlight::{Highlighter, Syntax, MAX_HIGHLIGHT_BYTES};
 
-pub const FONT_SIZE: f32 = 15.0;
-pub const LINE_H: f32 = 20.0;
+pub const FONT_SIZE: f32 = 14.0;
+pub const LINE_H: f32 = 22.0;
 pub const CHAR_W: f32 = FONT_SIZE * 0.6;
 pub const GUTTER_COLS: usize = 5;
 pub const TEXT_X: f32 = GUTTER_COLS as f32 * CHAR_W + 12.0;

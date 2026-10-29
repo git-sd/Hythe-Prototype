@@ -10,7 +10,7 @@ use crate::highlight;
 use crate::theme;
 use crate::Message;
 
-const SELECTION: Color = Color::from_rgba(0.25, 0.75, 0.69, 0.25);
+const SELECTION: Color = Color::from_rgba(0.45, 0.68, 0.91, 0.25);
 const CURRENT_LINE: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.035);
 
 fn class_color(class: u8) -> Color {
@@ -18,23 +18,22 @@ fn class_color(class: u8) -> Color {
         return theme::TEXT;
     };
     match *name {
-        "comment" => Color::from_rgb8(0x5f, 0x69, 0x78),
+        "comment" => Color::from_rgb8(0x5d, 0x63, 0x6f),
         "string" | "string.escape" | "string.regexp" | "string.special" | "escape" => {
-            Color::from_rgb8(0xa5, 0xc2, 0x61)
+            Color::from_rgb8(0xa1, 0xc1, 0x81)
         }
-        "keyword" => Color::from_rgb8(0xc7, 0x92, 0xea),
-        "function" | "function.builtin" | "function.macro" => Color::from_rgb8(0x6c, 0xb6, 0xff),
-        "type" | "type.builtin" | "constructor" | "module" | "namespace" => {
-            Color::from_rgb8(0xf0, 0xc6, 0x74)
+        "keyword" => Color::from_rgb8(0xb4, 0x77, 0xcf),
+        "function" | "function.builtin" | "function.macro" | "constructor" => {
+            Color::from_rgb8(0x73, 0xad, 0xe9)
         }
-        "constant" | "constant.builtin" | "number" | "boolean" => Color::from_rgb8(0xf2, 0x8b, 0x6b),
-        "attribute" | "label" => Color::from_rgb8(0xd9, 0xa4, 0x86),
-        "property" => Color::from_rgb8(0x7f, 0xd6, 0xd0),
-        "tag" => Color::from_rgb8(0xe8, 0x7a, 0x8a),
-        "variable.builtin" | "variable.parameter" => Color::from_rgb8(0xe8, 0x7a, 0x8a),
-        "operator" => Color::from_rgb8(0x7f, 0xd6, 0xd0),
+        "type" | "type.builtin" | "module" | "namespace" => Color::from_rgb8(0x6e, 0xb4, 0xbf),
+        "constant" | "constant.builtin" | "number" | "boolean" => Color::from_rgb8(0xbf, 0x95, 0x6a),
+        "attribute" | "label" | "tag" => Color::from_rgb8(0x74, 0xad, 0xe8),
+        "property" => Color::from_rgb8(0xd0, 0x72, 0x77),
+        "variable.builtin" | "variable.parameter" => Color::from_rgb8(0xbf, 0x95, 0x6a),
+        "operator" => Color::from_rgb8(0x6e, 0xb4, 0xbf),
         "punctuation" | "punctuation.bracket" | "punctuation.delimiter" | "punctuation.special"
-        | "tag.delimiter" => Color::from_rgb8(0x9a, 0xa3, 0xb2),        _ => theme::TEXT,
+        | "tag.delimiter" => Color::from_rgb8(0xac, 0xb2, 0xbe),        _ => theme::TEXT,
     }
 }
 
@@ -199,7 +198,7 @@ impl canvas::Program<Message> for EditorView<'_> {
             frame.fill_text(canvas::Text {
                 content: format!("{:>width$}", line + 1, width = GUTTER_COLS - 1),
                 position: Point::new(4.0, y + 2.0),
-                color: if line == cur_line { theme::TEXT } else { theme::TEXT_DIM },
+                color: if line == cur_line { theme::TEXT } else { theme::GUTTER },
                 size: Pixels(FONT_SIZE),
                 font: Font::MONOSPACE,
                 ..canvas::Text::default()

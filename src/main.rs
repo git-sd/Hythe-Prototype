@@ -4,40 +4,35 @@ mod doc;
 mod editor;
 mod explorer;
 mod highlight;
+mod icons;
 mod menus;
 mod palette;
 mod panes;
+mod state;
 mod terminal_view;
 mod theme;
+mod view;
 
 use std::path::PathBuf;
 
 use iced::keyboard::{self, key::Named, Key};
-use iced::widget::canvas::Canvas;
-use iced::widget::{button, column, container, mouse_area, opaque, row, scrollable, space, stack, text};
-use iced::{clipboard, window, Alignment, Element, Length, Subscription, Task, Theme};
+use iced::{clipboard, window, Subscription, Task, Theme};
 
 use doc::{Doc, TAB_WIDTH};
-use editor::EditorView;
 use explorer::Node;
 use completion_ui::CompletionUi;
 use highlight::Highlighter;
 use hythe_term::{Profile, SessionId, Snapshot, TerminalManager};
 use palette::Palette;
 use panes::{Axis, Panes};
-use terminal_view::TerminalView;
-
-/// Height of the top bar and its horizontal padding; menu dropdowns are
-/// positioned from these.
-const TOP_BAR_H: f32 = 46.0;
-const TOP_BAR_PAD: f32 = 8.0;
+use state::{GitInfo, Persisted};
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
         .title(App::title)
         .subscription(App::subscription)
         .theme(|_: &App| Theme::Dark)
-        .window_size((1200.0, 760.0))
+        .window_size((1360.0, 820.0))
         .exit_on_close_request(false)
         .run()
 }
@@ -90,6 +85,12 @@ struct App {
     /// Open completion popup in the focused editor.
     completion: Option<CompletionUi>,
     highlighter: Highlighter,
+    /// Recent projects and pinned files, kept between runs.
+    persisted: Persisted,
+    /// Branch and change counts for the open project.
+    git: Option<GitInfo>,
+    /// Name shown on the account chip.
+    user: String,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +131,14 @@ pub enum Message {
     TermScroll(i32),
     TermPaste(Option<String>),
     TermTick,
+    /// Open a project from the sidebar's Projects list.
+    OpenRecent(PathBuf),
+    /// Pin or unpin the current file in the sidebar.
+    TogglePin,
+    /// Re-read branch and change counts from git.
+    GitRefresh,
+    /// A button for a feature that isn't built yet.
+    Unavailable(&'static str),
     Save,
     CloseActive,
     Undo,
@@ -147,7 +156,7 @@ impl App {
             panes: Panes::new(),
             root: None,
             show_sidebar: true,
-            show_term: false,
+            show_term: true,
             focus_term: false,
             terms: TerminalManager::default(),
             term_active: None,
@@ -158,16 +167,32 @@ impl App {
             menu: None,
             completion: None,
             highlighter: Highlighter::new(),
+            persisted: Persisted::load(),
+            git: None,
+            user: state::git_user().unwrap_or_else(|| "you".into()),
         };
         if let Some(arg) = std::env::args().nth(1) {
             let path = PathBuf::from(arg);
             if path.is_dir() {
-                app.root = Some(Node::root(path));
+                app.open_folder(path);
             } else {
                 app.open_file(path);
             }
         }
         app
+    }
+
+    /// Make `path` the project: show it in the sidebar and remember it.
+    fn open_folder(&mut self, path: PathBuf) {
+        self.persisted.remember_project(&path);
+        self.persisted.save();
+        self.root = Some(Node::root(path));
+        self.show_sidebar = true;
+        self.refresh_git();
+    }
+
+    fn refresh_git(&mut self) {
+        self.git = self.root.as_ref().and_then(|r| state::git_info(&r.path));
     }
 
     fn title(&self) -> String {
@@ -185,8 +210,10 @@ impl App {
         match Doc::open(path.clone(), &mut self.highlighter) {
             Ok(doc) => {
                 if self.root.is_none() {
+                    // Show the file's folder without adding it to recent projects.
                     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                         self.root = Some(Node::root(parent.to_path_buf()));
+                        self.refresh_git();
                     }
                 }
                 self.docs.push(doc);
@@ -619,10 +646,34 @@ impl App {
             }
             Message::OpenFolderDialog => {
                 if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                    self.root = Some(Node::root(p));
-                    self.show_sidebar = true;
+                    self.open_folder(p);
                 }
             }
+            Message::OpenRecent(p) => {
+                if p.is_dir() {
+                    self.open_folder(p);
+                } else {
+                    self.status = format!("{} no longer exists", p.display());
+                    self.persisted.recents.retain(|r| r != &p);
+                    self.persisted.save();
+                }
+            }
+            Message::TogglePin => {
+                let current = self
+                    .docs
+                    .get(self.panes.cur())
+                    .and_then(|d| d.path.clone());
+                match current {
+                    Some(path) => {
+                        let pinned = self.persisted.toggle_pin(&path);
+                        self.persisted.save();
+                        self.status = format!("{} {}", if pinned { "Pinned" } else { "Unpinned" }, path.display());
+                    }
+                    None => self.status = "Save the file before pinning it".into(),
+                }
+            }
+            Message::GitRefresh => self.refresh_git(),
+            Message::Unavailable(what) => self.status = format!("{what} isn't available yet"),
             Message::OpenFile(p) => self.open_file(p),
             Message::ToggleDir(p) => {
                 if let Some(root) = &mut self.root {
@@ -741,6 +792,7 @@ impl App {
                         Ok(p) => format!("Saved {}", p.display()),
                         Err(e) => e,
                     };
+                    self.refresh_git();
                 }
             }
             Message::CloseActive => {
@@ -911,501 +963,19 @@ impl App {
         Task::none()
     }
 
-    // --- view ---
-
-    fn view(&self) -> Element<'_, Message> {
-        let mut body = row![].height(Length::Fill);
-        if self.show_sidebar {
-            body = body.push(self.sidebar()).push(divider_v());
-        }
-        body = body.push(self.center());
-        if self.show_term {
-            body = body.push(divider_v()).push(self.terminal_panel());
-        }
-        let base = column![self.top_bar(), divider_h(), body, divider_h(), self.status_bar()];
-        if let Some(p) = &self.palette {
-            return stack![
-                base,
-                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
-                    .on_press(Message::ClosePalette),
-                self.palette_view(p),
-            ]
-            .into();
-        }
-        if let Some(menu) = self.menu {
-            return stack![
-                base,
-                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
-                    .on_press(Message::CloseMenu),
-                self.menu_dropdown(menu),
-            ]
-            .into();
-        }
-        base.into()
-    }
-
-    fn menu_dropdown(&self, menu: usize) -> Element<'_, Message> {
-        let rows = menus::entries(menu, &self.agent_names())
-            .into_iter()
-            .map(|entry| match entry {
-                menus::Entry::Separator => container(divider_h()).padding([4, 6]).into(),
-                menus::Entry::Item(it) => button(
-                    row![
-                        text(it.label).size(13),
-                        space::horizontal(),
-                        text(it.shortcut).size(11).color(theme::TEXT_DIM),
-                    ]
-                    .spacing(24)
-                    .align_y(Alignment::Center),
-                )
-                .width(Length::Fill)
-                .padding([6, 12])
-                .style(theme::flat(false))
-                .on_press(Message::MenuPick(Box::new(it.message)))
-                .into(),
-            });
-        let panel = container(column(rows).padding(4))
-            .width(Length::Fixed(300.0))
-            .style(|_: &Theme| container::Style {
-                background: Some(theme::PANEL_BG.into()),
-                border: iced::Border { color: theme::BORDER, width: 1.0, radius: 8.0.into() },
-                shadow: iced::Shadow {
-                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                    offset: iced::Vector::new(0.0, 8.0),
-                    blur_radius: 24.0,
-                },
-                ..Default::default()
-            });
-        container(opaque(panel))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(iced::Padding {
-                top: TOP_BAR_H,
-                left: TOP_BAR_PAD + menu as f32 * menus::MENU_W,
-                ..iced::Padding::ZERO
-            })
-            .into()
-    }
-
-    fn palette_view(&self, p: &Palette) -> Element<'_, Message> {
-        let results = palette::filter(&p.query, &self.agent_names());
-        let list: Element<'_, Message> = if results.is_empty() {
-            container(text("No matching commands").size(13).color(theme::TEXT_DIM))
-                .padding(12)
-                .into()
-        } else {
-            column(results.into_iter().enumerate().map(|(i, cmd)| {
-                button(
-                    row![
-                        text(cmd.label).size(14),
-                        space::horizontal(),
-                        text(cmd.shortcut).size(12).color(theme::TEXT_DIM),
-                    ]
-                    .align_y(Alignment::Center),
-                )
-                .width(Length::Fill)
-                .padding([7, 12])
-                .style(theme::flat(i == p.selected))
-                .on_press(Message::RunPalette(i))
-                .into()
-            }))
-            .padding(4)
-            .into()
-        };
-        let input = container(
-            text(if p.query.is_empty() {
-                "Type a command…".to_string()
-            } else {
-                format!("{}▏", p.query)
-            })
-            .size(15)
-            .color(if p.query.is_empty() { theme::TEXT_DIM } else { theme::TEXT }),
-        )
-        .padding([10, 14])
-        .width(Length::Fill);
-        let panel = container(column![input, divider_h(), list])
-            .width(Length::Fixed(520.0))
-            .style(|_: &Theme| container::Style {
-                background: Some(theme::PANEL_BG.into()),
-                border: iced::Border {
-                    color: theme::BORDER,
-                    width: 1.0,
-                    radius: 8.0.into(),
-                },
-                shadow: iced::Shadow {
-                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-                    offset: iced::Vector::new(0.0, 8.0),
-                    blur_radius: 24.0,
-                },
-                ..Default::default()
-            });
-        container(opaque(panel))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Alignment::Center)
-            .padding(iced::Padding::ZERO.top(70.0))
-            .into()
-    }
-
-    fn top_bar(&self) -> Element<'_, Message> {
-        let project = self.root.as_ref().map(|r| r.name.as_str()).unwrap_or("Open Folder…");
-
-        let mut menus_row = row![].align_y(Alignment::Center);
-        for (i, name) in menus::MENUS.iter().enumerate() {
-            menus_row = menus_row.push(
-                button(text(*name).size(13).center())
-                    .width(Length::Fixed(menus::MENU_W))
-                    .padding([7, 0])
-                    .style(theme::flat(self.menu == Some(i)))
-                    .on_press(Message::OpenMenu(i)),
-            );
-        }
-
-        // A labelled button with its shortcut beside the label.
-        let action = |label: &'static str, hint: &'static str, on: bool, msg: Message| {
-            button(
-                row![text(label).size(13), text(hint).size(11).color(theme::TEXT_DIM)]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-            )
-            .padding([7, 12])
-            .style(theme::flat(on))
-            .on_press(msg)
-        };
-
-        let search = button(
-            row![
-                text("Search commands…").size(13),
-                space::horizontal(),
-                text("Ctrl+Shift+P").size(11),
-            ]
-            .align_y(Alignment::Center),
-        )
-        .width(Length::Fixed(340.0))
-        .padding([7, 12])
-        .style(theme::pill)
-        .on_press(Message::OpenPalette);
-
-        container(
-            row![
-                menus_row,
-                button(text(format!("◆  {project}")).size(13))
-                    .padding([7, 12])
-                    .style(theme::flat(false))
-                    .on_press(Message::OpenFolderDialog),
-                space::horizontal(),
-                search,
-                space::horizontal(),
-                action("Explorer", "Ctrl+B", self.show_sidebar, Message::ToggleSidebar),
-                action(
-                    "Split",
-                    "Ctrl+\\",
-                    self.panes.list.len() > 1,
-                    Message::Split(Axis::Horizontal)
-                ),
-                action("Terminal", "Ctrl+`", self.show_term, Message::ToggleTerminal),
-            ]
-            .spacing(2)
-            .align_y(Alignment::Center)
-            .padding(iced::Padding::from([0.0, TOP_BAR_PAD])),
-        )
-        .width(Length::Fill)
-        .height(Length::Fixed(TOP_BAR_H))
-        .align_y(Alignment::Center)
-        .style(theme::bg(theme::BAR_BG))
-        .into()
-    }
-
-    fn sidebar(&self) -> Element<'_, Message> {
-        let content: Element<'_, Message> = match &self.root {
-            None => column![
-                text("No folder open").size(13).color(theme::TEXT_DIM),
-                button(text("Open Folder").size(13))
-                    .style(theme::flat(false))
-                    .padding([4, 10])
-                    .on_press(Message::OpenFolderDialog),
-            ]
-            .spacing(10)
-            .padding(16)
-            .into(),
-            Some(root) => {
-                let mut rows = Vec::new();
-                root.rows(0, &mut rows);
-                let active_path = self.docs.get(self.panes.cur()).and_then(|d| d.path.as_ref());
-                let list = column(rows.into_iter().map(|(depth, node)| {
-                    let arrow = if !node.is_dir {
-                        " "
-                    } else if node.expanded {
-                        "▾"
-                    } else {
-                        "▸"
-                    };
-                    let msg = if node.is_dir {
-                        Message::ToggleDir(node.path.clone())
-                    } else {
-                        Message::OpenFile(node.path.clone())
-                    };
-                    let selected = active_path == Some(&node.path);
-                    button(
-                        row![
-                            space::horizontal().width(Length::Fixed(depth as f32 * 12.0)),
-                            text(arrow).size(11),
-                            text(node.name.clone()).size(13),
-                        ]
-                        .spacing(6)
-                        .align_y(Alignment::Center),
-                    )
-                    .width(Length::Fill)
-                    .padding([3, 8])
-                    .style(theme::flat(selected))
-                    .on_press(msg)
-                    .into()
-                }))
-                .padding([0, 6]);
-                column![
-                    text(root.name.to_uppercase())
-                        .size(11)
-                        .color(theme::TEXT_DIM)
-                        .width(Length::Fill),
-                    scrollable(list).height(Length::Fill),
-                ]
-                .spacing(8)
-                .padding([10, 6])
-                .into()
-            }
-        };
-        container(content)
-            .width(Length::Fixed(240.0))
-            .height(Length::Fill)
-            .style(theme::bg(theme::PANEL_BG))
-            .into()
-    }
-
-    fn center(&self) -> Element<'_, Message> {
-        let single = self.panes.list.len() == 1;
-        if single && self.panes.list[0].tabs.is_empty() {
-            return container(self.welcome())
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(theme::bg(theme::EDITOR_BG))
-                .into();
-        }
-        let mut views = Vec::new();
-        for i in 0..self.panes.list.len() {
-            if i > 0 {
-                views.push(match self.panes.axis {
-                    Axis::Horizontal => divider_v(),
-                    Axis::Vertical => divider_h(),
-                });
-            }
-            views.push(self.pane_view(i));
-        }
-        match self.panes.axis {
-            Axis::Horizontal => row(views).width(Length::Fill).height(Length::Fill).into(),
-            Axis::Vertical => column(views).width(Length::Fill).height(Length::Fill).into(),
-        }
-    }
-
-    fn pane_view(&self, index: usize) -> Element<'_, Message> {
-        let pane = &self.panes.list[index];
-        let focused = index == self.panes.focus;
-        let body: Element<'_, Message> = match pane.current().and_then(|t| self.docs.get(t.doc).map(|d| (t, d))) {
-            Some((tab, doc)) => Canvas::new(EditorView {
-                doc,
-                scroll: tab.scroll,
-                pane: index,
-                focused,
-                viewport: &pane.viewport,
-                popup: if focused && !self.focus_term { self.completion.as_ref() } else { None },
-            })
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into(),
-            None => container(text("Open a file here").size(13).color(theme::TEXT_DIM))
-                .center(Length::Fill)
-                .into(),
-        };
-        container(column![self.tab_bar(index), divider_h(), body])
-            .width(Length::FillPortion(1))
-            .height(Length::FillPortion(1))
-            .style(theme::bg(theme::EDITOR_BG))
-            .into()
-    }
-
-    fn tab_bar(&self, pane_index: usize) -> Element<'_, Message> {
-        let pane = &self.panes.list[pane_index];
-        let focused = pane_index == self.panes.focus;
-        let tabs = pane.tabs.iter().enumerate().filter_map(|(i, t)| {
-            let d = self.docs.get(t.doc)?;
-            let active = i == pane.active;
-            let marker = if d.dirty { "●" } else { "×" };
-            let tab = row![
-                button(text(d.name()).size(13))
-                    .padding([6, 4])
-                    .style(theme::flat(false))
-                    .on_press(Message::SelectTab { pane: pane_index, tab: i }),
-                button(text(marker).size(12))
-                    .padding([6, 6])
-                    .style(theme::flat(false))
-                    .on_press(Message::CloseTab { pane: pane_index, tab: i }),
-            ]
-            .align_y(Alignment::Center)
-            .padding([0, 6]);
-            let accent_color = match (active, focused) {
-                (true, true) => theme::ACCENT,
-                (true, false) => theme::TEXT_DIM,
-                _ => theme::PANEL_BG,
-            };
-            let accent = container(space::vertical().height(Length::Fixed(2.0)))
-                .width(Length::Fill)
-                .style(theme::bg(accent_color));
-            Some(
-                container(column![accent, tab])
-                    .style(theme::bg(if active { theme::EDITOR_BG } else { theme::PANEL_BG }))
-                    .into(),
-            )
-        });
-        container(scrollable(row(tabs)).direction(scrollable::Direction::Horizontal(
-            scrollable::Scrollbar::new().width(0).scroller_width(0),
-        )))
-        .width(Length::Fill)
-        .style(theme::bg(theme::PANEL_BG))
-        .into()
-    }
-
-    fn welcome(&self) -> Element<'_, Message> {
-        let action = |label: &'static str, hint: &'static str, msg: Message| {
-            button(
-                row![text(label).size(14), space::horizontal(), text(hint).size(12).color(theme::TEXT_DIM)]
-                    .align_y(Alignment::Center),
-            )
-            .width(Length::Fixed(340.0))
-            .padding([8, 12])
-            .style(theme::flat(false))
-            .on_press(msg)
-        };
-        container(
-            column![
-                text("Hythe").size(34).color(theme::ACCENT),
-                text("a fast editor, built in Rust").size(14).color(theme::TEXT_DIM),
-                space::vertical().height(Length::Fixed(24.0)),
-                action("New File", "Ctrl+N", Message::NewFile),
-                action("Open File", "Ctrl+O", Message::OpenFileDialog),
-                action("Open Folder", "Ctrl+Shift+O", Message::OpenFolderDialog),
-                action("Command Palette", "Ctrl+Shift+P", Message::OpenPalette),
-                action("Open Terminal", "Ctrl+`", Message::ToggleTerminal),
-            ]
-            .spacing(4)
-            .align_x(Alignment::Center),
-        )
-        .center(Length::Fill)
-        .into()
-    }
-
-    fn terminal_panel(&self) -> Element<'_, Message> {
-        let small = |label: String, selected: bool, msg: Message| {
-            button(text(label).size(12))
-                .padding([4, 8])
-                .style(theme::flat(selected))
-                .on_press(msg)
-        };
-
-        let mut header = row![].spacing(2).align_y(Alignment::Center).padding([2, 6]);
-        for info in self.terms.list() {
-            let active = self.term_active == Some(info.id);
-            let label = if info.running { info.name.clone() } else { format!("{} (exited)", info.name) };
-            header = header
-                .push(small(label, active, Message::TermSelect(info.id)))
-                .push(small("×".into(), false, Message::CloseTermTab(info.id)));
-        }
-        header = header.push(space::horizontal());
-        header = header.push(small("+ Shell".into(), false, Message::NewTerminal(None)));
-        for (i, agent) in self.agents.iter().enumerate() {
-            header = header.push(small(format!("▸ {}", agent.name), false, Message::NewTerminal(Some(i))));
-        }
-
-        let session = self.term_active.and_then(|id| self.terms.get(id));
-        let body: Element<'_, Message> = match (&self.term_snap, session) {
-            (Some(snap), Some(session)) => Canvas::new(TerminalView {
-                snap,
-                session,
-                focused: self.focus_term,
-            })
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into(),
-            _ => container(
-                column![
-                    text("No terminal running").size(14),
-                    button(text("New Terminal").size(13))
-                        .padding([6, 12])
-                        .style(theme::flat(false))
-                        .on_press(Message::NewTerminal(None)),
-                ]
-                .spacing(8)
-                .align_x(Alignment::Center),
-            )
-            .center(Length::Fill)
-            .into(),
-        };
-
-        let focus_line = container(space::vertical().height(Length::Fixed(2.0)))
-            .width(Length::Fill)
-            .style(theme::bg(if self.focus_term { theme::ACCENT } else { theme::PANEL_BG }));
-        container(column![focus_line, header, divider_h(), body])
-            .width(Length::Fixed(560.0))
-            .height(Length::Fill)
-            .style(theme::bg(theme::EDITOR_BG))
-            .into()
-    }
-
-    fn status_bar(&self) -> Element<'_, Message> {
-        let position = self
-            .docs
-            .get(self.panes.cur())
-            .map(|d| {
-                let (l, c) = d.buffer.cursor();
-                format!("Ln {}, Col {}    {}", l + 1, c + 1, d.language_name())
-            })
-            .unwrap_or_default();
-        container(
-            row![
-                text(self.status.clone()).size(12).color(theme::TEXT_DIM),
-                space::horizontal(),
-                text(position).size(12).color(theme::TEXT_DIM),
-            ]
-            .spacing(14)
-            .align_y(Alignment::Center)
-            .padding([5, 12]),
-        )
-        .width(Length::Fill)
-        .style(theme::bg(theme::BAR_BG))
-        .into()
-    }
-
     fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![
             keyboard::listen().map(Message::Key),
             window::close_requests().map(|_| Message::CloseRequested),
         ];
+        // Branch name and change counts drift as files are edited on disk.
+        if self.root.is_some() {
+            subs.push(iced::time::every(std::time::Duration::from_secs(6)).map(|_| Message::GitRefresh));
+        }
         // Poll terminal output at ~60Hz, but only while it's on screen.
         if self.show_term && !self.terms.sessions().is_empty() {
             subs.push(iced::time::every(std::time::Duration::from_millis(16)).map(|_| Message::TermTick));
         }
         Subscription::batch(subs)
     }
-}
-
-fn divider_v<'a>() -> Element<'a, Message> {
-    container(space::horizontal().width(Length::Fixed(1.0)))
-        .height(Length::Fill)
-        .style(theme::bg(theme::BORDER))
-        .into()
-}
-
-fn divider_h<'a>() -> Element<'a, Message> {
-    container(space::vertical().height(Length::Fixed(1.0)))
-        .width(Length::Fill)
-        .style(theme::bg(theme::BORDER))
-        .into()
 }

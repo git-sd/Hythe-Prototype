@@ -2,8 +2,6 @@ use crate::panes::Axis;
 use crate::Message;
 
 pub const MENUS: [&str; 4] = ["File", "Edit", "View", "Terminal"];
-/// Width of each menu button in the top bar; the dropdown lines up using this.
-pub const MENU_W: f32 = 76.0;
 
 pub struct Item {
     pub label: String,
@@ -14,14 +12,16 @@ pub struct Item {
 pub enum Entry {
     Item(Item),
     Separator,
+    /// A group title in the combined menu.
+    Header(&'static str),
 }
 
 fn item(label: &str, shortcut: &'static str, message: Message) -> Entry {
     Entry::Item(Item { label: label.to_string(), shortcut, message })
 }
 
-/// Contents of dropdown `menu` (an index into [`MENUS`]). `agents` are the
-/// names of installed CLI agents, listed under Terminal.
+/// Contents of one menu (an index into [`MENUS`]). `agents` are the names of
+/// installed CLI agents, listed under Terminal.
 pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
     use Entry::Separator;
     match menu {
@@ -32,6 +32,7 @@ pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
             Separator,
             item("Save", "Ctrl+S", Message::Save),
             item("Close Tab", "Ctrl+W", Message::CloseActive),
+            item("Pin / Unpin File", "", Message::TogglePin),
             Separator,
             item("Exit", "", Message::CloseRequested),
         ],
@@ -46,7 +47,7 @@ pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
         2 => vec![
             item("Command Palette…", "Ctrl+Shift+P", Message::OpenPalette),
             Separator,
-            item("Toggle Explorer", "Ctrl+B", Message::ToggleSidebar),
+            item("Toggle Sidebar", "Ctrl+B", Message::ToggleSidebar),
             item("Toggle Terminal", "Ctrl+`", Message::ToggleTerminal),
             Separator,
             item("Split Right", "Ctrl+\\", Message::Split(Axis::Horizontal)),
@@ -68,4 +69,17 @@ pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
             v
         }
     }
+}
+
+/// Every menu in one list, each under its title (the ☰ menu in the title bar).
+pub fn all_entries(agents: &[String]) -> Vec<Entry> {
+    let mut out = Vec::new();
+    for (i, title) in MENUS.iter().enumerate() {
+        if i > 0 {
+            out.push(Entry::Separator);
+        }
+        out.push(Entry::Header(title));
+        out.extend(entries(i, agents));
+    }
+    out
 }
