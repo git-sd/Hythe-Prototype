@@ -13,7 +13,7 @@ use crate::Message;
 const SELECTION: Color = Color::from_rgba(0.45, 0.68, 0.91, 0.25);
 const CURRENT_LINE: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.035);
 
-fn class_color(class: u8) -> Color {
+pub(crate) fn class_color(class: u8) -> Color {
     let Some(name) = highlight::NAMES.get(class as usize) else {
         return theme::TEXT;
     };

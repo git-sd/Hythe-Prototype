@@ -107,9 +107,10 @@ impl App {
             container(
                 row![
                     text("Since").size(14).color(theme::TEXT_DIM),
-                    text(format!("{branch} HEAD")).size(14),
+                    text(if branch.is_empty() { "HEAD".to_string() } else { branch }).size(14),
                     text(format!("+{added}")).size(14).color(theme::ADDED),
                     text(format!("−{removed}")).size(14).color(theme::REMOVED),
+                    icon(Icon::ChevronDown, 11.0, theme::TEXT_FAINT),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -124,7 +125,8 @@ impl App {
             );
         }
         let root = self.repo.as_ref().map(|r| r.root().to_path_buf());
-        for (path, lines) in &s.all_diffs {
+        for (file, (path, lines)) in s.all_diffs.iter().enumerate() {
+            let spans = s.diff_spans.get(file);
             let (name, dir) = match path.rsplit_once('/') {
                 Some((d, n)) => (n.to_string(), format!("{d}/")),
                 None => (path.clone(), String::new()),
@@ -144,7 +146,7 @@ impl App {
                 .padding(Padding { top: 16.0, right: 16.0, bottom: 6.0, left: 24.0 }),
             );
             let mut rows = column![];
-            for l in lines.iter().filter(|l| l.kind != LineKind::Header).take(MAX_DIFF_LINES) {
+            for (index, l) in lines.iter().enumerate().filter(|(_, l)| l.kind != LineKind::Header).take(MAX_DIFF_LINES) {
                 let (tint, color) = match l.kind {
                     LineKind::Added => (Some(Color { a: 0.16, ..theme::ADDED }), theme::TEXT),
                     LineKind::Removed => (Some(Color { a: 0.18, ..theme::REMOVED }), theme::TEXT),
@@ -155,10 +157,22 @@ impl App {
                     // Between hunks: a quiet gap instead of the raw @@ header.
                     container(text("⋯").size(12).color(color)).padding([2, 18]).into()
                 } else {
-                    let number = l.new.or(l.old).map(|n| n.to_string()).unwrap_or_default();
+                    // Like Zed: removed lines have no number, everything else shows its new line.
+                    let number = l.new.map(|n| n.to_string()).unwrap_or_default();
+                    // Syntax colours where the line exists in the current file; plain otherwise.
+                    let code: Element<'_, Message> = match spans.and_then(|f| f.get(index)).and_then(|o| o.as_ref()) {
+                        Some(runs) => iced::widget::rich_text(
+                            runs.iter().map(|(t, c)| iced::widget::span(t.clone()).color(*c)).collect::<Vec<iced::widget::text::Span<'_, (), Font>>>(),
+                        )
+                        .size(13)
+                        .font(Font::MONOSPACE)
+                        .wrapping(text::Wrapping::None)
+                        .into(),
+                        None => text(l.text.clone()).size(13).font(Font::MONOSPACE).color(color).wrapping(text::Wrapping::None).into(),
+                    };
                     row![
                         text(number).size(12.5).font(Font::MONOSPACE).color(theme::GUTTER).align_x(Alignment::End).width(Length::Fixed(44.0)),
-                        text(l.text.clone()).size(13).font(Font::MONOSPACE).color(color).wrapping(text::Wrapping::None),
+                        code,
                     ]
                     .spacing(16)
                     .into()

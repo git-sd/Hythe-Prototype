@@ -1,6 +1,6 @@
 //! Source control: state and message handling. Drawing lives in `scm_view.rs`.
 
-use hythe_git::{Branch, Change, Commit, CommitFile, DiffLine, Repo};
+use hythe_git::{Branch, Change, Commit, CommitFile, DiffLine, LineKind, Repo};
 use iced::Task;
 
 use crate::{App, Message};
@@ -24,6 +24,9 @@ pub struct Scm {
     pub show_diff: bool,
     /// Every changed file with its diff against HEAD, for the Changes view.
     pub all_diffs: Vec<(String, Vec<DiffLine>)>,
+    /// Syntax colours for `all_diffs`, file by file and line by line: runs of (text,
+    /// colour) for lines that exist in the current file, `None` for the rest.
+    pub diff_spans: Vec<Vec<Option<Vec<(String, iced::Color)>>>>,
     /// Whether the right side shows a changed file or a commit.
     pub tab: ScmTab,
     pub commits: Vec<Commit>,
@@ -225,6 +228,42 @@ impl App {
         ok
     }
 
+    /// Colour one file's diff like the editor would: the current file is highlighted once,
+    /// and each added or unchanged line takes its colours from there.
+    fn colour_diff(&mut self, root: &std::path::Path, path: &str, lines: &[DiffLine]) -> Vec<Option<Vec<(String, iced::Color)>>> {
+        let full = root.join(path);
+        let syntax = crate::highlight::Syntax::for_file(hythe_complete::Language::from_path(&full), Some(&full));
+        let source = std::fs::read_to_string(&full).unwrap_or_default();
+        let classes = match syntax {
+            Some(s) if source.len() <= crate::highlight::MAX_HIGHLIGHT_BYTES => self.highlighter.highlight(s, &source),
+            _ => Vec::new(),
+        };
+        // Byte range of each line of the file.
+        let mut starts = vec![0usize];
+        starts.extend(source.match_indices('\n').map(|(i, _)| i + 1));
+        lines
+            .iter()
+            .map(|l| {
+                let n = l.new? as usize;
+                if classes.is_empty() || l.kind == LineKind::Removed || n == 0 || n > starts.len() {
+                    return None;
+                }
+                let start = starts[n - 1];
+                let end = starts.get(n).map(|e| e - 1).unwrap_or(source.len());
+                let line = source.get(start..end)?.trim_end_matches('\r');
+                let mut runs: Vec<(String, iced::Color)> = Vec::new();
+                for (offset, ch) in line.char_indices() {
+                    let color = crate::editor::class_color(classes.get(start + offset).copied().unwrap_or(crate::highlight::NONE));
+                    match runs.last_mut() {
+                        Some((text, c)) if *c == color => text.push(ch),
+                        _ => runs.push((ch.to_string(), color)),
+                    }
+                }
+                Some(runs)
+            })
+            .collect()
+    }
+
     /// Read every changed file's diff off the UI thread, for the Changes view.
     pub(crate) fn load_all_diffs(&self) -> Task<Message> {
         let Some(repo) = self.repo.clone() else { return Task::none() };
@@ -261,7 +300,13 @@ impl App {
                 self.scm.tab = if self.scm.changes.is_empty() { ScmTab::History } else { ScmTab::Changes };
             }
             ScmMsg::CloseDiff => self.scm.show_diff = false,
-            ScmMsg::AllDiffs(diffs) => self.scm.all_diffs = diffs,
+            ScmMsg::AllDiffs(diffs) => {
+                // The diffs are re-read every few seconds; only colour them again when they changed.
+                if diffs != self.scm.all_diffs {
+                    self.scm.diff_spans = diffs.iter().map(|(path, lines)| self.colour_diff(repo.root(), path, lines)).collect();
+                    self.scm.all_diffs = diffs;
+                }
+            }
             ScmMsg::Hide => {
                 self.scm.open = false;
                 self.scm.show_diff = false;
