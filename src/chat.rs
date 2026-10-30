@@ -605,7 +605,7 @@ impl App {
         }
         body = body.push(
             row![
-                text(k.short.clone()).size(11).font(iced::Font::MONOSPACE).color(theme::ACCENT),
+                text(k.short.clone()).size(11).font(crate::theme::MONO).color(theme::ACCENT),
                 space::horizontal(),
                 icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }, 11.0, theme::TEXT_FAINT),
             ]
@@ -858,7 +858,7 @@ pub(crate) fn code_card<'a>(info: String, lines: Vec<String>) -> Element<'a, Mes
         } else {
             None
         };
-        let line = container(text(l).size(13).font(iced::Font::MONOSPACE).wrapping(text::Wrapping::None))
+        let line = container(text(l).size(13).font(crate::theme::MONO).wrapping(text::Wrapping::None))
             .width(Length::Fill)
             .padding([1, 10]);
         rows = rows.push(match tint {
@@ -875,7 +875,7 @@ pub(crate) fn code_card<'a>(info: String, lines: Vec<String>) -> Element<'a, Mes
         return card.into();
     }
     column![
-        row![text("Edit").size(13).color(theme::TEXT_DIM), text(info).size(13).color(theme::TEXT_DIM).font(iced::Font::MONOSPACE)]
+        row![text("Edit").size(13).color(theme::TEXT_DIM), text(info).size(13).color(theme::TEXT_DIM).font(crate::theme::MONO)]
             .spacing(6)
             .align_y(Alignment::Center),
         card,

@@ -1,5 +1,10 @@
 use iced::widget::{button, container, text_input};
-use iced::{Background, Border, Color, Theme};
+use iced::{Background, Border, Color, Font, Theme};
+
+/// Zed's typefaces, IBM Plex Sans and Plex Mono, bundled from `assets/fonts` (SIL Open
+/// Font License; see `assets/fonts/LICENSE.txt`).
+pub const SANS: Font = Font::with_name("IBM Plex Sans");
+pub const MONO: Font = Font::with_name("IBM Plex Mono");
 
 // Colours sampled from Zed's dark theme (see the reference screenshot): near-black
 // editor and thread columns, a slightly lighter sidebar, and light borders.

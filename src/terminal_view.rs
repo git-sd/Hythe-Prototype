@@ -110,7 +110,7 @@ impl canvas::Program<Message> for TerminalView<'_> {
         let mono = |bold: bool, italic: bool| Font {
             weight: if bold { Weight::Bold } else { Weight::Normal },
             style: if italic { FontStyle::Italic } else { FontStyle::Normal },
-            ..Font::MONOSPACE
+            ..crate::theme::MONO
         };
 
         for row in 0..snap.rows {

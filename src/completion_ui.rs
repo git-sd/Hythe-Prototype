@@ -2,7 +2,7 @@
 
 use hythe_complete::{Item, Kind};
 use iced::widget::canvas;
-use iced::{Color, Font, Pixels, Point, Rectangle, Size};
+use iced::{Color, Pixels, Point, Rectangle, Size};
 
 use crate::doc::{CHAR_W, LINE_H};
 use crate::theme;
@@ -83,7 +83,7 @@ impl CompletionUi {
                 position: Point::new(x, y + 2.0),
                 color,
                 size: Pixels(size),
-                font: Font::MONOSPACE,
+                font: crate::theme::MONO,
                 ..canvas::Text::default()
             };
             frame.fill_text(text(item.kind.tag().to_string(), rect.x + 8.0, kind_color(item.kind), FONT));

@@ -177,20 +177,20 @@ impl App {
                         Some(runs) => iced::widget::rich_text(
                             runs.iter().map(|(t, c)| iced::widget::span(t.clone()).color(*c)).collect::<Vec<iced::widget::text::Span<'_, (), Font>>>(),
                         )
-                        .size(13)
-                        .font(Font::MONOSPACE)
+                        .size(14)
+                        .font(crate::theme::MONO)
                         .wrapping(text::Wrapping::None)
                         .into(),
-                        None => text(l.text.clone()).size(13).font(Font::MONOSPACE).color(color).wrapping(text::Wrapping::None).into(),
+                        None => text(l.text.clone()).size(14).font(crate::theme::MONO).color(color).wrapping(text::Wrapping::None).into(),
                     };
                     row![
-                        text(number).size(12.5).font(Font::MONOSPACE).color(theme::GUTTER).align_x(Alignment::End).width(Length::Fixed(44.0)),
+                        text(number).size(13).font(crate::theme::MONO).color(theme::GUTTER).align_x(Alignment::End).width(Length::Fixed(44.0)),
                         code,
                     ]
                     .spacing(16)
                     .into()
                 };
-                let line = container(line).width(Length::Fill).padding([1, 0]);
+                let line = container(line).width(Length::Fill).padding([2, 0]);
                 rows = rows.push(match tint {
                     Some(c) => line.style(theme::bg(c)),
                     None => line,
@@ -519,7 +519,7 @@ impl App {
             row![
                 text(commit.author.clone()).size(12).color(dim),
                 text(time_ago(commit.time, now)).size(12).color(theme::TEXT_FAINT),
-                text(commit.short.clone()).size(12).font(Font::MONOSPACE).color(theme::ACCENT),
+                text(commit.short.clone()).size(12).font(crate::theme::MONO).color(theme::ACCENT),
             ]
             .spacing(10),
         ]
@@ -646,7 +646,7 @@ fn diff_body(diff: &[DiffLine], pane_w: f32) -> Element<'static, Message> {
         let num = |n: Option<u32>| -> Element<'static, Message> {
             text(n.map(|n| n.to_string()).unwrap_or_default())
                 .size(12)
-                .font(Font::MONOSPACE)
+                .font(crate::theme::MONO)
                 .color(theme::GUTTER)
                 .align_x(Alignment::End)
                 .width(Length::Fixed(44.0))
@@ -664,13 +664,13 @@ fn diff_body(diff: &[DiffLine], pane_w: f32) -> Element<'static, Message> {
                 LineKind::Context => (None, theme::TEXT_DIM, " "),
             };
             let body = if l.kind == LineKind::Hunk {
-                row![text(l.text.clone()).size(12.5).font(Font::MONOSPACE).color(color).wrapping(text::Wrapping::None)].padding([0, 12])
+                row![text(l.text.clone()).size(12.5).font(crate::theme::MONO).color(color).wrapping(text::Wrapping::None)].padding([0, 12])
             } else {
                 row![
                     num(l.old),
                     num(l.new),
-                    text(marker).size(12.5).font(Font::MONOSPACE).color(color).width(Length::Fixed(18.0)),
-                    text(l.text.clone()).size(12.5).font(Font::MONOSPACE).color(color).wrapping(text::Wrapping::None),
+                    text(marker).size(12.5).font(crate::theme::MONO).color(color).width(Length::Fixed(18.0)),
+                    text(l.text.clone()).size(12.5).font(crate::theme::MONO).color(color).wrapping(text::Wrapping::None),
                 ]
                 .spacing(4)
             };

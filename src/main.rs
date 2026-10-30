@@ -63,6 +63,9 @@ fn main() -> iced::Result {
         .title(App::title)
         .subscription(App::subscription)
         .theme(|_: &App, _| Theme::Dark)
+        .font(include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf").as_slice())
+        .font(include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf").as_slice())
+        .default_font(theme::SANS)
         .run()
 }
 
@@ -183,6 +186,8 @@ struct App {
     item_drag: Option<Item>,
     /// The thread column is docked on the right instead of the left.
     agent_right: bool,
+    /// The thread column's width was set by hand; until then it follows the window's size.
+    agent_w_set: bool,
     chat_w: f32,
     /// The chat panel is docked on the right (otherwise the left).
     chat_right: bool,
@@ -428,6 +433,7 @@ impl App {
             tab_drag: None,
             item_drag: None,
             agent_right: false,
+            agent_w_set: false,
             chat_w: view::CHAT_W,
             chat_right: true,
         };
@@ -1129,6 +1135,10 @@ impl App {
             Message::WindowSized(id, size) => {
                 if id == self.main_window {
                     self.win = size;
+                    // Like Zed, the thread column takes about a third of the window.
+                    if !self.agent_w_set {
+                        self.agent_w = (size.width * 0.33).clamp(420.0, 720.0);
+                    }
                 }
             }
             Message::Noop => {}
@@ -1632,9 +1642,11 @@ impl App {
         match drag.handle {
             Handle::List => self.list_w = p.x.clamp(180.0, (win.width - 300.0).clamp(180.0, 520.0)),
             Handle::Agent if self.agent_right => {
+                self.agent_w_set = true;
                 self.agent_w = (win.width - scm_l - chat_r - p.x).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
             }
             Handle::Agent => {
+                self.agent_w_set = true;
                 self.agent_w = (p.x - sidebar - chat_l).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
             }
             Handle::Chat if self.chat_right => {

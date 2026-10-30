@@ -179,7 +179,7 @@ impl canvas::Program<Message> for EditorView<'_> {
                     position: Point::new(text_x + run_vcol as f32 * m.char_w, y + 2.0),
                     color: class_color(class),
                     size: Pixels(m.font),
-                    font: Font::MONOSPACE,
+                    font: crate::theme::MONO,
                     ..canvas::Text::default()
                 });
             };
@@ -208,7 +208,7 @@ impl canvas::Program<Message> for EditorView<'_> {
                 position: Point::new(4.0, y + 2.0),
                 color: if line == cur_line { theme::TEXT } else { theme::GUTTER },
                 size: Pixels(m.font),
-                font: Font::MONOSPACE,
+                font: crate::theme::MONO,
                 ..canvas::Text::default()
             });
         }
@@ -228,7 +228,7 @@ impl canvas::Program<Message> for EditorView<'_> {
                     position: Point::new(x, cur_line as f32 * m.line_h - scroll.y + 3.0),
                     color: theme::TEXT_FAINT,
                     size: Pixels(m.font - 1.5),
-                    font: Font { style: iced::font::Style::Italic, ..Font::MONOSPACE },
+                    font: Font { style: iced::font::Style::Italic, ..crate::theme::MONO },
                     ..canvas::Text::default()
                 });
             }
@@ -249,7 +249,7 @@ impl canvas::Program<Message> for EditorView<'_> {
                 position: Point::new(x + 4.0, tag_y + 1.0),
                 color: Color::from_rgb8(0x1b, 0x1e, 0x24),
                 size: Pixels(10.0),
-                font: Font::MONOSPACE,
+                font: crate::theme::MONO,
                 ..canvas::Text::default()
             });
         }
