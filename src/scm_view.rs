@@ -34,7 +34,8 @@ impl App {
         if self.scm_window.is_some() {
             (self.win.width * 0.7 - self.scm_w).max(300.0)
         } else {
-            (self.win.width - sidebar - self.scm_l() - agent - chat).max(300.0)
+            let _ = (sidebar, agent, chat);
+        (self.scm_detail_w - 20.0).max(240.0)
         }
     }
 
@@ -45,7 +46,43 @@ impl App {
 
     /// Width the docked History column takes, handle included.
     pub(crate) fn scm_l(&self) -> f32 {
-        if self.scm_docked() { self.scm_w + crate::view::HANDLE_W } else { 0.0 }
+        let history = if self.scm_docked() { self.scm_w + crate::view::HANDLE_W } else { 0.0 };
+        let detail = if self.scm_showing_diff() { self.scm_detail_w + crate::view::HANDLE_W } else { 0.0 };
+        history + detail
+    }
+
+    /// The details column beside History: the chosen file's diff, or the chosen commit
+    /// with its files and diff. It opens when you click something in History.
+    pub(crate) fn scm_detail_panel(&self) -> Element<'_, Message> {
+        let commit = self.scm.tab == ScmTab::History;
+        let title = if commit {
+            self.scm
+                .selected_commit
+                .as_ref()
+                .and_then(|sha| self.scm.commits.iter().find(|c| &c.sha == sha))
+                .map(|c| format!("Commit {}", c.short))
+                .unwrap_or_else(|| "Commit".into())
+        } else {
+            self.scm.selected.as_ref().map(|(p, _)| p.clone()).unwrap_or_default()
+        };
+        let head = container(
+            row![
+                text(title).size(13).wrapping(text::Wrapping::None),
+                space::horizontal(),
+                icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::CloseDiff)),
+            ]
+            .spacing(2)
+            .align_y(Alignment::Center)
+            .padding([0, 8]),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(crate::view::TAB_H))
+        .align_y(Alignment::Center);
+        container(column![head, divider_h(), self.scm_diff()])
+            .width(Length::Fixed(self.scm_detail_w))
+            .height(Length::Fill)
+            .style(theme::bg(theme::EDITOR_BG))
+            .into()
     }
 
     /// A changed file or a commit's file is chosen, so its diff should show beside the code.
@@ -58,12 +95,12 @@ impl App {
     pub(crate) fn scm_sidebar(&self) -> Element<'_, Message> {
         let head = container(
             row![
-                self.header_left(crate::view::Edge::Scm),
                 text("History").size(13),
                 space::horizontal(),
                 icon_button(Icon::Expand, theme::TEXT_FAINT, false, scm(ScmMsg::PopOut)),
                 icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::Hide)),
             ]
+            .push(self.header_extra(crate::view::Edge::Scm))
             .spacing(2)
             .align_y(Alignment::Center)
             .padding([0, 8]),
@@ -287,14 +324,12 @@ impl App {
 
         let header = container(
             row![
-                text(path.clone()).size(13),
                 text(if *staged { "staged" } else { "working tree" }).size(11).color(theme::TEXT_FAINT),
                 space::horizontal(),
                 button(text("Open file").size(12))
                     .padding([4, 8])
                     .style(theme::flat(false))
                     .on_press(scm(ScmMsg::OpenFile(path.clone()))),
-                icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::CloseDiff)),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -353,11 +388,8 @@ impl App {
                 text(commit.author.clone()).size(12).color(dim),
                 text(time_ago(commit.time, now)).size(12).color(theme::TEXT_FAINT),
                 text(commit.short.clone()).size(12).font(Font::MONOSPACE).color(theme::ACCENT),
-                space::horizontal(),
-                icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::CloseDiff)),
             ]
-            .spacing(10)
-            .align_y(Alignment::Center),
+            .spacing(10),
         ]
         .spacing(4);
         // The full message sits under the file list, clipped, so the files stay in view.

@@ -164,6 +164,8 @@ struct App {
     chat_window: Option<window::Id>,
     /// Source Control's own window, when it is popped out.
     scm_window: Option<window::Id>,
+    /// Width of the details column that opens beside History.
+    scm_detail_w: f32,
     /// Shift is held, for sideways scrolling with the wheel.
     shift: bool,
     /// A tab being dragged: (pane, tab).
@@ -208,6 +210,8 @@ pub enum Handle {
     ChatDock,
     /// The floating chat's header: drag it anywhere in the window.
     ChatMove,
+    /// The edge of the details column beside History.
+    ScmDetail,
     /// Between editor pane `n` and `n + 1`.
     Panes(usize),
 }
@@ -394,6 +398,7 @@ impl App {
             main_window,
             chat_window: None,
             scm_window: None,
+            scm_detail_w: 480.0,
             shift: false,
             tab_drag: None,
             item_drag: None,
@@ -1568,15 +1573,15 @@ impl App {
         match drag.handle {
             Handle::List => self.list_w = (p.x - view::RAIL_W).clamp(140.0, (win.width - 300.0).clamp(140.0, 480.0)),
             Handle::Agent if self.agent_right => {
-                self.agent_w = (win.width - chat_r - p.x).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
+                self.agent_w = (win.width - scm_l - chat_r - p.x).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
             }
             Handle::Agent => {
-                self.agent_w = (p.x - sidebar - scm_l - chat_l).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
+                self.agent_w = (p.x - sidebar - chat_l).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
             }
             Handle::Chat if self.chat_right => {
-                self.chat_w = (win.width - p.x).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0))
+                self.chat_w = (win.width - scm_l - p.x).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0))
             }
-            Handle::Chat => self.chat_w = (p.x - sidebar - scm_l).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0)),
+            Handle::Chat => self.chat_w = (p.x - sidebar).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0)),
             Handle::Dock => self.agent_right = p.x > win.width / 2.0,
             Handle::ChatDock => self.chat_right = p.x > win.width / 2.0,
             Handle::ChatMove => {
@@ -1588,8 +1593,12 @@ impl App {
                 );
                 self.drag = Some(drag);
             }
+            Handle::ScmDetail => {
+                let history = self.scm_w + view::HANDLE_W;
+                self.scm_detail_w = (win.width - history - p.x).clamp(260.0, (win.width - sidebar - history - 300.0).clamp(260.0, 900.0));
+            }
             Handle::Scm => {
-                self.scm_w = (p.x - sidebar).clamp(220.0, (win.width - sidebar - 300.0).clamp(220.0, 700.0));
+                self.scm_w = (win.width - p.x).clamp(220.0, (win.width - sidebar - 300.0).clamp(220.0, 700.0));
             }
             Handle::Panes(i) => {
                 let pos = match self.panes.axis {

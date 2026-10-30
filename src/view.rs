@@ -132,10 +132,6 @@ impl App {
         // Source Control wants the width for diffs, so the thread column steps aside.
         let agent_right = self.show_term && self.agent_right;
         let chat_on = self.chat_docked();
-        // History sits beside the sidebar, pushing everything else over.
-        if self.scm_docked() {
-            main = main.push(self.scm_sidebar()).push(self.handle(Handle::Scm, true));
-        }
         if chat_on && !self.chat_right {
             main = main.push(self.chat_view_in(chat::Place::Docked)).push(self.handle(Handle::Chat, true));
         }
@@ -148,6 +144,14 @@ impl App {
         }
         if chat_on && self.chat_right {
             main = main.push(self.handle(Handle::Chat, true)).push(self.chat_view_in(chat::Place::Docked));
+        }
+        // History is the outermost column on the right, pushing everything else over.
+        if self.scm_docked() {
+            // Clicking something in History opens its details in a column beside it.
+            if self.scm_showing_diff() {
+                main = main.push(self.handle(Handle::ScmDetail, true)).push(self.scm_detail_panel());
+            }
+            main = main.push(self.handle(Handle::Scm, true)).push(self.scm_sidebar());
         }
         let right = column![main, divider_h(), self.bottom_bar()].width(Length::Fill);
 
@@ -231,7 +235,9 @@ impl App {
     }
 
     pub(crate) fn rightmost(&self) -> Edge {
-        if self.chat_docked() && self.chat_right {
+        if self.scm_docked() {
+            Edge::Scm
+        } else if self.chat_docked() && self.chat_right {
             Edge::Chat
         } else if self.show_term && self.agent_right {
             Edge::Agent
@@ -242,9 +248,7 @@ impl App {
 
     /// The column furthest left once the sidebar is hidden; it carries the menu buttons.
     pub(crate) fn leftmost(&self) -> Edge {
-        if self.scm_docked() {
-            Edge::Scm
-        } else if self.chat_docked() && !self.chat_right {
+        if self.chat_docked() && !self.chat_right {
             Edge::Chat
         } else if self.show_term && !self.agent_right {
             Edge::Agent
@@ -360,9 +364,9 @@ impl App {
                 Padding { top: TITLE_H + 42.0 - top_shift, left: {
                     let chat = if self.chat_docked() { self.chat_w + HANDLE_W } else { 0.0 };
                     if self.agent_right {
-                        (self.win.width - if self.chat_right { chat } else { 0.0 } - 300.0 - 8.0).max(8.0)
+                        (self.win.width - self.scm_l() - if self.chat_right { chat } else { 0.0 } - 300.0 - 8.0).max(8.0)
                     } else {
-                        (sidebar_left + self.scm_l() + if self.chat_right { 0.0 } else { chat } + self.agent_w - 300.0 - 8.0).max(8.0)
+                        (sidebar_left + if self.chat_right { 0.0 } else { chat } + self.agent_w - 300.0 - 8.0).max(8.0)
                     }
                 }, ..Padding::ZERO },
             ),
@@ -373,7 +377,7 @@ impl App {
                 Padding {
                     top: TITLE_H + 42.0 - top_shift,
                     // The window buttons sit to the right of the tab bar's own "…".
-                    right: 8.0 + if self.rightmost() == Edge::Editor { 250.0 } else { 0.0 },
+                    right: 8.0 + self.scm_l() + if self.rightmost() == Edge::Editor { 250.0 } else { 0.0 },
                     ..Padding::ZERO
                 },
             ),
@@ -822,14 +826,6 @@ impl App {
     // --- editor area ---
 
     fn editor_area(&self) -> Element<'_, Message> {
-        // A file or commit chosen in History shows its diff in place of the code, under the same tabs.
-        if self.scm_showing_diff() {
-            return container(column![self.tab_bar_with(0, true), self.scm_diff()])
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(theme::bg(theme::EDITOR_BG))
-                .into();
-        }
         if self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty() {
             let strip = container(
                 row![

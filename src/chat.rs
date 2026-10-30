@@ -258,9 +258,11 @@ impl App {
                 Err(e) => self.chat.note = Some(e),
             },
             ChatMsg::ToggleCommit(sha) => {
+                // Clicking a commit also opens its details beside History.
+                let details = self.scm_update(ScmMsg::SelectCommit(sha.clone()));
                 if self.chat.expanded.as_ref() == Some(&sha) {
                     self.chat.expanded = None;
-                    return Task::none();
+                    return details;
                 }
                 self.chat.expanded = Some(sha.clone());
                 self.chat.expanded_files.clear();
