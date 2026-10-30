@@ -536,8 +536,8 @@ impl App {
             .spacing(10)
             .align_y(Alignment::Center)
             .into(),
-            self.chat_visible(),
-            Message::Chat(ChatMsg::Show),
+            self.scm.open,
+            Message::Scm(if self.scm.open { ScmMsg::Hide } else { ScmMsg::Show }),
         ));
         list = list.push(list_row(
             row![icon(Icon::Search, 15.0, dim), text("Search").size(14).color(dim)]
@@ -1097,6 +1097,7 @@ impl App {
             icon_button(Icon::Terminal, dim, self.show_term, Message::ToggleTerminal),
             icon_button(Icon::Bug, dim, false, Message::Unavailable("The debugger")),
             icon_button(Icon::Outline, dim, false, Message::Unavailable("Outline")),
+            icon_button(Icon::History, dim, self.scm.open, Message::Scm(if self.scm.open { ScmMsg::Hide } else { ScmMsg::Show })),
             icon_button(Icon::Chat, dim, self.chat_visible(), Message::Chat(if self.chat_visible() { ChatMsg::Hide } else { ChatMsg::Show })),
             icon_button(Icon::Panels, dim, self.show_sidebar, Message::ToggleSidebar),
         ]

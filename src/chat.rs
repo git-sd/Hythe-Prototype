@@ -44,8 +44,6 @@ pub struct Chat {
     pub note: Option<String>,
     pub images: HashMap<String, iced::widget::image::Handle>,
     pub images_tried: HashSet<String>,
-    /// Recent commits, shown in the feed between the messages.
-    pub commits: Vec<hythe_git::Commit>,
     /// The commit card that is open, and the files it changed.
     pub expanded: Option<String>,
     pub expanded_files: Vec<hythe_git::CommitFile>,
@@ -75,9 +73,7 @@ pub enum ChatMsg {
     Sync,
     Posted(Result<(), String>),
     Synced(Result<String, String>),
-    Loaded(Result<(Vec<ChatMessage>, Vec<hythe_git::Commit>), String>),
-    /// Commit the text in the box (everything changed, if nothing is staged).
-    Commit,
+    Loaded(Result<Vec<ChatMessage>, String>),
     /// Open a commit's changes in the full diff view.
     OpenCommit(String),
     /// Open or close a commit card in place.
@@ -110,10 +106,7 @@ impl App {
         let Some(repo) = self.repo.clone() else { return Task::none() };
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || {
-                    let messages = repo.chat_messages(HISTORY)?;
-                    Ok((messages, repo.log(60).unwrap_or_default()))
-                })
+                tokio::task::spawn_blocking(move || repo.chat_messages(HISTORY))
                 .await
                 .unwrap_or_else(|e| Err(e.to_string()))
             },
@@ -234,8 +227,7 @@ impl App {
                 return self.chat_load();
             }
             ChatMsg::Loaded(result) => match result {
-                Ok((messages, commits)) => {
-                    self.chat.commits = commits;
+                Ok(messages) => {
                     let mut tasks = Vec::new();
                     if let Some(repo) = self.repo.clone() {
                         for att in messages.iter().flat_map(|m| &m.attachments).filter(|a| a.is_image()) {
@@ -265,20 +257,6 @@ impl App {
                 }
                 Err(e) => self.chat.note = Some(e),
             },
-            ChatMsg::Commit => {
-                let Some(repo) = self.repo.clone() else { return Task::none() };
-                let text = self.chat.input.trim().to_string();
-                if text.is_empty() {
-                    self.status = "Write a commit message first".into();
-                    return Task::none();
-                }
-                self.scm.reload(&repo);
-                self.scm.message = text;
-                if self.scm_commit(&repo) {
-                    self.chat.input.clear();
-                    return self.chat_load();
-                }
-            }
             ChatMsg::ToggleCommit(sha) => {
                 if self.chat.expanded.as_ref() == Some(&sha) {
                     self.chat.expanded = None;
@@ -416,25 +394,6 @@ impl App {
             Place::Window => header.into(),
         };
 
-        let branch = self.git.as_ref().map(|g| g.branch.clone()).unwrap_or_else(|| "—".into());
-        let small = |label: &'static str, m: ScmMsg| {
-            button(text(label).size(10)).padding([2, 6]).style(theme::flat(false)).on_press(Message::Scm(m))
-        };
-        let strip = container(
-            row![
-                icon(Icon::Branch, 12.0, dim),
-                text(branch).size(11).wrapping(text::Wrapping::None),
-                space::horizontal(),
-                small("Pull", ScmMsg::Pull),
-                small("Push", ScmMsg::Push),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center)
-            .padding([0, 8]),
-        )
-        .height(Length::Fixed(26.0))
-        .align_y(Alignment::Center);
-
         let now = now_secs();
         let mut list = column![].spacing(20).padding(Padding { top: 14.0, right: 14.0, bottom: 14.0, left: 14.0 });
         if c.messages.is_empty() {
@@ -451,23 +410,8 @@ impl App {
                 .padding([16, 0]),
             );
         }
-        // Messages and commits in one feed, oldest first.
-        enum Entry<'a> {
-            Msg(&'a ChatMessage),
-            Commit(&'a hythe_git::Commit),
-        }
-        let mut feed: Vec<(i64, Entry<'_>)> = c
-            .messages
-            .iter()
-            .map(|m| (m.time_ms / 1000, Entry::Msg(m)))
-            .chain(c.commits.iter().map(|k| (k.time, Entry::Commit(k))))
-            .collect();
-        feed.sort_by_key(|(t, _)| *t);
-        for (_, entry) in feed {
-            list = list.push(match entry {
-                Entry::Msg(m) => self.chat_message(m, now),
-                Entry::Commit(k) => self.chat_commit(k, now),
-            });
+        for m in &c.messages {
+            list = list.push(self.chat_message(m, now));
         }
 
         let mut attached = column![].spacing(3);
@@ -481,8 +425,6 @@ impl App {
             );
         }
         let can_send = !(c.input.trim().is_empty() && c.files.is_empty()) && c.busy != Some("Sending…");
-        let changed = self.git.as_ref().map(|g| g.added + g.removed).unwrap_or(0) > 0;
-        let can_commit = !c.input.trim().is_empty();
         let composer = column![
             attached,
             row![
@@ -501,28 +443,11 @@ impl App {
             ]
             .spacing(3)
             .align_y(Alignment::Center),
-            row![
-                button(
-                    text(if changed { "Uncommitted changes" } else { "Nothing to commit" })
-                        .size(10)
-                        .color(if changed { theme::ACCENT } else { theme::TEXT_FAINT })
-                        .wrapping(text::Wrapping::None),
-                )
-                .padding([2, 4])
-                .style(theme::flat(false))
-                .on_press_maybe(changed.then(|| Message::Scm(ScmMsg::Show))),
-                space::horizontal(),
-                button(text("Commit").size(10))
-                    .padding([2, 8])
-                    .style(theme::flat(false))
-                    .on_press_maybe(can_commit.then(|| msg(ChatMsg::Commit))),
-            ]
-            .align_y(Alignment::Center),
         ]
         .spacing(6)
         .padding([10, 14]);
 
-        let body = column![header, divider_h(), strip, divider_h(), vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer];
+        let body = column![header, divider_h(), vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer];
         match place {
             Place::Docked => container(body).width(Length::Fixed(self.chat_w)).height(Length::Fill).style(theme::bg(theme::PANEL_BG)).into(),
             Place::Window => container(body).width(Length::Fill).height(Length::Fill).style(theme::bg(theme::PANEL_BG)).into(),
@@ -590,9 +515,9 @@ impl App {
         .into()
     }
 
-    /// A commit in the feed: a heading, its description under it and the hash, in a
-    /// card like a code block. Click for its changes.
-    fn chat_commit<'a>(&'a self, k: &'a hythe_git::Commit, now: i64) -> Element<'a, Message> {
+    /// A commit as a card: a heading, its description under it and the hash. Click to open
+    /// it in place and see its files. Used by the History drawer.
+    pub(crate) fn chat_commit<'a>(&'a self, k: &'a hythe_git::Commit, now: i64) -> Element<'a, Message> {
         let login = self.members.iter().find(|m| m.name == k.author).and_then(|m| m.login.as_ref());
         let avatar = self.chat_face(&k.author, login, Some(k.time), now);
         let open = self.chat.expanded.as_ref() == Some(&k.sha);

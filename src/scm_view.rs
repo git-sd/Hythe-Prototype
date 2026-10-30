@@ -320,25 +320,7 @@ impl App {
             list = list.push(container(text("No commits yet.").size(12).color(theme::TEXT_FAINT)).padding(10));
         }
         for c in &s.commits {
-            let selected = s.tab == ScmTab::History && s.selected_commit.as_deref() == Some(c.sha.as_str());
-            list = list.push(
-                button(
-                    column![
-                        container(text(c.subject.clone()).size(13).wrapping(text::Wrapping::None)).width(Length::Fill).clip(true),
-                        row![
-                            text(c.short.clone()).size(11).font(Font::MONOSPACE).color(theme::ACCENT),
-                            text(c.author.clone()).size(11).color(dim),
-                            text(time_ago(c.time, now)).size(11).color(theme::TEXT_FAINT),
-                        ]
-                        .spacing(8),
-                    ]
-                    .spacing(3),
-                )
-                .width(Length::Fill)
-                .padding([6, 8])
-                .style(theme::row(selected))
-                .on_press(scm(ScmMsg::SelectCommit(c.sha.clone()))),
-            );
+            list = list.push(self.chat_commit(c, now));
         }
         list.into()
     }
