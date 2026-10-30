@@ -20,6 +20,8 @@ pub struct Scm {
     pub branch_menu: bool,
     pub new_branch: String,
     pub ahead_behind: Option<(u32, u32)>,
+    /// The diff of the chosen file or commit is showing beside the code.
+    pub show_diff: bool,
     /// Whether the right side shows a changed file or a commit.
     pub tab: ScmTab,
     pub commits: Vec<Commit>,
@@ -33,7 +35,6 @@ pub struct Scm {
 /// What Source Control is drawn into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScmPlace {
-    Overlay,
     Window,
 }
 
@@ -122,6 +123,8 @@ impl Scm {
 pub enum ScmMsg {
     Show,
     Hide,
+    /// Close the diff, back to the code.
+    CloseDiff,
     /// Open Source Control in its own window.
     PopOut,
     /// Bring it back from its own window.
@@ -228,13 +231,16 @@ impl App {
         match msg {
             ScmMsg::Show => {
                 self.scm.open = true;
+                self.scm.show_diff = false;
                 self.focus_term = false;
                 self.scm.reload(&repo);
                 // Open on what needs attention: working changes if there are any, else history.
                 self.scm.tab = if self.scm.changes.is_empty() { ScmTab::History } else { ScmTab::Changes };
             }
+            ScmMsg::CloseDiff => self.scm.show_diff = false,
             ScmMsg::Hide => {
                 self.scm.open = false;
+                self.scm.show_diff = false;
                 if let Some(id) = self.scm_window.take() {
                     return iced::window::close(id);
                 }
@@ -260,15 +266,20 @@ impl App {
                 }
             }
             ScmMsg::SelectCommit(sha) => {
+                self.scm.show_diff = true;
                 self.scm.tab = ScmTab::History;
                 self.scm.select_commit(&repo, sha);
             }
-            ScmMsg::SelectCommitFile(path) => self.scm.select_commit_file(&repo, path),
+            ScmMsg::SelectCommitFile(path) => {
+                self.scm.show_diff = true;
+                self.scm.select_commit_file(&repo, path);
+            }
             ScmMsg::Refresh => {
                 self.refresh_git();
                 self.scm.reload(&repo);
             }
             ScmMsg::Select { path, staged } => {
+                self.scm.show_diff = true;
                 self.scm.tab = ScmTab::Changes;
                 self.scm.select(&repo, path, staged);
             }

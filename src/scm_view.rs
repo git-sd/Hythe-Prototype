@@ -25,14 +25,61 @@ fn status_color(s: Status) -> Color {
 }
 
 impl App {
-    /// Roughly how wide the diff beside the list is (the panel's width less the list).
+    /// Roughly how wide the diff is: what the window leaves after the sidebars.
     fn diff_pane_w(&self) -> f32 {
-        (self.scm_overlay_w() - self.scm_w - crate::view::HANDLE_W).max(300.0)
+        use crate::view::{HANDLE_W, RAIL_W};
+        let sidebar = if self.show_sidebar { RAIL_W + self.list_w + HANDLE_W } else { 0.0 };
+        let agent = if self.show_term && self.chat_window.is_none() { self.agent_w + HANDLE_W } else { 0.0 };
+        let chat = if self.chat_docked() { self.chat_w + HANDLE_W } else { 0.0 };
+        if self.scm_window.is_some() {
+            (self.win.width * 0.7 - self.scm_w).max(300.0)
+        } else {
+            (self.win.width - sidebar - self.scm_l() - agent - chat).max(300.0)
+        }
     }
 
-    /// Source Control as a panel: a list on the left, the diff on the right. It floats
-    /// over the editor, or fills its own window.
-    pub(crate) fn scm_view_in(&self, place: ScmPlace) -> Element<'_, Message> {
+    /// History is open as a column on the left (not popped out into its own window).
+    pub(crate) fn scm_docked(&self) -> bool {
+        self.scm.open && self.scm_window.is_none()
+    }
+
+    /// Width the docked History column takes, handle included.
+    pub(crate) fn scm_l(&self) -> f32 {
+        if self.scm_docked() { self.scm_w + crate::view::HANDLE_W } else { 0.0 }
+    }
+
+    /// A changed file or a commit's file is chosen, so its diff should show beside the code.
+    pub(crate) fn scm_showing_diff(&self) -> bool {
+        self.scm_docked() && self.scm.show_diff
+    }
+
+    /// History as a column on the left, like the sidebar: Changes and commits in one list.
+    /// Choosing a file or a commit's file shows its diff in the editor area.
+    pub(crate) fn scm_sidebar(&self) -> Element<'_, Message> {
+        let head = container(
+            row![
+                self.header_left(crate::view::Edge::Scm),
+                text("History").size(13),
+                space::horizontal(),
+                icon_button(Icon::Expand, theme::TEXT_FAINT, false, scm(ScmMsg::PopOut)),
+                icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::Hide)),
+            ]
+            .spacing(2)
+            .align_y(Alignment::Center)
+            .padding([0, 8]),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(crate::view::TAB_H))
+        .align_y(Alignment::Center);
+        container(column![head, divider_h(), self.scm_left()])
+            .width(Length::Fixed(self.scm_w))
+            .height(Length::Fill)
+            .style(theme::bg(theme::PANEL_BG))
+            .into()
+    }
+
+    /// Source Control in a window of its own: the list on the left, the diff on the right.
+    pub(crate) fn scm_view_in(&self, _place: ScmPlace) -> Element<'_, Message> {
         let left_head = column![
             container(self.mode_switch())
                 .width(Length::Fixed(self.scm_w))
@@ -54,12 +101,7 @@ impl App {
             container(
                 row![
                     space::horizontal(),
-                    icon_button(
-                        if place == ScmPlace::Window { Icon::Panels } else { Icon::Expand },
-                        theme::TEXT_FAINT,
-                        false,
-                        scm(if place == ScmPlace::Window { ScmMsg::PopIn } else { ScmMsg::PopOut }),
-                    ),
+                    icon_button(Icon::Panels, theme::TEXT_FAINT, false, scm(ScmMsg::PopIn)),
                     icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::Hide)),
                 ]
                 .spacing(2)
@@ -73,45 +115,10 @@ impl App {
         ];
         let head = row![left_head, gap, right_head];
         let body = row![self.scm_left(), self.handle(Handle::Scm, true), self.scm_diff()].height(Length::Fill);
-        let panel = column![head, body];
-        match place {
-            ScmPlace::Window => container(panel).width(Length::Fill).height(Length::Fill).style(theme::bg(theme::EDITOR_BG)).into(),
-            // A drawer on the left: full height, no dimming, so the code stays visible to its right.
-            ScmPlace::Overlay => container(panel)
-                .width(Length::Fixed(self.scm_overlay_w()))
-                .height(Length::Fill)
-                .clip(true)
-                .style(|_: &Theme| container::Style {
-                    background: Some(theme::EDITOR_BG.into()),
-                    border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 0.0.into() },
-                    shadow: iced::Shadow {
-                        color: Color { a: 0.45, ..Color::BLACK },
-                        offset: iced::Vector::new(6.0, 0.0),
-                        blur_radius: 18.0,
-                    },
-                    ..Default::default()
-                })
-                .into(),
-        }
-    }
-
-    pub(crate) fn scm_overlay_w(&self) -> f32 {
-        (self.win.width * 0.55).min(900.0).max(520.0)
-    }
-
-    /// Where the drawer starts: just right of the sidebar.
-    pub(crate) fn scm_drawer_left(&self) -> f32 {
-        if self.show_sidebar { crate::view::RAIL_W + self.list_w + crate::view::HANDLE_W } else { 0.0 }
-    }
-
-    /// The Source Control drawer, sliding over the content from the left edge (beside the
-    /// sidebar and above the bottom bar). Close it with its X to collapse it.
-    pub(crate) fn scm_overlay_layer(&self) -> Element<'_, Message> {
-        container(iced::widget::opaque(self.scm_view_in(ScmPlace::Overlay)))
+        container(column![head, body])
             .width(Length::Fill)
             .height(Length::Fill)
-            .align_x(Alignment::Start)
-            .padding(Padding { left: self.scm_drawer_left(), bottom: crate::view::BAR_H + 1.0, ..Padding::ZERO })
+            .style(theme::bg(theme::EDITOR_BG))
             .into()
     }
 
@@ -267,7 +274,7 @@ impl App {
         .into()
     }
 
-    fn scm_diff(&self) -> Element<'_, Message> {
+    pub(crate) fn scm_diff(&self) -> Element<'_, Message> {
         if self.scm.tab == ScmTab::History {
             return self.history_detail();
         }
@@ -287,6 +294,7 @@ impl App {
                     .padding([4, 8])
                     .style(theme::flat(false))
                     .on_press(scm(ScmMsg::OpenFile(path.clone()))),
+                icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::CloseDiff)),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
@@ -345,8 +353,11 @@ impl App {
                 text(commit.author.clone()).size(12).color(dim),
                 text(time_ago(commit.time, now)).size(12).color(theme::TEXT_FAINT),
                 text(commit.short.clone()).size(12).font(Font::MONOSPACE).color(theme::ACCENT),
+                space::horizontal(),
+                icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::CloseDiff)),
             ]
-            .spacing(10),
+            .spacing(10)
+            .align_y(Alignment::Center),
         ]
         .spacing(4);
         // The full message sits under the file list, clipped, so the files stay in view.

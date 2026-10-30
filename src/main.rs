@@ -546,9 +546,7 @@ impl App {
 
     fn open_file(&mut self, path: PathBuf) {
         // Opening a file always brings you back to the code.
-        if self.scm_window.is_none() {
-            self.scm.open = false;
-        }
+        self.scm.show_diff = false;
         if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
             self.panes.open_doc(i);
             return;
@@ -1564,6 +1562,7 @@ impl App {
         let win = self.win;
         // What is docked beside the editor on each side, handles included.
         let chat_on = self.chat_docked();
+        let scm_l = self.scm_l();
         let chat_l = if chat_on && !self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         let chat_r = if chat_on && self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         match drag.handle {
@@ -1572,12 +1571,12 @@ impl App {
                 self.agent_w = (win.width - chat_r - p.x).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
             }
             Handle::Agent => {
-                self.agent_w = (p.x - sidebar - chat_l).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
+                self.agent_w = (p.x - sidebar - scm_l - chat_l).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
             }
             Handle::Chat if self.chat_right => {
                 self.chat_w = (win.width - p.x).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0))
             }
-            Handle::Chat => self.chat_w = (p.x - sidebar).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0)),
+            Handle::Chat => self.chat_w = (p.x - sidebar - scm_l).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0)),
             Handle::Dock => self.agent_right = p.x > win.width / 2.0,
             Handle::ChatDock => self.chat_right = p.x > win.width / 2.0,
             Handle::ChatMove => {
@@ -1590,7 +1589,7 @@ impl App {
                 self.drag = Some(drag);
             }
             Handle::Scm => {
-                self.scm_w = (p.x - self.scm_drawer_left()).clamp(220.0, (self.scm_overlay_w() - 300.0).clamp(220.0, 700.0));
+                self.scm_w = (p.x - sidebar).clamp(220.0, (win.width - sidebar - 300.0).clamp(220.0, 700.0));
             }
             Handle::Panes(i) => {
                 let pos = match self.panes.axis {
