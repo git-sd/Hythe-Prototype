@@ -645,9 +645,12 @@ impl App {
     fn chat_message<'a>(&'a self, m: &'a ChatMessage, now: i64) -> Element<'a, Message> {
         let c = &self.chat;
         let avatar = self.chat_face(&m.author, m.login.as_ref(), Some(m.time_ms / 1000), now);
-        let mut body = column![].spacing(6);
-        if !m.body.trim().is_empty() {
-            body = body.push(text(m.body.clone()).size(14).line_height(1.45));
+        let mut body = column![].spacing(8);
+        for part in split_code(&m.body) {
+            body = body.push(match part {
+                Part::Text(t) => text(t).size(14).line_height(1.45).into(),
+                Part::Code { info, lines } => code_card(info, lines),
+            });
         }
         for att in &m.attachments {
             let save = Message::Chat(ChatMsg::Save(att.entry.clone(), att.name.clone()));
@@ -740,4 +743,99 @@ impl App {
 fn excerpt(body: &str) -> String {
     let line = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
     if line.chars().count() > 60 { format!("{}…", line.chars().take(60).collect::<String>()) } else { line.to_string() }
+}
+
+/// A piece of a message: prose, or a fenced code block.
+enum Part {
+    Text(String),
+    /// `info`: what follows the opening fence, often a language or a file path.
+    Code { info: String, lines: Vec<String> },
+}
+
+/// Split a message on ``` fences. An unclosed fence runs to the end.
+fn split_code(body: &str) -> Vec<Part> {
+    let mut parts = Vec::new();
+    let mut prose = String::new();
+    let mut code: Option<(String, Vec<String>)> = None;
+    for line in body.lines() {
+        let fence = line.trim_start().strip_prefix("```");
+        match (&mut code, fence) {
+            (None, Some(info)) => {
+                if !prose.trim().is_empty() {
+                    parts.push(Part::Text(prose.trim().to_string()));
+                }
+                prose.clear();
+                code = Some((info.trim().to_string(), Vec::new()));
+            }
+            (Some(_), Some(_)) => {
+                let (info, lines) = code.take().unwrap_or_default();
+                parts.push(Part::Code { info, lines });
+            }
+            (Some((_, lines)), None) => lines.push(line.to_string()),
+            (None, None) => {
+                prose.push_str(line);
+                prose.push('\n');
+            }
+        }
+    }
+    if let Some((info, lines)) = code {
+        parts.push(Part::Code { info, lines });
+    }
+    if !prose.trim().is_empty() {
+        parts.push(Part::Text(prose.trim().to_string()));
+    }
+    parts
+}
+
+/// A code block as Zed draws one in a thread: a small title, then the code in a card.
+/// Lines starting with `+` or `-` are tinted like a diff.
+fn code_card<'a>(info: String, lines: Vec<String>) -> Element<'a, Message> {
+    let mut rows = column![];
+    for l in lines {
+        let tint = if l.starts_with('+') {
+            Some(Color { a: 0.16, ..theme::ADDED })
+        } else if l.starts_with('-') {
+            Some(Color { a: 0.18, ..theme::REMOVED })
+        } else {
+            None
+        };
+        let line = container(text(l).size(13).font(iced::Font::MONOSPACE).wrapping(text::Wrapping::None))
+            .width(Length::Fill)
+            .padding([1, 10]);
+        rows = rows.push(match tint {
+            Some(c) => line.style(theme::bg(c)),
+            None => line,
+        });
+    }
+    let card = container(rows.padding([6, 0])).width(Length::Fill).clip(true).style(|_: &Theme| container::Style {
+        background: Some(theme::CARD_BG.into()),
+        border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 6.0.into() },
+        ..Default::default()
+    });
+    if info.is_empty() {
+        return card.into();
+    }
+    column![
+        row![text("Edit").size(13).color(theme::TEXT_DIM), text(info).size(13).color(theme::TEXT_DIM).font(iced::Font::MONOSPACE)]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        card,
+    ]
+    .spacing(6)
+    .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_fences_split_out_of_prose() {
+        let parts = split_code("before\n```rust src/lib.rs\nmod a;\n+mod b;\n```\nafter");
+        assert_eq!(parts.len(), 3);
+        assert!(matches!(&parts[0], Part::Text(t) if t == "before"));
+        assert!(matches!(&parts[1], Part::Code { info, lines } if info == "rust src/lib.rs" && lines.len() == 2));
+        assert!(matches!(&parts[2], Part::Text(t) if t == "after"));
+        assert!(matches!(&split_code("```\nopen")[0], Part::Code { lines, .. } if lines == &["open"]));
+    }
 }
