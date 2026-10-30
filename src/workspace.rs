@@ -134,6 +134,8 @@ impl App {
 
     /// Add a repository to the rail (or switch to it if it's already there) and open it.
     pub(crate) fn open_folder(&mut self, path: PathBuf) {
+        // "." and relative paths have no name to show; keep the full path.
+        let path = std::path::absolute(&path).unwrap_or(path);
         let index = self.persisted.add_project(&path);
         if self.projects.len() <= index || self.projects[index].path != path {
             self.projects.insert(index.min(self.projects.len()), Project { path, ws: None });

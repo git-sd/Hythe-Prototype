@@ -23,8 +23,8 @@ pub(crate) const TITLE_H: f32 = 38.0;
 pub(crate) const BAR_H: f32 = 40.0;
 /// Height of every column's header row; a 1px rule runs under each at the same level.
 pub(crate) const TAB_H: f32 = 38.0;
-pub(crate) const RAIL_W: f32 = 52.0;
-pub(crate) const LIST_W: f32 = 232.0;
+/// Default width of the sidebar.
+pub(crate) const LIST_W: f32 = 280.0;
 pub(crate) const AGENT_W: f32 = 470.0;
 pub(crate) const SCM_W: f32 = 340.0;
 pub(crate) const CHAT_W: f32 = 340.0;
@@ -155,7 +155,12 @@ impl App {
         if self.scm_showing_diff() {
             main = main.push(self.handle(Handle::ScmDetail, true)).push(self.scm_detail_panel());
         }
-        let right = column![main, divider_h(), self.bottom_bar()].width(Length::Fill);
+        // As in Zed, the footer belongs to the thread column; without it, it runs under the editor.
+        let right: Element<'_, Message> = if self.show_term {
+            container(main).width(Length::Fill).into()
+        } else {
+            column![main, divider_h(), self.bottom_bar(false)].width(Length::Fill).into()
+        };
 
         let mut body = row![].height(Length::Fill);
         if self.show_sidebar {
@@ -217,22 +222,38 @@ impl App {
         .into()
     }
 
-    /// Follow mode, who is here, Share and the window buttons.
+    /// Follow mode, who is here and Share. They sit in the thread column's header, as in
+    /// Zed; with that column hidden they join the window buttons.
     /// `compact`: Share is just an icon, for narrow columns.
-    fn right_controls(&self, compact: bool) -> Element<'_, Message> {
+    fn share_controls(&self, compact: bool) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
         row![
             icon_button(Icon::Eye, dim, false, Message::Unavailable("Follow mode")),
-            self.people_bar(),
             if compact {
                 icon_button(Icon::Send, dim, false, Message::Collab(CollabMsg::Panel(true)))
             } else {
                 button(row![icon(Icon::Send, 14.0, dim), text("Share").size(13)].spacing(6).align_y(Alignment::Center))
-                    .padding([5, 10])
+                    .padding([5, 8])
                     .style(theme::flat(false))
                     .on_press(Message::Collab(CollabMsg::Panel(true)))
                     .into()
             },
+        ]
+        .spacing(2)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    /// The window buttons (and, with the thread column hidden, Share and friends).
+    fn right_controls(&self, compact: bool) -> Element<'_, Message> {
+        let dim = theme::TEXT_DIM;
+        let shared: Element<'_, Message> = if self.show_term {
+            space::horizontal().width(Length::Shrink).into()
+        } else {
+            row![self.people_bar(), self.share_controls(compact)].align_y(Alignment::Center).into()
+        };
+        row![
+            shared,
             icon_button(Icon::Minus, dim, false, Message::MinimizeWindow),
             icon_button(Icon::Expand, dim, false, Message::ToggleMaximize),
             icon_button(Icon::Close, dim, false, Message::CloseRequested),
@@ -365,7 +386,7 @@ impl App {
         // Each menu opens beside the button that asked for it.
         // With the sidebar open there is no separate title bar above the headers.
         let top_shift = TITLE_H + 1.0;
-        let sidebar_left = if self.show_sidebar { RAIL_W + self.list_w + HANDLE_W } else { 0.0 };
+        let sidebar_left = if self.show_sidebar { self.list_w + HANDLE_W } else { 0.0 };
         let (align_x, align_y, pad) = match kind {
             // Thread column "…": right-aligned under the column header.
             1 => (
@@ -461,255 +482,222 @@ impl App {
             .into()
     }
 
-    // --- left block: repository rail, channel-style file list, account chip ---
+    // --- left block: Pinned, Projects and Threads, with the account at the bottom ---
 
     fn left_block(&self) -> Element<'_, Message> {
-        container(column![
-            self.left_top(),
-            divider_h(),
-            row![self.rail(), self.channel_list()].height(Length::Fill),
-            divider_h(),
-            self.account_chip(),
-        ])
-        .width(Length::Fixed(RAIL_W + self.list_w))
-        .height(Length::Fill)
-        .into()
-    }
-
-    /// Top row of the sidebar: window menu, sidebar toggle, search and the repository name.
-    fn left_top(&self) -> Element<'_, Message> {
-        let name = self.active_project.map(|i| self.project_name(i)).unwrap_or_else(|| "Hythe".to_string());
-        let repo = button(
-            row![
-                text(name).size(14).wrapping(text::Wrapping::None),
-                icon(Icon::ChevronDown, 12.0, theme::TEXT_DIM),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-        )
-        .padding([4, 8])
-        .style(theme::row(false))
-        .on_press(Message::OpenMenu(4));
-        container(
-            row![
-                self.left_controls(),
-                repo,
-                // The rest of the row drags the window.
-                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
-                    .on_press(Message::DragWindow)
-                    .on_double_click(Message::ToggleMaximize),
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center)
-            .padding([0, 8]),
-        )
-            .width(Length::Fixed(RAIL_W + self.list_w))
-            .height(Length::Fixed(TAB_H))
-            .align_y(Alignment::Center)
-            .style(theme::bg(theme::BAR_BG))
-            .into()
-    }
-
-    /// The far-left strip: one small tile per repository.
-    fn rail(&self) -> Element<'_, Message> {
-        let mut rail = column![].spacing(6).padding([8, 0]).align_x(Alignment::Start);
-        for (i, project) in self.projects.iter().enumerate() {
-            let name = self.project_name(i);
-            // Marker for a repo you're not looking at that still has something running or unsaved.
-            let busy = self.active_project != Some(i)
-                && project.ws.as_ref().is_some_and(|w| w.has_running_terminal() || w.has_dirty_docs());
-            rail = rail.push(rail_tile(
-                RailFace::Text(initials(&name)),
-                self.active_project == Some(i),
-                busy,
-                project.path.display().to_string(),
-                Message::ItemPress(Item::Rail(i)),
-                Some(Message::ItemEnter(Item::Rail(i))),
-            ));
-        }
-        rail = rail.push(rail_tile(RailFace::Plus, false, false, "Add a repository".into(), Message::AddRepo(AddRepoMsg::Open), None));
-
-        container(vscroll(rail).height(Length::Fill))
-            .width(Length::Fixed(RAIL_W))
-            .height(Length::Fill)
-            .style(theme::bg(theme::RAIL_BG))
-            .into()
-    }
-    /// The repository's files as channels: folders are categories, files are rows.
-    fn channel_list(&self) -> Element<'_, Message> {
-        let dim = theme::TEXT_DIM;
-
-        let changes = self.scm.changes.len();
-        let mut list = column![].spacing(1).padding([6, 8]);
-        list = list.push(list_row(
-            row![
-                icon(Icon::Branch, 15.0, dim),
-                text("History").size(14).color(dim),
-                space::horizontal(),
-                text(if changes > 0 { changes.to_string() } else { String::new() }).size(11).color(theme::ACCENT),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .into(),
-            self.scm.open,
-            Message::Scm(if self.scm.open { ScmMsg::Hide } else { ScmMsg::Show }),
-        ));
-        list = list.push(list_row(
-            row![icon(Icon::Search, 15.0, dim), text("Search").size(14).color(dim)]
-                .spacing(10)
-                .align_y(Alignment::Center)
-                .into(),
-            false,
-            Message::OpenPalette,
-        ));
-        list = list.push(container(divider_h()).padding([6, 4]));
-
-        // Terminals and agents: local to this repository, like voice channels.
-        list = list.push(category("Terminals", None, Some(Message::NewTerminal(None))).with_plus());
-        for info in self.terms.list() {
-            let glyph = if self.agents.iter().any(|a| a.name == info.name) { Icon::Sparkle } else { Icon::Terminal };
-            list = list.push(drag_row(
-                row![
-                    icon(glyph, 15.0, dim),
-                    text(info.name.clone()).size(14),
-                    space::horizontal(),
-                    dot(if info.running { theme::ADDED } else { theme::TEXT_FAINT }),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center)
-                .padding([0, 0])
-                .into(),
-                self.term_active == Some(info.id),
-                Item::Term(info.id),
-            ));
-        }
-        if self.root.is_some() {
-            for (i, agent) in self.agents.iter().enumerate().filter(|(_, a)| a.installed) {
-                list = list.push(list_row(
-                    row![
-                        icon(Icon::Sparkle, 15.0, theme::TEXT_FAINT),
-                        text(format!("Start {}", agent.name)).size(13).color(theme::TEXT_FAINT),
-                    ]
-                    .spacing(10)
-                    .align_y(Alignment::Center)
-                    .into(),
-                    false,
-                    Message::NewTerminal(Some(i)),
-                ));
-            }
-        }
-        list = list.push(container(divider_h()).padding([6, 4]));
-
-        let active_path = self.docs.get(self.panes.cur()).and_then(|d| d.path.as_ref());
-
-        match &self.root {
-            None => {
-                list = list.push(
-                    container(text("No repository open").size(13).color(theme::TEXT_FAINT)).padding([8, 10]),
-                );
-                list = list.push(list_row(
-                    row![icon(Icon::Folder, 15.0, dim), text("Open a repository…").size(14)]
-                        .spacing(10)
-                        .align_y(Alignment::Center)
-                        .into(),
-                    false,
-                    Message::OpenFolderDialog,
-                ));
-            }
-            Some(root) => {
-                // Pinned files in this repository.
-                let pinned: Vec<&std::path::PathBuf> =
-                    self.persisted.pinned.iter().filter(|p| p.starts_with(&root.path)).collect();
-                if !pinned.is_empty() {
-                    list = list.push(category("Pinned", None, None));
-                    for path in pinned {
-                        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        list = list.push(drag_row(
-                            row![icon(Icon::Pin, 14.0, theme::TEXT_FAINT), text(name).size(14)]
-                                .spacing(8)
-                                .align_y(Alignment::Center)
-                                .into(),
-                            active_path == Some(path),
-                            Item::Pin(path.clone()),
-                        ));
-                    }
-                }
-
-                // Files and folders. A folder is a category; its files are the channels under it.
-                let mut rows = Vec::new();
-                root.rows(0, &mut rows);
-                let mut top_files_started = false;
-                for (depth, node) in rows {
-                    if node.is_dir {
-                        list = list.push(category(
-                            &node.name,
-                            Some(node.expanded),
-                            Some(Message::ToggleDir(node.path.clone())),
-                        ).indent(depth));
-                    } else {
-                        if depth == 0 && !top_files_started {
-                            top_files_started = true;
-                            list = list.push(category("Files", None, None));
-                        }
-                        list = list.push(channel_row(
-                            Icon::File,
-                            node.name.clone(),
-                            depth,
-                            active_path == Some(&node.path),
-                            Message::OpenFile(node.path.clone()),
-                        ));
-                    }
-                }
-            }
-        }
-
-        container(column![vscroll(list).height(Length::Fill)])
+        container(column![self.left_top(), self.sidebar_list(), divider_h(), self.account_chip()])
             .width(Length::Fixed(self.list_w))
             .height(Length::Fill)
             .style(theme::bg(theme::PANEL_BG))
             .into()
     }
 
-    /// Account panel across the bottom of the rail and list, like Discord's.
-    fn account_chip(&self) -> Element<'_, Message> {
+    /// Top row of the sidebar: menu, sidebar toggle and search on the left, History on the right.
+    fn left_top(&self) -> Element<'_, Message> {
+        container(
+            row![
+                self.left_controls(),
+                // The rest of the row drags the window.
+                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
+                    .on_press(Message::DragWindow)
+                    .on_double_click(Message::ToggleMaximize),
+                icon_button(
+                    Icon::History,
+                    theme::TEXT_DIM,
+                    self.scm.open,
+                    Message::Scm(if self.scm.open { ScmMsg::Hide } else { ScmMsg::Show }),
+                ),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center)
+            .padding([0, 8]),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(TAB_H))
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    /// The sidebar list: pinned files, every repository (the open one expanded into its
+    /// threads and files) and ways to start a new thread.
+    fn sidebar_list(&self) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
+        let active_path = self.docs.get(self.panes.cur()).and_then(|d| d.path.as_ref());
+        let mut list = column![].spacing(1).padding(Padding { top: 0.0, right: 8.0, bottom: 8.0, left: 8.0 });
+
+        if !self.persisted.pinned.is_empty() {
+            list = list.push(section("Pinned", None));
+            for path in &self.persisted.pinned {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                list = list.push(drag_row(
+                    row![icon(Icon::Pin, 13.0, theme::TEXT_FAINT), text(name).size(14).wrapping(text::Wrapping::None)]
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                        .into(),
+                    active_path == Some(path),
+                    Item::Pin(path.clone()),
+                ));
+            }
+        }
+
+        list = list.push(section("Projects", Some(Message::AddRepo(AddRepoMsg::Open))));
+        if self.projects.is_empty() {
+            list = list.push(list_row(
+                row![icon(Icon::Folder, 15.0, dim), text("Open a folder…").size(14).color(dim)]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into(),
+                false,
+                Message::OpenFolderDialog,
+            ));
+        }
+        for (i, project) in self.projects.iter().enumerate() {
+            let active = self.active_project == Some(i);
+            // A repository you're not looking at that still has something running or unsaved.
+            let busy = !active && project.ws.as_ref().is_some_and(|w| w.has_running_terminal() || w.has_dirty_docs());
+            let mut head = row![
+                icon(if active { Icon::FolderOpen } else { Icon::Folder }, 15.0, dim),
+                text(self.project_name(i)).size(14).wrapping(text::Wrapping::None),
+                space::horizontal(),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center);
+            if busy {
+                head = head.push(dot(theme::ACCENT));
+            }
+            if active {
+                head = head.push(
+                    button(icon(Icon::More, 13.0, theme::TEXT_FAINT))
+                        .padding([0, 2])
+                        .style(theme::flat(false))
+                        .on_press(Message::OpenMenu(4)),
+                );
+            }
+            list = list.push(drag_row(head.into(), false, Item::Rail(i)));
+            if !active {
+                continue;
+            }
+            // The open repository's threads (terminals and agents), then its files.
+            for info in self.terms.list() {
+                let glyph = if self.agents.iter().any(|a| a.name == info.name) { Icon::Sparkle } else { Icon::Terminal };
+                list = list.push(drag_row(
+                    row![
+                        space::horizontal().width(Length::Fixed(20.0)),
+                        icon(glyph, 13.0, dim),
+                        text(info.name.clone()).size(14).wrapping(text::Wrapping::None),
+                        space::horizontal(),
+                        dot(if info.running { theme::ACCENT } else { theme::TEXT_FAINT }),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into(),
+                    self.term_active == Some(info.id),
+                    Item::Term(info.id),
+                ));
+            }
+            // Files sit under a collapsible row, so the project reads like Zed's: threads first.
+            if self.root.is_some() {
+                list = list.push(list_row(
+                    row![
+                        space::horizontal().width(Length::Fixed(20.0)),
+                        icon(if self.files_open { Icon::ChevronDown } else { Icon::ChevronRight }, 10.0, dim),
+                        text("Files").size(14).wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into(),
+                    false,
+                    Message::ToggleFiles,
+                ));
+            }
+            if let Some(root) = self.root.as_ref().filter(|_| self.files_open) {
+                let mut rows = Vec::new();
+                root.rows(0, &mut rows);
+                for (depth, node) in rows {
+                    let lead: Element<'_, Message> = if node.is_dir {
+                        icon(if node.expanded { Icon::ChevronDown } else { Icon::ChevronRight }, 10.0, dim)
+                    } else {
+                        space::horizontal().width(Length::Fixed(10.0)).into()
+                    };
+                    let msg = if node.is_dir { Message::ToggleDir(node.path.clone()) } else { Message::OpenFile(node.path.clone()) };
+                    list = list.push(list_row(
+                        row![
+                            space::horizontal().width(Length::Fixed(38.0 + depth as f32 * 14.0)),
+                            lead,
+                            text(node.name.clone())
+                                .size(14)
+                                .color(if node.is_dir { theme::TEXT } else { theme::TEXT_DIM })
+                                .wrapping(text::Wrapping::None),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                        .into(),
+                        !node.is_dir && active_path == Some(&node.path),
+                        msg,
+                    ));
+                }
+            }
+        }
+
+        // New threads: a shell, or one of the coding agents found on this computer.
+        list = list.push(section("Threads", Some(Message::NewTerminal(None))));
+        if self.root.is_some() {
+            list = list.push(list_row(
+                row![icon(Icon::Terminal, 14.0, dim), text("New terminal").size(14).color(dim)]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into(),
+                false,
+                Message::NewTerminal(None),
+            ));
+            for (i, agent) in self.agents.iter().enumerate().filter(|(_, a)| a.installed) {
+                list = list.push(list_row(
+                    row![icon(Icon::Sparkle, 14.0, dim), text(format!("New {} thread", agent.name)).size(14).color(dim)]
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                        .into(),
+                    false,
+                    Message::NewTerminal(Some(i)),
+                ));
+            }
+        }
+
+        vscroll(list).height(Length::Fill).into()
+    }
+
+    /// Who you are, at the bottom of the sidebar; the arrow opens the account menu.
+    fn account_chip(&self) -> Element<'_, Message> {
         let initial = self.user.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
         let avatar: Element<'_, Message> = match &self.avatar {
             Some(handle) => iced::widget::image(handle.clone())
-                .width(Length::Fixed(28.0))
-                .height(Length::Fixed(28.0))
-                .border_radius(14.0)
+                .width(Length::Fixed(22.0))
+                .height(Length::Fixed(22.0))
+                .border_radius(11.0)
                 .into(),
-            None => container(text(initial).size(13).color(Color::WHITE))
-                .center(Length::Fixed(28.0))
+            None => container(text(initial).size(11).color(Color::WHITE))
+                .center(Length::Fixed(22.0))
                 .style(|_: &Theme| container::Style {
                     background: Some(Color::from_rgb8(0x5a, 0x7f, 0xb8).into()),
-                    border: iced::Border { radius: 14.0.into(), ..Default::default() },
+                    border: iced::Border { radius: 11.0.into(), ..Default::default() },
                     ..Default::default()
                 })
                 .into(),
         };
-        let subtitle = self
-            .git
-            .as_ref()
-            .map(|g| g.branch.clone())
-            .unwrap_or_else(|| "no repository".into());
         container(
             row![
                 avatar,
-                column![text(self.user.clone()).size(13), text(subtitle).size(11).color(dim)].spacing(1),
+                text(self.user.clone()).size(14),
+                text("Hythe").size(14).color(theme::TEXT_FAINT),
                 space::horizontal(),
-                icon_button(Icon::Terminal, dim, self.show_term, Message::ToggleTerminal),
-                icon_button(Icon::Menu, dim, self.menu == Some(3), Message::OpenMenu(3)),
+                icon_button(Icon::ChevronDown, theme::TEXT_DIM, self.menu == Some(3), Message::OpenMenu(3)),
             ]
-            .spacing(10)
+            .spacing(8)
             .align_y(Alignment::Center)
-            .padding([0, 10]),
+            .padding([0, 12]),
         )
         .width(Length::Fill)
         .height(Length::Fixed(BAR_H))
         .align_y(Alignment::Center)
-        .style(theme::bg(theme::CHIP_BG))
         .into()
     }
     // --- agent / terminal panel ---
@@ -722,10 +710,11 @@ impl App {
         let header = container(
             row![
                 self.header_left(Edge::Agent),
-                text(title).size(14),
+                text(title).size(14).wrapping(text::Wrapping::None),
+                self.people_bar(),
                 space::horizontal(),
+                self.share_controls(false),
                 icon_button(Icon::Plus, dim, false, Message::NewTerminal(None)),
-                icon_button(Icon::Expand, dim, false, Message::Unavailable("Zoom")),
                 icon_button(Icon::More, dim, self.menu == Some(1), Message::OpenMenu(1)),
             ]
             .push(self.header_extra(Edge::Agent))
@@ -818,7 +807,13 @@ impl App {
                         border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 3.0.into() },
                         ..Default::default()
                     }));
-                }                container(starters).center_x(Length::Fill).padding(iced::Padding { top: 120.0, ..iced::Padding::ZERO }).into()
+                }
+                // Fill the column so the footer stays at the bottom.
+                container(starters)
+                    .center_x(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(iced::Padding { top: 120.0, ..iced::Padding::ZERO })
+                    .into()
             }
         };
 
@@ -826,7 +821,7 @@ impl App {
         let rule = container(space::vertical().height(Length::Fixed(1.0)))
             .width(Length::Fill)
             .style(theme::bg(if self.focus_term { theme::ACCENT } else { theme::BORDER }));
-        container(column![header, rule, body])
+        container(column![header, rule, body, divider_h(), self.bottom_bar(true)])
             .width(Length::Fixed(self.agent_w))
             .height(Length::Fill)
             .style(theme::bg(theme::AGENT_BG))
@@ -836,11 +831,18 @@ impl App {
     // --- editor area ---
 
     fn editor_area(&self) -> Element<'_, Message> {
+        // The Changes tab (first in the tab bar) shows every uncommitted file's diff.
+        if self.changes_visible() {
+            return container(column![self.tab_bar_with(0, true), self.changes_view()])
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(theme::bg(theme::EDITOR_BG))
+                .into();
+        }
         if self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty() {
             let strip = container(
                 row![
                     self.header_left(Edge::Editor),
-                    if self.scm_inline() { text("History").size(13).into() } else { Element::from(space::horizontal().width(Length::Shrink)) },
                     mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
                         .on_press(Message::DragWindow)
                         .on_double_click(Message::ToggleMaximize),
@@ -853,8 +855,7 @@ impl App {
             .height(Length::Fixed(TAB_H))
             .style(theme::bg(theme::TAB_BAR_BG));
             // With a repository open, History is what you see here; otherwise the welcome menu.
-            let page: Element<'_, Message> = if self.scm_inline() { self.scm_inline_body() } else { self.welcome() };
-            return container(column![strip, divider_h(), page])
+            return container(column![strip, divider_h(), self.welcome()])
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(theme::bg(theme::EDITOR_BG))
@@ -950,7 +951,7 @@ impl App {
         let tabs = pane.tabs.iter().enumerate().filter_map(|(i, t)| {
             let d = self.docs.get(t.doc)?;
             // No file tab is "current" while the Changes tab is.
-            let active = i == pane.active;
+            let active = i == pane.active && !self.changes_visible();
             let end: Element<'_, Message> = if d.dirty {
                 button(container(dot(theme::TEXT_DIM)).center(Length::Shrink))
                     .padding([8, 8])
@@ -987,8 +988,31 @@ impl App {
         // The strip takes the room left by the buttons and scrolls, so many tabs can never
         // push the window buttons off the edge. A little empty space after the last tab
         // drags the window.
+        let changes: Element<'_, Message> = if pane_index == 0 && self.repo.is_some() {
+            let on = self.changes_visible();
+            let n = self.scm.changes.len();
+            container(
+                button(
+                    row![
+                        text("Changes").size(14).color(if on { theme::TEXT } else { theme::TEXT_DIM }),
+                        text(if n > 0 { n.to_string() } else { String::new() }).size(11).color(theme::ACCENT),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .padding([8, 14])
+                .style(theme::flat(false))
+                .on_press(Message::ShowChanges),
+            )
+            .height(Length::Fixed(TAB_H))
+            .align_y(Alignment::Center)
+            .style(theme::bg(if on { theme::EDITOR_BG } else { theme::TAB_BAR_BG }))
+            .into()
+        } else {
+            space::horizontal().width(Length::Shrink).into()
+        };
         let tabs = scrollable(
-            row(tabs).push(
+            row![changes].extend(tabs).push(
                 mouse_area(space::horizontal().width(Length::Fixed(120.0)).height(Length::Fill))
                     .on_press(Message::DragWindow)
                     .on_double_click(Message::ToggleMaximize),
@@ -1066,7 +1090,8 @@ impl App {
             .into()
     }
 
-    fn bottom_bar(&self) -> Element<'_, Message> {
+    /// `narrow`: drawn under the thread column, so it leaves out the message box and cursor position.
+    fn bottom_bar(&self, narrow: bool) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
 
         // Repository, branch and uncommitted changes.
@@ -1113,8 +1138,6 @@ impl App {
 
         let icons = row![
             icon_button(Icon::Terminal, dim, self.show_term, Message::ToggleTerminal),
-            icon_button(Icon::Bug, dim, false, Message::Unavailable("The debugger")),
-            icon_button(Icon::Outline, dim, false, Message::Unavailable("Outline")),
             icon_button(Icon::History, dim, self.scm.open, Message::Scm(if self.scm.open { ScmMsg::Hide } else { ScmMsg::Show })),
             icon_button(Icon::Chat, dim, self.chat_visible(), Message::Chat(if self.chat_visible() { ChatMsg::Hide } else { ChatMsg::Show })),
             icon_button(Icon::Panels, dim, self.show_sidebar, Message::ToggleSidebar),
@@ -1124,13 +1147,13 @@ impl App {
         container(
             row![
                 git,
-                self.message_bar(),
+                if narrow { space::horizontal().width(Length::Shrink).into() } else { self.message_bar() },
                 container(text(self.status.clone()).size(12).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None))
                     .width(Length::Fill)
                     .clip(true)
                     .padding([0, 10]),
-                session_state,
-                text(position).size(12).color(dim),
+                if narrow { space::horizontal().width(Length::Shrink).into() } else { session_state },
+                text(if narrow { String::new() } else { position }).size(12).color(dim),
                 icons,
             ]
             .spacing(12)
@@ -1248,131 +1271,11 @@ pub(crate) fn hsv(h: f32) -> Color {
     Color::from_rgb(r + m, g + m, b + m)
 }
 
-/// Letters for a repository tile: the first two of its name, "Hythe-Prototype" becomes "Hy".
-pub(crate) fn initials(name: &str) -> String {
-    let mut letters = name.chars().filter(|c| c.is_alphanumeric()).take(2);
-    let first: String = letters.next().into_iter().flat_map(char::to_uppercase).collect();
-    let rest: String = letters.flat_map(char::to_lowercase).collect();
-    if first.is_empty() { "?".into() } else { first + &rest }
-}
-
-enum RailFace {
-    Text(String),
-    Plus,
-}
-
-/// One tile in the rail: a small square, brighter when it's the open repository,
-/// with a thin marker on its left edge when open (tall) or busy (short).
-fn rail_tile<'a>(face: RailFace, active: bool, busy: bool, tip: String, msg: Message, enter: Option<Message>) -> Element<'a, Message> {
-    let bg = if active { theme::TILE_ACTIVE } else { theme::TILE_BG };
-    let fg = if active { Color::WHITE } else { theme::TEXT_DIM };
-    let inner: Element<'a, Message> = match face {
-        RailFace::Text(label) => text(label).size(12).color(fg).center().into(),
-        RailFace::Plus => icon(Icon::Plus, 14.0, theme::TEXT_DIM),
-    };
-    let tile = container(inner)
-        .center(Length::Fixed(34.0))
-        .style(move |_: &Theme| container::Style {
-            background: Some(bg.into()),
-            border: iced::Border { radius: 4.0.into(), ..Default::default() },
-            ..Default::default()
-        });
-    let marker_height = if active { 18.0 } else if busy { 6.0 } else { 0.0 };
-    let marker = container(space::vertical().height(Length::Fixed(marker_height)).width(Length::Fixed(3.0)))
-        .style(|_: &Theme| container::Style { background: Some(theme::ACCENT.into()), ..Default::default() });
-    let button = mouse_area(tile).on_press(msg).interaction(iced::mouse::Interaction::Pointer);
-    let content = container(row![marker, space::horizontal().width(Length::Fixed(6.0)), button].align_y(Alignment::Center))
-        .width(Length::Fixed(RAIL_W))
-        .height(Length::Fixed(36.0))
-        .align_y(Alignment::Center);
-    let content: Element<'a, Message> = match enter {
-        Some(m) => mouse_area(content).on_enter(m).into(),
-        None => content.into(),
-    };
-    iced::widget::tooltip(
-        content,
-        container(text(tip).size(12)).padding([3, 7]).style(|_: &Theme| container::Style {
-            background: Some(theme::BAR_BG.into()),
-            border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 2.0.into() },
-            ..Default::default()
-        }),
-        iced::widget::tooltip::Position::Right,
-    )
-    .gap(4)
-    .into()
-}
-/// A category header: small caps title with an open/closed chevron. `indent`
-/// nests sub-folders; `with_plus` adds a "+" button on the right.
-pub(crate) struct Category<'a> {
-    title: String,
-    expanded: Option<bool>,
-    on_press: Option<Message>,
-    indent: usize,
-    plus: bool,
-    _marker: std::marker::PhantomData<&'a ()>,
-}
-
-fn category<'a>(title: &str, expanded: Option<bool>, on_press: Option<Message>) -> Category<'a> {
-    Category { title: title.to_string(), expanded, on_press, indent: 0, plus: false, _marker: std::marker::PhantomData }
-}
-
-impl<'a> Category<'a> {
-    fn indent(mut self, depth: usize) -> Self {
-        self.indent = depth;
-        self
+/// A section heading in the sidebar, with an optional "+" on the right.
+fn section<'a>(title: &'a str, plus: Option<Message>) -> Element<'a, Message> {
+    let mut r = row![text(title).size(13).color(theme::TEXT_FAINT), space::horizontal()].align_y(Alignment::Center);
+    if let Some(m) = plus {
+        r = r.push(button(icon(Icon::Plus, 12.0, theme::TEXT_FAINT)).padding([2, 4]).style(theme::flat(false)).on_press(m));
     }
-
-    fn with_plus(mut self) -> Self {
-        self.plus = true;
-        self
-    }
-}
-
-impl<'a> From<Category<'a>> for Element<'a, Message> {
-    fn from(c: Category<'a>) -> Self {
-        let dim = theme::TEXT_DIM;
-        let chevron: Element<'a, Message> = match c.expanded {
-            Some(true) => icon(Icon::ChevronDown, 10.0, dim),
-            Some(false) => icon(Icon::ChevronRight, 10.0, dim),
-            None => space::horizontal().width(Length::Fixed(0.0)).into(),
-        };
-        let mut r = row![
-            space::horizontal().width(Length::Fixed(c.indent as f32 * 10.0)),
-            chevron,
-            text(c.title.to_uppercase()).size(11).color(dim),
-        ]
-        .spacing(5)
-        .align_y(Alignment::Center);
-        if c.plus {
-            r = r.push(space::horizontal());
-            r = r.push(icon(Icon::Plus, 13.0, dim));
-        }
-        let b = button(r).width(Length::Fill).padding(Padding { top: 10.0, right: 6.0, bottom: 3.0, left: 6.0 }).style(|_: &Theme, status| {
-            button::Style {
-                text_color: if matches!(status, button::Status::Hovered) { theme::TEXT } else { theme::TEXT_DIM },
-                ..button::Style::default()
-            }
-        });
-        match c.on_press {
-            Some(msg) => b.on_press(msg).into(),
-            None => b.into(),
-        }
-    }
-}
-
-/// A file as a channel row.
-fn channel_row<'a>(glyph: Icon, name: String, depth: usize, selected: bool, msg: Message) -> Element<'a, Message> {
-    let color = if selected { theme::TEXT } else { theme::TEXT_DIM };
-    list_row(
-        row![
-            space::horizontal().width(Length::Fixed(depth as f32 * 10.0 + 4.0)),
-            icon(glyph, 14.0, theme::TEXT_FAINT),
-            text(name).size(14).color(color),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .into(),
-        selected,
-        msg,
-    )
+    container(r).padding(Padding { top: 14.0, right: 0.0, bottom: 4.0, left: 8.0 }).into()
 }

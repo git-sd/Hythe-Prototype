@@ -256,6 +256,15 @@ impl Repo {
         Ok(parse_diff(&text))
     }
 
+    /// Everything that changed in one file since the last commit, staged or not.
+    /// Untracked files (and repositories with no commits yet) show as all-added.
+    pub fn diff_head(&self, path: &str) -> Result<Vec<DiffLine>> {
+        match self.git(&["diff", "--no-color", "--no-ext-diff", "-U3", "HEAD", "--", path]) {
+            Ok(text) if !text.trim().is_empty() => Ok(parse_diff(&text)),
+            _ => self.diff(path, false),
+        }
+    }
+
     // --- staging and commits ---
 
     pub fn stage(&self, paths: &[&str]) -> Result<()> {

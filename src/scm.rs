@@ -22,6 +22,8 @@ pub struct Scm {
     pub ahead_behind: Option<(u32, u32)>,
     /// The diff of the chosen file or commit is showing beside the code.
     pub show_diff: bool,
+    /// Every changed file with its diff against HEAD, for the Changes view.
+    pub all_diffs: Vec<(String, Vec<DiffLine>)>,
     /// Whether the right side shows a changed file or a commit.
     pub tab: ScmTab,
     pub commits: Vec<Commit>,
@@ -125,6 +127,8 @@ pub enum ScmMsg {
     Hide,
     /// Close the diff, back to the code.
     CloseDiff,
+    /// Diffs of every changed file arrived (for the Changes view).
+    AllDiffs(Vec<(String, Vec<DiffLine>)>),
     /// Open Source Control in its own window.
     PopOut,
     /// Bring it back from its own window.
@@ -167,7 +171,7 @@ impl App {
     /// Open or refresh whatever source-control state is on screen.
     pub(crate) fn scm_reload(&mut self) {
         if let Some(repo) = self.repo.clone() {
-            if self.scm.open || self.scm_window.is_some() || self.scm.branch_menu || self.scm_inline() {
+            if self.scm.open || self.scm_window.is_some() || self.scm.branch_menu || self.changes_visible() {
                 self.scm.reload(&repo);
             }
         }
@@ -221,6 +225,25 @@ impl App {
         ok
     }
 
+    /// Read every changed file's diff off the UI thread, for the Changes view.
+    pub(crate) fn load_all_diffs(&self) -> Task<Message> {
+        let Some(repo) = self.repo.clone() else { return Task::none() };
+        let paths: Vec<String> = self.scm.changes.iter().map(|c| c.path.clone()).collect();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    paths.into_iter().map(|p| {
+                        let lines = repo.diff_head(&p).unwrap_or_default();
+                        (p, lines)
+                    }).collect::<Vec<_>>()
+                })
+                .await
+                .unwrap_or_default()
+            },
+            |d| Message::Scm(ScmMsg::AllDiffs(d)),
+        )
+    }
+
     pub(crate) fn scm_update(&mut self, msg: ScmMsg) -> Task<Message> {
         let Some(repo) = self.repo.clone() else {
             if matches!(msg, ScmMsg::Show) {
@@ -238,6 +261,7 @@ impl App {
                 self.scm.tab = if self.scm.changes.is_empty() { ScmTab::History } else { ScmTab::Changes };
             }
             ScmMsg::CloseDiff => self.scm.show_diff = false,
+            ScmMsg::AllDiffs(diffs) => self.scm.all_diffs = diffs,
             ScmMsg::Hide => {
                 self.scm.open = false;
                 self.scm.show_diff = false;

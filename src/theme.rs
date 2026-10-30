@@ -8,13 +8,8 @@ pub const PANEL_BG: Color = Color::from_rgb8(0x21, 0x25, 0x2b);
 pub const BAR_BG: Color = Color::from_rgb8(0x21, 0x25, 0x2b);
 /// Middle column that hosts terminals and agents.
 pub const AGENT_BG: Color = Color::from_rgb8(0x26, 0x2a, 0x32);
-/// Repository rail, the darkest strip.
-pub const RAIL_BG: Color = Color::from_rgb8(0x18, 0x1b, 0x20);
-/// Account panel in the bottom-left corner.
-pub const CHIP_BG: Color = Color::from_rgb8(0x1b, 0x1e, 0x24);
-/// Repository tiles in the rail.
-pub const TILE_BG: Color = Color::from_rgb8(0x28, 0x2d, 0x36);
-pub const TILE_ACTIVE: Color = Color::from_rgb8(0x3b, 0x49, 0x63);
+/// Diff cards in the Changes view.
+pub const CARD_BG: Color = Color::from_rgb8(0x1e, 0x21, 0x27);
 pub const TAB_BAR_BG: Color = Color::from_rgb8(0x2b, 0x30, 0x38);
 pub const BORDER: Color = Color::from_rgb8(0x18, 0x1a, 0x1f);
 pub const HOVER: Color = Color::from_rgb8(0x2c, 0x31, 0x3a);

@@ -169,6 +169,10 @@ struct App {
     /// Shift is held, for sideways scrolling with the wheel.
     shift: bool,
     fullscreen: bool,
+    /// The open project's file tree is expanded in the sidebar.
+    files_open: bool,
+    /// The Changes tab is the one showing in the editor area.
+    changes_tab: bool,
     /// A tab being dragged: (pane, tab).
     tab_drag: Option<(usize, usize)>,
     /// A rail tile, terminal or pinned file being dragged.
@@ -304,6 +308,10 @@ pub enum Message {
     ToggleMaximize,
     /// F11: true full screen, covering the taskbar too.
     ToggleFullscreen,
+    /// Show or hide the file tree under the open project.
+    ToggleFiles,
+    /// Click on the Changes tab.
+    ShowChanges,
     AvatarReady(Option<PathBuf>),
     MemberAvatar(String, Option<PathBuf>),
     DragStart(Handle),
@@ -407,12 +415,24 @@ impl App {
             scm_detail_w: 480.0,
             shift: false,
             fullscreen: false,
+            files_open: false,
+            changes_tab: false,
             tab_drag: None,
             item_drag: None,
             agent_right: false,
             chat_w: view::CHAT_W,
             chat_right: true,
         };
+        // Older state files may hold "." or duplicates; store each repository once, by its full path.
+        let mut seen = Vec::new();
+        for p in std::mem::take(&mut app.persisted.projects) {
+            let p = std::path::absolute(&p).unwrap_or(p);
+            if !seen.contains(&p) {
+                seen.push(p);
+            }
+        }
+        app.persisted.projects = seen;
+        app.persisted.active = app.persisted.active.take().map(|a| std::path::absolute(&a).unwrap_or(a));
         app.projects = app.persisted.projects.iter().map(|p| Project { path: p.clone(), ws: None }).collect();
         // Scripted runs: HYTHE_COLLAB="ws://host:port|room|name" joins a room on startup.
         let auto_join = std::env::var("HYTHE_COLLAB").ok();
@@ -559,6 +579,7 @@ impl App {
     fn open_file(&mut self, path: PathBuf) {
         // Opening a file always brings you back to the code.
         self.scm.show_diff = false;
+        self.changes_tab = false;
         if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
             self.panes.open_doc(i);
             return;
@@ -1076,6 +1097,14 @@ impl App {
             Message::DragWindow => return window::oldest().and_then(window::drag),
             Message::MinimizeWindow => return window::oldest().and_then(|id| window::minimize(id, true)),
             Message::ResetWindow => return self.fit_window_task(),
+            Message::ToggleFiles => self.files_open = !self.files_open,
+            Message::ShowChanges => {
+                self.changes_tab = true;
+                if let Some(repo) = self.repo.clone() {
+                    self.scm.reload(&repo);
+                }
+                return self.load_all_diffs();
+            }
             Message::ToggleFullscreen => {
                 self.fullscreen = !self.fullscreen;
                 let mode = if self.fullscreen { window::Mode::Fullscreen } else { window::Mode::Windowed };
@@ -1135,11 +1164,13 @@ impl App {
                             self.members_for = self.repo.as_ref().map(|x| x.root().to_path_buf());
                         }
                         self.scm_reload();
+                        let diffs = if self.changes_visible() { self.load_all_diffs() } else { Task::none() };
                         let here = self.repo.as_ref().map(|x| x.root().to_path_buf());
                         if here.is_some() && self.chat.loaded_for != here {
                             self.chat.loaded_for = here;
-                            return Task::batch([self.chat_load(), self.chat_sync()]);
+                            return Task::batch([self.chat_load(), self.chat_sync(), diffs]);
                         }
+                        return diffs;
                     } else {
                         // Another repository was opened meanwhile.
                         self.git_wanted = true;
@@ -1189,6 +1220,7 @@ impl App {
                 }
             }
             Message::SelectTab { pane, tab } => {
+                self.changes_tab = false;
                 if self.scm_window.is_none() {
                     self.scm.open = false;
                 }
@@ -1579,7 +1611,7 @@ impl App {
 
     fn drag_to(&mut self, p: iced::Point) {
         let Some(mut drag) = self.drag else { return };
-        let sidebar = if self.show_sidebar { view::RAIL_W + self.list_w + view::HANDLE_W } else { 0.0 };
+        let sidebar = if self.show_sidebar { self.list_w + view::HANDLE_W } else { 0.0 };
         let win = self.win;
         // What is docked beside the editor on each side, handles included.
         let chat_on = self.chat_docked();
@@ -1587,7 +1619,7 @@ impl App {
         let chat_l = if chat_on && !self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         let chat_r = if chat_on && self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         match drag.handle {
-            Handle::List => self.list_w = (p.x - view::RAIL_W).clamp(140.0, (win.width - 300.0).clamp(140.0, 480.0)),
+            Handle::List => self.list_w = p.x.clamp(180.0, (win.width - 300.0).clamp(180.0, 520.0)),
             Handle::Agent if self.agent_right => {
                 self.agent_w = (win.width - scm_l - chat_r - p.x).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
             }

@@ -27,8 +27,8 @@ fn status_color(s: Status) -> Color {
 impl App {
     /// Roughly how wide the diff is: what the window leaves after the sidebars.
     fn diff_pane_w(&self) -> f32 {
-        use crate::view::{HANDLE_W, RAIL_W};
-        let sidebar = if self.show_sidebar { RAIL_W + self.list_w + HANDLE_W } else { 0.0 };
+        use crate::view::HANDLE_W;
+        let sidebar = if self.show_sidebar { self.list_w + HANDLE_W } else { 0.0 };
         let agent = if self.show_term && self.chat_window.is_none() { self.agent_w + HANDLE_W } else { 0.0 };
         let chat = if self.chat_docked() { self.chat_w + HANDLE_W } else { 0.0 };
         if self.scm_window.is_some() {
@@ -88,21 +88,106 @@ impl App {
 
     /// A changed file or a commit's file is chosen, so its diff should show beside the code.
     pub(crate) fn scm_showing_diff(&self) -> bool {
-        self.scm.show_diff && self.scm_window.is_none() && (self.scm.open || self.scm_inline())
+        self.scm.show_diff && self.scm_window.is_none() && self.scm.open
     }
 
-    /// With no file open, History fills the editor area instead of a welcome screen.
-    pub(crate) fn scm_inline(&self) -> bool {
+    /// The Changes view is on screen: chosen with its tab, or shown when no file is open.
+    pub(crate) fn changes_visible(&self) -> bool {
         self.repo.is_some()
-            && !self.scm.open
-            && self.scm_window.is_none()
-            && self.panes.list.len() == 1
-            && self.panes.list[0].tabs.is_empty()
+            && (self.changes_tab || (self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty()))
     }
 
-    /// History as the page you see when nothing is open: changes, then commits.
-    pub(crate) fn scm_inline_body(&self) -> Element<'_, Message> {
-        self.scm_left_in(Length::Fill)
+    /// Every uncommitted change, file by file, as cards of colour-coded lines (Zed's
+    /// "Changes" tab). Click a file's name to open it.
+    pub(crate) fn changes_view(&self) -> Element<'_, Message> {
+        let s = &self.scm;
+        let (added, removed) = s.changes.iter().fold((0, 0), |(a, r), c| (a + c.added, r + c.removed));
+        let branch = self.git.as_ref().map(|g| g.branch.clone()).unwrap_or_default();
+        let mut col = column![
+            container(
+                row![
+                    text("Since").size(14).color(theme::TEXT_DIM),
+                    text(format!("{branch} HEAD")).size(14),
+                    text(format!("+{added}")).size(14).color(theme::ADDED),
+                    text(format!("−{removed}")).size(14).color(theme::REMOVED),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .padding([12, 16]),
+            divider_h(),
+        ];
+        if s.changes.is_empty() {
+            col = col.push(
+                container(text("No uncommitted changes. The history is in the clock button at the top left.").size(13).color(theme::TEXT_FAINT))
+                    .padding(24),
+            );
+        }
+        let root = self.repo.as_ref().map(|r| r.root().to_path_buf());
+        for (path, lines) in &s.all_diffs {
+            let (name, dir) = match path.rsplit_once('/') {
+                Some((d, n)) => (n.to_string(), format!("{d}/")),
+                None => (path.clone(), String::new()),
+            };
+            let open = root.as_ref().map(|r| Message::OpenFile(r.join(path)));
+            col = col.push(
+                container(
+                    button(
+                        row![text(name).size(14), text(dir).size(12).color(theme::TEXT_FAINT), icon(Icon::ChevronDown, 11.0, theme::TEXT_FAINT)]
+                            .spacing(8)
+                            .align_y(Alignment::Center),
+                    )
+                    .padding([2, 4])
+                    .style(theme::flat(false))
+                    .on_press_maybe(open),
+                )
+                .padding(Padding { top: 16.0, right: 16.0, bottom: 6.0, left: 24.0 }),
+            );
+            let mut rows = column![];
+            for l in lines.iter().filter(|l| l.kind != LineKind::Header).take(MAX_DIFF_LINES) {
+                let (tint, color) = match l.kind {
+                    LineKind::Added => (Some(Color { a: 0.16, ..theme::ADDED }), theme::TEXT),
+                    LineKind::Removed => (Some(Color { a: 0.18, ..theme::REMOVED }), theme::TEXT),
+                    LineKind::Hunk => (None, theme::TEXT_FAINT),
+                    _ => (None, theme::TEXT_DIM),
+                };
+                let line: Element<'_, Message> = if l.kind == LineKind::Hunk {
+                    // Between hunks: a quiet gap instead of the raw @@ header.
+                    container(text("⋯").size(12).color(color)).padding([2, 18]).into()
+                } else {
+                    let number = l.new.or(l.old).map(|n| n.to_string()).unwrap_or_default();
+                    row![
+                        text(number).size(12.5).font(Font::MONOSPACE).color(theme::GUTTER).align_x(Alignment::End).width(Length::Fixed(44.0)),
+                        text(l.text.clone()).size(13).font(Font::MONOSPACE).color(color).wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(16)
+                    .into()
+                };
+                let line = container(line).width(Length::Fill).padding([1, 0]);
+                rows = rows.push(match tint {
+                    Some(c) => line.style(theme::bg(c)),
+                    None => line,
+                });
+            }
+            col = col.push(
+                container(
+                    container(rows.padding([6, 0]))
+                        .width(Length::Fill)
+                        .clip(true)
+                        .style(|_: &Theme| container::Style {
+                            background: Some(theme::CARD_BG.into()),
+                            border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 6.0.into() },
+                            ..Default::default()
+                        }),
+                )
+                .padding(Padding { top: 0.0, right: 16.0, bottom: 4.0, left: 16.0 }),
+            );
+        }
+        container(crate::view::vscroll(col.padding(Padding { top: 0.0, right: 0.0, bottom: 24.0, left: 0.0 })).height(Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(theme::bg(theme::EDITOR_BG))
+            .into()
     }
 
     /// History as a column on the left, like the sidebar: Changes and commits in one list.
@@ -517,7 +602,7 @@ impl App {
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .align_y(Alignment::End)
-                .padding(Padding { bottom: BAR_H + 6.0, left: crate::view::RAIL_W + self.list_w + crate::view::HANDLE_W + 8.0, ..Padding::ZERO }),
+                .padding(Padding { bottom: BAR_H + 6.0, left: self.list_w + crate::view::HANDLE_W + 8.0, ..Padding::ZERO }),
         ]
         .into()
     }
