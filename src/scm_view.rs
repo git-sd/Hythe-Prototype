@@ -71,6 +71,7 @@ impl App {
                 space::horizontal(),
                 icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::CloseDiff)),
             ]
+            .push(self.header_extra(crate::view::Edge::ScmDetail))
             .spacing(2)
             .align_y(Alignment::Center)
             .padding([0, 8]),

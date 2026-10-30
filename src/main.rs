@@ -1595,10 +1595,11 @@ impl App {
             }
             Handle::ScmDetail => {
                 let history = self.scm_w + view::HANDLE_W;
-                self.scm_detail_w = (win.width - history - p.x).clamp(260.0, (win.width - sidebar - history - 300.0).clamp(260.0, 900.0));
+                self.scm_detail_w = (win.width - p.x).clamp(260.0, (win.width - sidebar - history - 300.0).clamp(260.0, 900.0));
             }
             Handle::Scm => {
-                self.scm_w = (win.width - p.x).clamp(220.0, (win.width - sidebar - 300.0).clamp(220.0, 700.0));
+                let detail = if self.scm_showing_diff() { self.scm_detail_w + view::HANDLE_W } else { 0.0 };
+                self.scm_w = (win.width - detail - p.x).clamp(220.0, (win.width - sidebar - 300.0).clamp(220.0, 700.0));
             }
             Handle::Panes(i) => {
                 let pos = match self.panes.axis {

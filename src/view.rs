@@ -44,6 +44,8 @@ pub(crate) fn vscroll<'a>(content: impl Into<Element<'a, Message>>) -> scrollabl
 /// The column that sits furthest right, which carries the window buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Edge {
+    /// The details column that opens beside History.
+    ScmDetail,
     Scm,
     Editor,
     Agent,
@@ -147,11 +149,11 @@ impl App {
         }
         // History is the outermost column on the right, pushing everything else over.
         if self.scm_docked() {
-            // Clicking something in History opens its details in a column beside it.
+            main = main.push(self.handle(Handle::Scm, true)).push(self.scm_sidebar());
+            // Clicking something in History opens its details in a column to its right.
             if self.scm_showing_diff() {
                 main = main.push(self.handle(Handle::ScmDetail, true)).push(self.scm_detail_panel());
             }
-            main = main.push(self.handle(Handle::Scm, true)).push(self.scm_sidebar());
         }
         let right = column![main, divider_h(), self.bottom_bar()].width(Length::Fill);
 
@@ -216,15 +218,21 @@ impl App {
     }
 
     /// Follow mode, who is here, Share and the window buttons.
-    fn right_controls(&self) -> Element<'_, Message> {
+    /// `compact`: Share is just an icon, for narrow columns.
+    fn right_controls(&self, compact: bool) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
         row![
             icon_button(Icon::Eye, dim, false, Message::Unavailable("Follow mode")),
             self.people_bar(),
-            button(row![icon(Icon::Send, 14.0, dim), text("Share").size(13)].spacing(6).align_y(Alignment::Center))
-                .padding([5, 10])
-                .style(theme::flat(false))
-                .on_press(Message::Collab(CollabMsg::Panel(true))),
+            if compact {
+                icon_button(Icon::Send, dim, false, Message::Collab(CollabMsg::Panel(true)))
+            } else {
+                button(row![icon(Icon::Send, 14.0, dim), text("Share").size(13)].spacing(6).align_y(Alignment::Center))
+                    .padding([5, 10])
+                    .style(theme::flat(false))
+                    .on_press(Message::Collab(CollabMsg::Panel(true)))
+                    .into()
+            },
             icon_button(Icon::Minus, dim, false, Message::MinimizeWindow),
             icon_button(Icon::Expand, dim, false, Message::ToggleMaximize),
             icon_button(Icon::Close, dim, false, Message::CloseRequested),
@@ -235,7 +243,9 @@ impl App {
     }
 
     pub(crate) fn rightmost(&self) -> Edge {
-        if self.scm_docked() {
+        if self.scm_showing_diff() {
+            Edge::ScmDetail
+        } else if self.scm_docked() {
             Edge::Scm
         } else if self.chat_docked() && self.chat_right {
             Edge::Chat
@@ -270,7 +280,7 @@ impl App {
     /// The window buttons, if this column's header is the one at the right edge.
     pub(crate) fn header_extra(&self, edge: Edge) -> Element<'_, Message> {
         if self.rightmost() == edge {
-            self.right_controls()
+            self.right_controls(matches!(edge, Edge::Scm | Edge::Chat))
         } else {
             space::horizontal().width(Length::Shrink).into()
         }
