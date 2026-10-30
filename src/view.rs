@@ -155,6 +155,12 @@ impl App {
         // With the sidebar open the column headers form the only top row, and carry the
         // window buttons; with it hidden the full title bar comes back above everything.
         let base: Element<'_, Message> = body.into();
+        // Source Control floats over a dimmed window when it is open (and not popped out).
+        let base: Element<'_, Message> = if self.scm.open && self.scm_window.is_none() {
+            stack![base, self.scm_overlay_layer()].into()
+        } else {
+            base
+        };
         // The chat floats over everything else when it is in overlay mode.
         let base: Element<'_, Message> = if self.chat_overlay() {
             stack![base, self.chat_overlay_layer()].into()
@@ -815,10 +821,6 @@ impl App {
     // --- editor area ---
 
     fn editor_area(&self) -> Element<'_, Message> {
-        if self.scm.open {
-            // Source Control is one more tab: the file tabs stay in view above it.
-            return self.scm_view();
-        }
         if self.panes.list.len() == 1 && self.panes.list[0].tabs.is_empty() {
             let strip = container(
                 row![
@@ -930,7 +932,7 @@ impl App {
         let tabs = pane.tabs.iter().enumerate().filter_map(|(i, t)| {
             let d = self.docs.get(t.doc)?;
             // No file tab is "current" while the Changes tab is.
-            let active = i == pane.active && !(self.scm.open && pane_index == 0);
+            let active = i == pane.active;
             let end: Element<'_, Message> = if d.dirty {
                 button(container(dot(theme::TEXT_DIM)).center(Length::Shrink))
                     .padding([8, 8])
@@ -978,7 +980,7 @@ impl App {
         .direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(0).scroller_width(0)));
         let bar = container(
             row![
-                if pane_index == 0 && !self.scm.open { self.header_left(Edge::Editor) } else { space::horizontal().width(Length::Shrink).into() },
+                if pane_index == 0 { self.header_left(Edge::Editor) } else { space::horizontal().width(Length::Shrink).into() },
                 tabs,
                 icon_button(Icon::Split, theme::TEXT_DIM, self.panes.list.len() > 1, Message::Split(Axis::Horizontal)),
                 icon_button(Icon::More, theme::TEXT_DIM, self.menu == Some(2), Message::OpenMenu(2)),

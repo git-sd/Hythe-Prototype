@@ -146,7 +146,6 @@ impl App {
                     return Task::none();
                 }
                 self.chat.dismissed = false;
-                self.scm.open = false;
                 self.focus_term = false;
                 return Task::batch([self.chat_load(), self.chat_sync()]);
             }

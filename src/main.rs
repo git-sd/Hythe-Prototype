@@ -162,6 +162,8 @@ struct App {
     main_window: window::Id,
     /// The chat's own window, when it is popped out.
     chat_window: Option<window::Id>,
+    /// Source Control's own window, when it is popped out.
+    scm_window: Option<window::Id>,
     /// Shift is held, for sideways scrolling with the wheel.
     shift: bool,
     /// A tab being dragged: (pane, tab).
@@ -391,6 +393,7 @@ impl App {
             chat_off: (14.0, view::BAR_H + 14.0),
             main_window,
             chat_window: None,
+            scm_window: None,
             shift: false,
             tab_drag: None,
             item_drag: None,
@@ -521,10 +524,16 @@ impl App {
         if Some(id) == self.chat_window {
             return self.chat_view_in(chat::Place::Window);
         }
+        if Some(id) == self.scm_window {
+            return self.scm_view_in(scm::ScmPlace::Window);
+        }
         self.view()
     }
 
     fn title(&self, id: window::Id) -> String {
+        if Some(id) == self.scm_window {
+            return "History — Hythe".into();
+        }
         if Some(id) == self.chat_window {
             let repo = self.git.as_ref().map(|g| g.repo.clone()).unwrap_or_default();
             return format!("{repo} chat — Hythe");
@@ -537,7 +546,9 @@ impl App {
 
     fn open_file(&mut self, path: PathBuf) {
         // Opening a file always brings you back to the code.
-        self.scm.open = false;
+        if self.scm_window.is_none() {
+            self.scm.open = false;
+        }
         if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
             self.panes.open_doc(i);
             return;
@@ -991,7 +1002,9 @@ impl App {
             }
             Message::Key(_) => {}
             Message::NewFile => {
-                self.scm.open = false;
+                if self.scm_window.is_none() {
+                    self.scm.open = false;
+                }
                 self.docs.push(Doc::empty());
                 self.panes.open_doc(self.docs.len() - 1);
             }
@@ -1070,6 +1083,11 @@ impl App {
                     self.chat_window = None;
                     return window::close(id);
                 }
+                if Some(id) == self.scm_window {
+                    self.scm_window = None;
+                    self.scm.open = false;
+                    return window::close(id);
+                }
                 return self.update_inner(Message::CloseRequested);
             }
             Message::Chat(m) => return self.chat_update(m),
@@ -1142,6 +1160,9 @@ impl App {
             Message::PointerMoved(id, p) => {
                 if id == self.main_window {
                     self.drag_to(p);
+                } else if Some(id) == self.scm_window && self.drag.is_some_and(|d| d.handle == Handle::Scm) {
+                    // The list's width, measured from the pop-out window's left edge.
+                    self.scm_w = p.x.clamp(220.0, 700.0);
                 }
             }
             Message::AvatarReady(path) => self.avatar = path.and_then(|p| std::fs::read(p).ok()).map(iced::widget::image::Handle::from_bytes),
@@ -1153,7 +1174,9 @@ impl App {
                 }
             }
             Message::SelectTab { pane, tab } => {
-                self.scm.open = false;
+                if self.scm_window.is_none() {
+                    self.scm.open = false;
+                }
                 self.panes.focus_pane(pane);
                 if let Some(p) = self.panes.list.get_mut(pane) {
                     if tab < p.tabs.len() {
@@ -1543,8 +1566,6 @@ impl App {
         let chat_on = self.chat_docked();
         let chat_l = if chat_on && !self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         let chat_r = if chat_on && self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
-        let agent_l = if self.show_term && !self.agent_right { self.agent_w + view::HANDLE_W } else { 0.0 };
-        let left = sidebar + chat_l + agent_l;
         match drag.handle {
             Handle::List => self.list_w = (p.x - view::RAIL_W).clamp(140.0, (win.width - 300.0).clamp(140.0, 480.0)),
             Handle::Agent if self.agent_right => {
@@ -1568,7 +1589,10 @@ impl App {
                 );
                 self.drag = Some(drag);
             }
-            Handle::Scm => self.scm_w = (p.x - left).clamp(220.0, (win.width - left - 300.0).clamp(220.0, 700.0)),
+            Handle::Scm => {
+                let overlay_left = (win.width - self.scm_overlay_w()) / 2.0;
+                self.scm_w = (p.x - overlay_left).clamp(220.0, (self.scm_overlay_w() - 300.0).clamp(220.0, 700.0));
+            }
             Handle::Panes(i) => {
                 let pos = match self.panes.axis {
                     Axis::Horizontal => p.x,

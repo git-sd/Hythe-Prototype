@@ -30,6 +30,13 @@ pub struct Scm {
     pub commit_diff: Vec<DiffLine>,
 }
 
+/// What Source Control is drawn into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScmPlace {
+    Overlay,
+    Window,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ScmTab {
     #[default]
@@ -115,6 +122,10 @@ impl Scm {
 pub enum ScmMsg {
     Show,
     Hide,
+    /// Open Source Control in its own window.
+    PopOut,
+    /// Bring it back from its own window.
+    PopIn,
     Refresh,
     Select { path: String, staged: bool },
     Stage(String),
@@ -153,7 +164,7 @@ impl App {
     /// Open or refresh whatever source-control state is on screen.
     pub(crate) fn scm_reload(&mut self) {
         if let Some(repo) = self.repo.clone() {
-            if self.scm.open || self.scm.branch_menu {
+            if self.scm.open || self.scm_window.is_some() || self.scm.branch_menu {
                 self.scm.reload(&repo);
             }
         }
@@ -222,7 +233,32 @@ impl App {
                 // Open on what needs attention: working changes if there are any, else history.
                 self.scm.tab = if self.scm.changes.is_empty() { ScmTab::History } else { ScmTab::Changes };
             }
-            ScmMsg::Hide => self.scm.open = false,
+            ScmMsg::Hide => {
+                self.scm.open = false;
+                if let Some(id) = self.scm_window.take() {
+                    return iced::window::close(id);
+                }
+            }
+            ScmMsg::PopOut => {
+                if self.scm_window.is_some() {
+                    return Task::none();
+                }
+                let (id, open) = iced::window::open(iced::window::Settings {
+                    size: iced::Size::new(1000.0, 680.0),
+                    min_size: Some(iced::Size::new(640.0, 360.0)),
+                    position: iced::window::Position::Centered,
+                    exit_on_close_request: false,
+                    ..iced::window::Settings::default()
+                });
+                self.scm_window = Some(id);
+                self.scm.open = true;
+                return open.map(|_| Message::Noop);
+            }
+            ScmMsg::PopIn => {
+                if let Some(id) = self.scm_window.take() {
+                    return iced::window::close(id);
+                }
+            }
             ScmMsg::SelectCommit(sha) => {
                 self.scm.tab = ScmTab::History;
                 self.scm.select_commit(&repo, sha);
@@ -280,7 +316,9 @@ impl App {
             }
             ScmMsg::OpenFile(path) => {
                 let full = repo.root().join(&path);
-                self.scm.open = false;
+                if self.scm_window.is_none() {
+                    self.scm.open = false;
+                }
                 self.open_file(full);
             }
             ScmMsg::BranchMenu(open) => {

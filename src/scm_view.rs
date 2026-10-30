@@ -5,7 +5,7 @@ use iced::widget::{button, column, container, mouse_area, opaque, row, scrollabl
 use iced::{Alignment, Color, Element, Font, Length, Padding, Theme};
 
 use crate::icons::{icon, Icon};
-use crate::scm::{ScmMsg, ScmTab};
+use crate::scm::{ScmMsg, ScmPlace, ScmTab};
 use crate::view::{divider_h, icon_button, list_row, BAR_H};
 use crate::Handle;
 use crate::{theme, App, Message};
@@ -25,21 +25,16 @@ fn status_color(s: Status) -> Color {
 }
 
 impl App {
-    /// Roughly how wide the diff beside the Changes / History list is.
+    /// Roughly how wide the diff beside the list is (the panel's width less the list).
     fn diff_pane_w(&self) -> f32 {
-        use crate::view::{HANDLE_W, RAIL_W};
-        let docked = |on: bool, w: f32| if on { w + HANDLE_W } else { 0.0 };
-        let sidebar = docked(self.show_sidebar, RAIL_W + self.list_w);
-        let others = docked(self.show_term, self.agent_w)
-            + docked(self.chat_docked(), self.chat_w);
-        (self.win.width - sidebar - others - self.scm_w - HANDLE_W).max(300.0)
+        (self.scm_overlay_w() - self.scm_w - crate::view::HANDLE_W).max(300.0)
     }
 
-    /// Source Control shares the single top row: its Changes / History switch sits
-    /// over the list, and the file tabs and window buttons over the diff.
-    pub(crate) fn scm_view(&self) -> Element<'_, Message> {
+    /// Source Control as a panel: a list on the left, the diff on the right. It floats
+    /// over the editor, or fills its own window.
+    pub(crate) fn scm_view_in(&self, place: ScmPlace) -> Element<'_, Message> {
         let left_head = column![
-            container(row![self.header_left(crate::view::Edge::Editor), self.mode_switch()].spacing(6).align_y(Alignment::Center))
+            container(self.mode_switch())
                 .width(Length::Fixed(self.scm_w))
                 .height(Length::Fixed(crate::view::TAB_H))
                 .padding([0, 10])
@@ -55,24 +50,72 @@ impl App {
         )
         .center_x(Length::Fixed(crate::view::HANDLE_W))
         .height(Length::Fixed(crate::view::TAB_H + 1.0));
-        let head = row![left_head, gap, self.tab_bar_with(0, true)];
-        let body = row![self.scm_left(), self.handle(Handle::Scm, true), self.scm_diff()].height(Length::Fill);
-        container(column![head, body])
+        let right_head = column![
+            container(
+                row![
+                    space::horizontal(),
+                    icon_button(
+                        if place == ScmPlace::Window { Icon::Panels } else { Icon::Expand },
+                        theme::TEXT_FAINT,
+                        false,
+                        scm(if place == ScmPlace::Window { ScmMsg::PopIn } else { ScmMsg::PopOut }),
+                    ),
+                    icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::Hide)),
+                ]
+                .spacing(2)
+                .align_y(Alignment::Center)
+                .padding([0, 8]),
+            )
             .width(Length::Fill)
-            .height(Length::Fill)
-            .style(theme::bg(theme::EDITOR_BG))
-            .into()
+            .height(Length::Fixed(crate::view::TAB_H))
+            .style(theme::bg(theme::TAB_BAR_BG)),
+            divider_h(),
+        ];
+        let head = row![left_head, gap, right_head];
+        let body = row![self.scm_left(), self.handle(Handle::Scm, true), self.scm_diff()].height(Length::Fill);
+        let panel = column![head, body];
+        match place {
+            ScmPlace::Window => container(panel).width(Length::Fill).height(Length::Fill).style(theme::bg(theme::EDITOR_BG)).into(),
+            ScmPlace::Overlay => container(panel)
+                .width(Length::Fixed(self.scm_overlay_w()))
+                .height(Length::Fixed((self.win.height * 0.82).min(900.0)))
+                .clip(true)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::EDITOR_BG.into()),
+                    border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 8.0.into() },
+                    shadow: iced::Shadow {
+                        color: Color { a: 0.5, ..Color::BLACK },
+                        offset: iced::Vector::new(0.0, 8.0),
+                        blur_radius: 24.0,
+                    },
+                    ..Default::default()
+                })
+                .into(),
+        }
+    }
+
+    pub(crate) fn scm_overlay_w(&self) -> f32 {
+        (self.win.width * 0.85).min(1200.0).max(560.0)
+    }
+
+    /// The floating Source Control panel over a dimmed window; clicking outside closes it.
+    pub(crate) fn scm_overlay_layer(&self) -> Element<'_, Message> {
+        iced::widget::stack![
+            iced::widget::mouse_area(
+                container(space::horizontal().width(Length::Fill).height(Length::Fill))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(theme::bg(Color { a: 0.35, ..Color::BLACK })),
+            )
+            .on_press(scm(ScmMsg::Hide)),
+            container(iced::widget::opaque(self.scm_view_in(ScmPlace::Overlay))).center(Length::Fill),
+        ]
+        .into()
     }
 
     /// Title and close button at the top of the left column.
     fn mode_switch(&self) -> Element<'static, Message> {
-        row![
-            text("History").size(13),
-            space::horizontal(),
-            icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::Hide)),
-        ]
-        .align_y(Alignment::Center)
-        .into()
+        row![text("History").size(13), space::horizontal()].align_y(Alignment::Center).into()
     }
 
     fn scm_left(&self) -> Element<'_, Message> {
