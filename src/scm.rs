@@ -26,6 +26,8 @@ pub struct Scm {
     pub all_diffs: Vec<(String, Vec<DiffLine>)>,
     /// Syntax colours for `all_diffs`, file by file and line by line: runs of (text,
     /// colour) for lines that exist in the current file, `None` for the rest.
+    /// Unchanged lines to show around changes, per file (more after clicking the arrows).
+    pub context: std::collections::HashMap<String, u32>,
     pub diff_spans: Vec<Vec<Option<Vec<(String, iced::Color)>>>>,
     /// Whether the right side shows a changed file or a commit.
     pub tab: ScmTab,
@@ -130,6 +132,8 @@ pub enum ScmMsg {
     Hide,
     /// Close the diff, back to the code.
     CloseDiff,
+    /// Show more unchanged lines around one file's changes.
+    MoreContext(String),
     /// Diffs of every changed file arrived (for the Changes view).
     AllDiffs(Vec<(String, Vec<DiffLine>)>),
     /// Open Source Control in its own window.
@@ -267,12 +271,13 @@ impl App {
     /// Read every changed file's diff off the UI thread, for the Changes view.
     pub(crate) fn load_all_diffs(&self) -> Task<Message> {
         let Some(repo) = self.repo.clone() else { return Task::none() };
-        let paths: Vec<String> = self.scm.changes.iter().map(|c| c.path.clone()).collect();
+        let paths: Vec<(String, u32)> =
+            self.scm.changes.iter().map(|c| (c.path.clone(), self.scm.context.get(&c.path).copied().unwrap_or(3))).collect();
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    paths.into_iter().map(|p| {
-                        let lines = repo.diff_head(&p).unwrap_or_default();
+                    paths.into_iter().map(|(p, context)| {
+                        let lines = repo.diff_head(&p, context).unwrap_or_default();
                         (p, lines)
                     }).collect::<Vec<_>>()
                 })
@@ -300,6 +305,10 @@ impl App {
                 self.scm.tab = if self.scm.changes.is_empty() { ScmTab::History } else { ScmTab::Changes };
             }
             ScmMsg::CloseDiff => self.scm.show_diff = false,
+            ScmMsg::MoreContext(path) => {
+                *self.scm.context.entry(path).or_insert(3) += 12;
+                return self.load_all_diffs();
+            }
             ScmMsg::AllDiffs(diffs) => {
                 // The diffs are re-read every few seconds; only colour them again when they changed.
                 if diffs != self.scm.all_diffs {

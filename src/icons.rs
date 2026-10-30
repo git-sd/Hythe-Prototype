@@ -28,6 +28,8 @@ pub enum Icon {
     Pin,
     Expand,
     Chat,
+    ArrowUp,
+    ArrowDown,
     Paperclip,
 }
 
@@ -67,6 +69,8 @@ impl Icon {
             Icon::Pin => svg_icon!(r#"<path d="M9 4h6l-1 6 3 3H7l3-3z"/><path d="M12 13v7"/>"#),
             Icon::Chat => svg_icon!(r#"<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3.5V16A2.5 2.5 0 0 1 4 13.5z"/>"#),
             Icon::Paperclip => svg_icon!(r#"<path d="M20 11.5l-7.8 7.8a4.5 4.5 0 0 1-6.4-6.4l8-8a3 3 0 0 1 4.3 4.3l-8 8a1.5 1.5 0 0 1-2.1-2.1l7.4-7.4"/>"#),
+            Icon::ArrowUp => svg_icon!(r#"<path d="M12 19V5M6.5 10.5L12 5l5.5 5.5"/>"#),
+            Icon::ArrowDown => svg_icon!(r#"<path d="M12 5v14M6.5 13.5L12 19l5.5-5.5"/>"#),
             Icon::Expand => svg_icon!(r#"<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>"#),
         }
     }
@@ -92,7 +96,7 @@ mod tests {
             Icon::ChevronRight, Icon::ChevronDown, Icon::Branch, Icon::Terminal,
             Icon::Panels, Icon::Plus, Icon::Minus, Icon::Close, Icon::Split,
             Icon::Sparkle, Icon::Send, Icon::Eye, Icon::More, Icon::Pin, Icon::Expand,
-            Icon::Chat, Icon::Paperclip,
+            Icon::Chat, Icon::Paperclip, Icon::ArrowUp, Icon::ArrowDown,
         ] {
             let s = icon.source();
             assert!(s.starts_with("<svg") && s.ends_with("</svg>"), "{icon:?}");

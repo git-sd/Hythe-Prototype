@@ -1675,7 +1675,8 @@ impl App {
             window::close_requests().map(Message::CloseWindow),
             window::resize_events().map(|(id, size)| Message::WindowSized(id, size)),
         ];
-        if self.chat_visible() {
+        let thread_chat = self.show_term && self.term_active.is_none() && self.repo.is_some();
+        if self.chat_visible() || thread_chat {
             subs.push(iced::time::every(std::time::Duration::from_secs(15)).map(|_| Message::Chat(ChatMsg::Sync)));
         }
         if !self.docs.is_empty() {

@@ -43,6 +43,8 @@ pub struct ChatMessage {
     pub time_ms: i64,
     pub body: String,
     pub attachments: Vec<Attachment>,
+    /// The message this one comments on, if it is a reply.
+    pub reply_to: Option<String>,
 }
 
 /// One git invocation with extra environment and optional stdin; stdout as bytes.
@@ -155,7 +157,8 @@ impl Repo {
     }
 
     /// Add a message, with any files, to the local chat branch.
-    pub fn chat_post(&self, body: &str, files: &[PathBuf]) -> Result<()> {
+    /// `reply_to`: the id of the message this one comments on.
+    pub fn chat_post(&self, body: &str, files: &[PathBuf], reply_to: Option<&str>) -> Result<()> {
         let (author, login) = self.chat_identity();
         let ms = now_ms();
         let mut entries = Vec::new();
@@ -164,6 +167,9 @@ impl Repo {
             header.push_str(&format!("login: {l}\n"));
         }
         header.push_str(&format!("time: {ms}\n"));
+        if let Some(id) = reply_to.filter(|id| id.starts_with("m-") && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'))) {
+            header.push_str(&format!("reply: {id}\n"));
+        }
         for (n, f) in files.iter().enumerate() {
             let size = std::fs::metadata(f).map_err(|e| format!("{}: {e}", f.display()))?.len();
             if size > MAX_UPLOAD {
@@ -299,12 +305,14 @@ pub fn parse_message(id: &str, content: &str) -> ChatMessage {
         time_ms: 0,
         body: body.to_string(),
         attachments: Vec::new(),
+        reply_to: None,
     };
     for line in head.lines() {
         match line.split_once(": ") {
             Some(("author", v)) => m.author = v.to_string(),
             Some(("login", v)) if super::is_github_login(v) => m.login = Some(v.to_string()),
             Some(("time", v)) => m.time_ms = v.parse().unwrap_or(0),
+            Some(("reply", v)) => m.reply_to = Some(v.to_string()),
             Some(("attach", v)) => {
                 let name = v.splitn(4, '-').nth(3).unwrap_or(v).to_string();
                 m.attachments.push(Attachment { entry: v.to_string(), name });
@@ -345,8 +353,8 @@ mod tests {
 
         let pic = base.join("pic.png");
         std::fs::write(&pic, [0x89, b'P', b'N', b'G', 1, 2, 3]).unwrap();
-        a.chat_post("hello from ann", &[pic.clone()]).unwrap();
-        b.chat_post("bob here\n\nwith two paragraphs", &[]).unwrap();
+        a.chat_post("hello from ann", &[pic.clone()], None).unwrap();
+        b.chat_post("bob here\n\nwith two paragraphs", &[], None).unwrap();
         a.chat_sync().unwrap();
         // Bob's history diverges from Ann's: his sync must merge, then push.
         b.chat_sync().unwrap();
@@ -371,10 +379,11 @@ mod tests {
     fn parses_headers_and_body() {
         let m = parse_message(
             "m-1",
-            "author: Ann Lee\nlogin: ann-lee\ntime: 42\nattach: f-0000000000042-0-a_b.zip\n\nline one\n\nline two",
+            "author: Ann Lee\nlogin: ann-lee\ntime: 42\nreply: m-0000000000041-ab12.txt\nattach: f-0000000000042-0-a_b.zip\n\nline one\n\nline two",
         );
         assert_eq!((m.author.as_str(), m.login.as_deref(), m.time_ms), ("Ann Lee", Some("ann-lee"), 42));
         assert_eq!(m.body, "line one\n\nline two");
         assert_eq!(m.attachments[0].name, "a_b.zip");
+        assert_eq!(m.reply_to.as_deref(), Some("m-0000000000041-ab12.txt"));
     }
 }

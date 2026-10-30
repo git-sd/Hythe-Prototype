@@ -704,7 +704,10 @@ impl App {
 
     fn agent_panel(&self) -> Element<'_, Message> {
         let session = self.term_active.and_then(|id| self.terms.get(id));
-        let title = session.as_ref().map(|s| s.name().to_string()).unwrap_or_else(|| "New Thread".into());
+        // With no terminal or agent running, the column holds the team's conversation.
+        let title = session.as_ref().map(|s| s.name().to_string()).unwrap_or_else(|| {
+            if self.repo.is_some() { "Team chat".into() } else { "New Thread".into() }
+        });
         let dim = theme::TEXT_DIM;
 
         let header = container(
@@ -735,6 +738,7 @@ impl App {
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into(),
+            _ if self.repo.is_some() => self.chat_view_in(chat::Place::Thread),
             _ => {
                 let mut starters = column![
                     text("Start a thread").size(15),

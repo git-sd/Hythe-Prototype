@@ -31,6 +31,8 @@ pub enum Place {
     Docked,
     Overlay,
     Window,
+    /// Inside the thread column, as its conversation.
+    Thread,
 }
 
 #[derive(Default)]
@@ -51,6 +53,10 @@ pub struct Chat {
     pub loaded_for: Option<PathBuf>,
     /// Closed from the welcome area, which shows the welcome menu again.
     pub dismissed: bool,
+    /// The message the next one will comment on.
+    pub replying: Option<String>,
+    /// Messages whose comments are showing.
+    pub open_threads: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +72,11 @@ pub enum ChatMsg {
     /// Close the chat shown in place of the welcome screen.
     Dismiss,
     Input(String),
+    /// Comment on a message: the next message sent replies to it.
+    Reply(String),
+    CancelReply,
+    /// Show or hide a message's comments.
+    ToggleThread(String),
     Attach,
     Unattach(usize),
     Send,
@@ -172,6 +183,13 @@ impl App {
                 }
             }
             ChatMsg::Input(s) => self.chat.input = s,
+            ChatMsg::Reply(id) => self.chat.replying = Some(id),
+            ChatMsg::CancelReply => self.chat.replying = None,
+            ChatMsg::ToggleThread(id) => {
+                if !self.chat.open_threads.remove(&id) {
+                    self.chat.open_threads.insert(id);
+                }
+            }
             ChatMsg::Attach => {
                 if let Some(files) = rfd::FileDialog::new().set_title("Attach files").pick_files() {
                     self.chat.files.extend(files);
@@ -189,12 +207,16 @@ impl App {
                     return Task::none();
                 }
                 let files = std::mem::take(&mut self.chat.files);
+                let reply_to = self.chat.replying.take();
+                if let Some(id) = &reply_to {
+                    self.chat.open_threads.insert(id.clone());
+                }
                 self.chat.input.clear();
                 self.chat.note = None;
                 self.chat.busy = Some("Sending…");
                 return Task::perform(
                     async move {
-                        tokio::task::spawn_blocking(move || repo.chat_post(&body, &files))
+                        tokio::task::spawn_blocking(move || repo.chat_post(&body, &files, reply_to.as_deref()))
                             .await
                             .unwrap_or_else(|e| Err(e.to_string()))
                     },
@@ -393,7 +415,7 @@ impl App {
         let header: Element<'_, Message> = match place {
             Place::Docked => mouse_area(header).on_press(Message::DragStart(Handle::ChatDock)).interaction(iced::mouse::Interaction::Grab).into(),
             Place::Overlay => mouse_area(header).on_press(Message::DragStart(Handle::ChatMove)).interaction(iced::mouse::Interaction::Grab).into(),
-            Place::Window => header.into(),
+            Place::Window | Place::Thread => header.into(),
         };
 
         let now = now_secs();
@@ -412,8 +434,14 @@ impl App {
                 .padding([16, 0]),
             );
         }
-        for m in &c.messages {
+        // Top-level messages; replies hang under the message they comment on.
+        let known: HashSet<&str> = c.messages.iter().map(|m| m.id.as_str()).collect();
+        for m in c.messages.iter().filter(|m| m.reply_to.as_deref().is_none_or(|p| !known.contains(p))) {
             list = list.push(self.chat_message(m, now));
+            let replies: Vec<&ChatMessage> = c.messages.iter().filter(|r| r.reply_to.as_deref() == Some(m.id.as_str())).collect();
+            if !replies.is_empty() {
+                list = list.push(self.chat_thread(m, &replies, now));
+            }
         }
 
         let mut attached = column![].spacing(3);
@@ -427,7 +455,23 @@ impl App {
             );
         }
         let can_send = !(c.input.trim().is_empty() && c.files.is_empty()) && c.busy != Some("Sending…");
+        let replying: Element<'_, Message> = match c.replying.as_ref().and_then(|id| c.messages.iter().find(|m| &m.id == id)) {
+            Some(parent) => container(
+                row![
+                    text("Commenting on").size(12).color(theme::TEXT_FAINT),
+                    text(excerpt(&parent.body)).size(12).color(theme::TEXT_DIM).wrapping(text::Wrapping::None),
+                    space::horizontal(),
+                    button(icon(Icon::Close, 11.0, theme::TEXT_FAINT)).padding(2).style(theme::flat(false)).on_press(msg(ChatMsg::CancelReply)),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .clip(true)
+            .into(),
+            None => iced::widget::space::vertical().height(Length::Fixed(0.0)).into(),
+        };
         let composer = column![
+            replying,
             attached,
             row![
                 self.my_face(),
@@ -449,8 +493,16 @@ impl App {
         .spacing(6)
         .padding([10, 14]);
 
+        if place == Place::Thread {
+            // The thread column draws its own header.
+            return container(column![vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), composer])
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+        }
         let body = column![header, divider_h(), vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer];
         match place {
+            Place::Thread => unreachable!(),
             Place::Docked => container(body).width(Length::Fixed(self.chat_w)).height(Length::Fill).style(theme::bg(theme::PANEL_BG)).into(),
             Place::Window => container(body).width(Length::Fill).height(Length::Fill).style(theme::bg(theme::PANEL_BG)).into(),
             Place::Overlay => {
@@ -627,6 +679,65 @@ impl App {
                 }
             }
         }
-        row![avatar, body.width(Length::Fill)].spacing(12).into()
+        let comment = button(icon(Icon::Chat, 12.0, theme::TEXT_FAINT))
+            .padding(3)
+            .style(theme::flat(false))
+            .on_press(Message::Chat(ChatMsg::Reply(m.id.clone())));
+        row![avatar, body.width(Length::Fill), comment].spacing(12).into()
     }
+
+    /// Comments on a message, like Zed's: "N comments", and when open, a card quoting
+    /// the message with each comment under a coloured bar.
+    fn chat_thread<'a>(&'a self, parent: &'a ChatMessage, replies: &[&'a ChatMessage], now: i64) -> Element<'a, Message> {
+        const PURPLE: Color = Color::from_rgb8(0xb4, 0x77, 0xcf);
+        let open = self.chat.open_threads.contains(&parent.id);
+        let n = replies.len();
+        let toggle = button(
+            row![
+                text(format!("{n} comment{}", if n == 1 { "" } else { "s" })).size(13).color(theme::TEXT_DIM),
+                icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }, 10.0, theme::TEXT_DIM),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .padding([2, 4])
+        .style(theme::flat(false))
+        .on_press(Message::Chat(ChatMsg::ToggleThread(parent.id.clone())));
+        let mut col = column![toggle].spacing(6);
+        if open {
+            let quote = container(text(excerpt(&parent.body)).size(13))
+                .padding([1, 4])
+                .style(|_: &Theme| container::Style { background: Some(Color { a: 0.22, ..PURPLE }.into()), ..Default::default() });
+            let mut card = column![quote].spacing(8);
+            for r in replies {
+                let bar = container(iced::widget::space::vertical().height(Length::Fill))
+                    .width(Length::Fixed(2.0))
+                    .style(|_: &Theme| container::Style { background: Some(PURPLE.into()), ..Default::default() });
+                card = card.push(
+                    row![
+                        bar,
+                        self.chat_face(&r.author, r.login.as_ref(), Some(r.time_ms / 1000), now),
+                        text(r.body.clone()).size(13).line_height(1.4).width(Length::Fill),
+                    ]
+                    .spacing(8)
+                    .height(Length::Shrink),
+                );
+            }
+            col = col.push(
+                container(card.padding(10)).width(Length::Fill).style(|_: &Theme| container::Style {
+                    background: Some(theme::CARD_BG.into()),
+                    border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 6.0.into() },
+                    ..Default::default()
+                }),
+            );
+        }
+        // Line up with the message text, past the picture.
+        container(col).padding(Padding { left: 34.0, ..Padding::ZERO }).into()
+    }
+}
+
+/// The first line of a message, shortened, for quoting it.
+fn excerpt(body: &str) -> String {
+    let line = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    if line.chars().count() > 60 { format!("{}…", line.chars().take(60).collect::<String>()) } else { line.to_string() }
 }

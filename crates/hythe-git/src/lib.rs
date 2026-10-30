@@ -258,8 +258,10 @@ impl Repo {
 
     /// Everything that changed in one file since the last commit, staged or not.
     /// Untracked files (and repositories with no commits yet) show as all-added.
-    pub fn diff_head(&self, path: &str) -> Result<Vec<DiffLine>> {
-        match self.git(&["diff", "--no-color", "--no-ext-diff", "-U3", "HEAD", "--", path]) {
+    /// `context`: unchanged lines shown around each change.
+    pub fn diff_head(&self, path: &str, context: u32) -> Result<Vec<DiffLine>> {
+        let unified = format!("-U{context}");
+        match self.git(&["diff", "--no-color", "--no-ext-diff", &unified, "HEAD", "--", path]) {
             Ok(text) if !text.trim().is_empty() => Ok(parse_diff(&text)),
             _ => self.diff(path, false),
         }

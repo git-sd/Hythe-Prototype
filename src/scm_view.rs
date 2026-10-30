@@ -145,6 +145,19 @@ impl App {
                 )
                 .padding(Padding { top: 16.0, right: 16.0, bottom: 6.0, left: 24.0 }),
             );
+            // Arrows in the gutter, as in Zed: click to show more of the file around the changes.
+            let more = |glyph: Icon| -> Element<'_, Message> {
+                container(
+                    button(icon(glyph, 12.0, theme::TEXT_FAINT))
+                        .padding([2, 4])
+                        .style(theme::flat(false))
+                        .on_press(scm(ScmMsg::MoreContext(path.clone()))),
+                )
+                .width(Length::Fixed(44.0))
+                .align_x(Alignment::End)
+                .into()
+            };
+            // Every section opens with its own arrow row, so the card needs none at the top.
             let mut rows = column![];
             for (index, l) in lines.iter().enumerate().filter(|(_, l)| l.kind != LineKind::Header).take(MAX_DIFF_LINES) {
                 let (tint, color) = match l.kind {
@@ -154,8 +167,8 @@ impl App {
                     _ => (None, theme::TEXT_DIM),
                 };
                 let line: Element<'_, Message> = if l.kind == LineKind::Hunk {
-                    // Between hunks: a quiet gap instead of the raw @@ header.
-                    container(text("⋯").size(12).color(color)).padding([2, 18]).into()
+                    // Between hunks: arrows to fill the gap, instead of the raw @@ header.
+                    row![more(Icon::ArrowUp), text("⋯").size(12).color(color)].spacing(16).align_y(Alignment::Center).into()
                 } else {
                     // Like Zed: removed lines have no number, everything else shows its new line.
                     let number = l.new.map(|n| n.to_string()).unwrap_or_default();
@@ -183,6 +196,7 @@ impl App {
                     None => line,
                 });
             }
+            rows = rows.push(more(Icon::ArrowDown));
             col = col.push(
                 container(
                     container(rows.padding([6, 0]))
