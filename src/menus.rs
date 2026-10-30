@@ -63,6 +63,7 @@ pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
             Separator,
             item("Reset Window Size", "Ctrl+Shift+0", Message::ResetWindow),
             item("Maximize / Restore Window", "", Message::ToggleMaximize),
+            item("Full Screen", "F11", Message::ToggleFullscreen),
         ],
         _ => {
             let mut v = vec![

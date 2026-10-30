@@ -168,6 +168,7 @@ struct App {
     scm_detail_w: f32,
     /// Shift is held, for sideways scrolling with the wheel.
     shift: bool,
+    fullscreen: bool,
     /// A tab being dragged: (pane, tab).
     tab_drag: Option<(usize, usize)>,
     /// A rail tile, terminal or pinned file being dragged.
@@ -301,6 +302,8 @@ pub enum Message {
     DragWindow,
     MinimizeWindow,
     ToggleMaximize,
+    /// F11: true full screen, covering the taskbar too.
+    ToggleFullscreen,
     AvatarReady(Option<PathBuf>),
     MemberAvatar(String, Option<PathBuf>),
     DragStart(Handle),
@@ -345,6 +348,9 @@ impl App {
             position: window::Position::Centered,
             resizable: true,
             decorations: false,
+            // Open maximised so every column and the window buttons are on screen;
+            // Ctrl+Shift+0 fits it to the monitor instead.
+            maximized: true,
             exit_on_close_request: false,
             ..window::Settings::default()
         });
@@ -400,6 +406,7 @@ impl App {
             scm_window: None,
             scm_detail_w: 480.0,
             shift: false,
+            fullscreen: false,
             tab_drag: None,
             item_drag: None,
             agent_right: false,
@@ -432,7 +439,7 @@ impl App {
             }
         }
         // The window has to exist before it can be fitted to the monitor.
-        let task = open_main.map(|_| Message::Noop).chain(Task::batch([app.fit_window_task(), app.avatar_task()]));
+        let task = open_main.map(|_| Message::Noop).chain(app.avatar_task());
         (app, task)
     }
 
@@ -1069,6 +1076,11 @@ impl App {
             Message::DragWindow => return window::oldest().and_then(window::drag),
             Message::MinimizeWindow => return window::oldest().and_then(|id| window::minimize(id, true)),
             Message::ResetWindow => return self.fit_window_task(),
+            Message::ToggleFullscreen => {
+                self.fullscreen = !self.fullscreen;
+                let mode = if self.fullscreen { window::Mode::Fullscreen } else { window::Mode::Windowed };
+                return window::set_mode(self.main_window, mode);
+            }
             Message::ToggleMaximize => return window::oldest().and_then(window::toggle_maximize),
             Message::MemberAvatar(login, file) => {
                 if let Some(h) = file.and_then(|f| std::fs::read(f).ok()).map(iced::widget::image::Handle::from_bytes) {
@@ -1384,6 +1396,10 @@ impl App {
     fn handle_key(&mut self, key: Key, mods: keyboard::Modifiers, text: Option<&str>) -> Task<Message> {
         let shift = mods.shift();
         let ctrl = mods.command();
+
+        if matches!(key.as_ref(), Key::Named(Named::F11)) {
+            return self.update(Message::ToggleFullscreen);
+        }
 
         if ctrl {
             if let Key::Character(c) = key.as_ref() {
