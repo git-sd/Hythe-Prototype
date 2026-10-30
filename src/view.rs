@@ -11,7 +11,7 @@ use crate::editor::EditorView;
 use crate::icons::{icon, Icon};
 use crate::palette::{self, Palette};
 use crate::add_repo::AddRepoMsg;
-use crate::chat::ChatMsg;
+use crate::chat::{self, ChatMsg};
 use crate::collab::CollabMsg;
 use crate::panes::Axis;
 use crate::scm::ScmMsg;
@@ -130,9 +130,9 @@ impl App {
         let mut main = row![].height(Length::Fill);
         // Source Control wants the width for diffs, so the thread column steps aside.
         let agent_right = self.show_term && self.agent_right;
-        let chat_on = self.chat_visible();
+        let chat_on = self.chat_docked();
         if chat_on && !self.chat_right {
-            main = main.push(self.chat_view()).push(self.handle(Handle::Chat, true));
+            main = main.push(self.chat_view_in(chat::Place::Docked)).push(self.handle(Handle::Chat, true));
         }
         if self.show_term && !agent_right {
             main = main.push(self.agent_panel()).push(self.handle(Handle::Agent, true));
@@ -142,7 +142,7 @@ impl App {
             main = main.push(self.handle(Handle::Agent, true)).push(self.agent_panel());
         }
         if chat_on && self.chat_right {
-            main = main.push(self.handle(Handle::Chat, true)).push(self.chat_view());
+            main = main.push(self.handle(Handle::Chat, true)).push(self.chat_view_in(chat::Place::Docked));
         }
         let right = column![main, divider_h(), self.bottom_bar()].width(Length::Fill);
 
@@ -155,6 +155,12 @@ impl App {
         // With the sidebar open the column headers form the only top row, and carry the
         // window buttons; with it hidden the full title bar comes back above everything.
         let base: Element<'_, Message> = body.into();
+        // The chat floats over everything else when it is in overlay mode.
+        let base: Element<'_, Message> = if self.chat_overlay() {
+            stack![base, self.chat_overlay_layer()].into()
+        } else {
+            base
+        };
         if let Some(p) = &self.palette {
             return stack![
                 base,
@@ -220,7 +226,7 @@ impl App {
     }
 
     pub(crate) fn rightmost(&self) -> Edge {
-        if self.chat_visible() && self.chat_right {
+        if self.chat_docked() && self.chat_right {
             Edge::Chat
         } else if self.show_term && self.agent_right {
             Edge::Agent
@@ -231,7 +237,7 @@ impl App {
 
     /// The column furthest left once the sidebar is hidden; it carries the menu buttons.
     pub(crate) fn leftmost(&self) -> Edge {
-        if self.chat_visible() && !self.chat_right {
+        if self.chat_docked() && !self.chat_right {
             Edge::Chat
         } else if self.show_term && !self.agent_right {
             Edge::Agent
@@ -345,7 +351,7 @@ impl App {
                 Alignment::Start,
                 Alignment::Start,
                 Padding { top: TITLE_H + 42.0 - top_shift, left: {
-                    let chat = if self.chat_visible() { self.chat_w + HANDLE_W } else { 0.0 };
+                    let chat = if self.chat_docked() { self.chat_w + HANDLE_W } else { 0.0 };
                     if self.agent_right {
                         (self.win.width - if self.chat_right { chat } else { 0.0 } - 300.0 - 8.0).max(8.0)
                     } else {

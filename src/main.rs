@@ -56,20 +56,12 @@ fn members_of(repo: &hythe_git::Repo) -> Vec<Member> {
 }
 
 fn main() -> iced::Result {
-    iced::application(App::new, App::update, App::view)
+    // A daemon, not a single-window application: the chat can be popped out into its
+    // own window. The main window is opened in `App::new`.
+    iced::daemon(App::new, App::update, App::view_window)
         .title(App::title)
         .subscription(App::subscription)
-        .theme(|_: &App| Theme::Dark)
-        // Start modest and centred; `FitWindow` then shrinks it to the monitor if needed.
-        .window(window::Settings {
-            size: iced::Size::new(1280.0, 780.0),
-            min_size: Some(iced::Size::new(860.0, 520.0)),
-            position: window::Position::Centered,
-            resizable: true,
-            decorations: false,
-            ..window::Settings::default()
-        })
-        .exit_on_close_request(false)
+        .theme(|_: &App, _| Theme::Dark)
         .run()
 }
 
@@ -163,6 +155,13 @@ struct App {
     git_wanted: bool,
     git_busy: bool,
     chat: Chat,
+    /// Where the chat shows when it is not in its own window.
+    chat_mode: chat::ChatMode,
+    /// Gap between the floating chat and the window's right and bottom edges.
+    chat_off: (f32, f32),
+    main_window: window::Id,
+    /// The chat's own window, when it is popped out.
+    chat_window: Option<window::Id>,
     /// Shift is held, for sideways scrolling with the wheel.
     shift: bool,
     /// A tab being dragged: (pane, tab).
@@ -205,6 +204,8 @@ pub enum Handle {
     Chat,
     /// The chat header: drag it to the other side of the window.
     ChatDock,
+    /// The floating chat's header: drag it anywhere in the window.
+    ChatMove,
     /// Between editor pane `n` and `n + 1`.
     Panes(usize),
 }
@@ -215,6 +216,7 @@ pub enum Handle {
 pub struct Drag {
     pub handle: Handle,
     origin: Option<f32>,
+    origin2: Option<iced::Point>,
     base: (f32, f32, f32),
 }
 
@@ -296,9 +298,12 @@ pub enum Message {
     AvatarReady(Option<PathBuf>),
     MemberAvatar(String, Option<PathBuf>),
     DragStart(Handle),
-    PointerMoved(iced::Point),
+    PointerMoved(window::Id, iced::Point),
     PointerUp,
-    WindowSized(iced::Size),
+    WindowSized(window::Id, iced::Size),
+    Noop,
+    /// A window's close button was pressed.
+    CloseWindow(window::Id),
     GitLoaded(Option<Box<GitResult>>),
     /// Look for open files changed on disk by something else.
     DiskTick,
@@ -327,6 +332,16 @@ pub enum Message {
 
 impl App {
     fn new() -> (Self, Task<Message>) {
+        // Start modest and centred; `FitWindow` then shrinks it to the monitor if needed.
+        let (main_window, open_main) = window::open(window::Settings {
+            size: iced::Size::new(1280.0, 780.0),
+            min_size: Some(iced::Size::new(860.0, 520.0)),
+            position: window::Position::Centered,
+            resizable: true,
+            decorations: false,
+            exit_on_close_request: false,
+            ..window::Settings::default()
+        });
         let mut app = App {
             docs: Vec::new(),
             panes: Panes::new(),
@@ -372,6 +387,10 @@ impl App {
             git_busy: false,
             // Closed until asked for; the title bar and bottom bar icons open it.
             chat: Chat { dismissed: true, ..Chat::default() },
+            chat_mode: chat::ChatMode::Overlay,
+            chat_off: (14.0, view::BAR_H + 14.0),
+            main_window,
+            chat_window: None,
             shift: false,
             tab_drag: None,
             item_drag: None,
@@ -404,7 +423,8 @@ impl App {
                 let _ = app.collab_update(CollabMsg::Connect);
             }
         }
-        let task = Task::batch([app.fit_window_task(), app.avatar_task()]);
+        // The window has to exist before it can be fitted to the monitor.
+        let task = open_main.map(|_| Message::Noop).chain(Task::batch([app.fit_window_task(), app.avatar_task()]));
         (app, task)
     }
 
@@ -497,7 +517,18 @@ impl App {
         )
     }
 
-    fn title(&self) -> String {
+    fn view_window(&self, id: window::Id) -> iced::Element<'_, Message> {
+        if Some(id) == self.chat_window {
+            return self.chat_view_in(chat::Place::Window);
+        }
+        self.view()
+    }
+
+    fn title(&self, id: window::Id) -> String {
+        if Some(id) == self.chat_window {
+            let repo = self.git.as_ref().map(|g| g.repo.clone()).unwrap_or_default();
+            return format!("{repo} chat — Hythe");
+        }
         match self.docs.get(self.panes.cur()) {
             Some(d) => format!("{}{} — Hythe", d.name(), if d.dirty { " •" } else { "" }),
             None => "Hythe".into(),
@@ -1028,7 +1059,19 @@ impl App {
                     self.member_avatars.insert(login, h);
                 }
             }
-            Message::WindowSized(size) => self.win = size,
+            Message::WindowSized(id, size) => {
+                if id == self.main_window {
+                    self.win = size;
+                }
+            }
+            Message::Noop => {}
+            Message::CloseWindow(id) => {
+                if Some(id) == self.chat_window {
+                    self.chat_window = None;
+                    return window::close(id);
+                }
+                return self.update_inner(Message::CloseRequested);
+            }
             Message::Chat(m) => return self.chat_update(m),
             Message::Zoom(step) => {
                 let vp = self.panes.list[self.panes.focus].viewport.get();
@@ -1096,7 +1139,11 @@ impl App {
                     self.tab_drag = Some(self.panes.move_tab(from, (pane, tab)));
                 }
             }
-            Message::PointerMoved(p) => self.drag_to(p),
+            Message::PointerMoved(id, p) => {
+                if id == self.main_window {
+                    self.drag_to(p);
+                }
+            }
             Message::AvatarReady(path) => self.avatar = path.and_then(|p| std::fs::read(p).ok()).map(iced::widget::image::Handle::from_bytes),
             Message::Unavailable(what) => self.status = format!("{what} isn't available yet"),
             Message::OpenFile(p) => self.open_file(p),
@@ -1482,7 +1529,10 @@ impl App {
                 base = (a.weight, b.weight, (px(a) + px(b)).max(1.0));
             }
         }
-        self.drag = Some(Drag { handle, origin: None, base });
+        if handle == Handle::ChatMove {
+            base = (self.chat_off.0, self.chat_off.1, 0.0);
+        }
+        self.drag = Some(Drag { handle, origin: None, origin2: None, base });
     }
 
     fn drag_to(&mut self, p: iced::Point) {
@@ -1490,7 +1540,7 @@ impl App {
         let sidebar = if self.show_sidebar { view::RAIL_W + self.list_w + view::HANDLE_W } else { 0.0 };
         let win = self.win;
         // What is docked beside the editor on each side, handles included.
-        let chat_on = self.chat_visible();
+        let chat_on = self.chat_docked();
         let chat_l = if chat_on && !self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         let chat_r = if chat_on && self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         let agent_l = if self.show_term && !self.agent_right { self.agent_w + view::HANDLE_W } else { 0.0 };
@@ -1509,6 +1559,15 @@ impl App {
             Handle::Chat => self.chat_w = (p.x - sidebar).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0)),
             Handle::Dock => self.agent_right = p.x > win.width / 2.0,
             Handle::ChatDock => self.chat_right = p.x > win.width / 2.0,
+            Handle::ChatMove => {
+                let o = *drag.origin2.get_or_insert(p);
+                let (right, bottom, _) = drag.base;
+                self.chat_off = (
+                    (right - (p.x - o.x)).clamp(0.0, (win.width - self.chat_w).max(0.0)),
+                    (bottom - (p.y - o.y)).clamp(0.0, (win.height - 260.0).max(0.0)),
+                );
+                self.drag = Some(drag);
+            }
             Handle::Scm => self.scm_w = (p.x - left).clamp(220.0, (win.width - left - 300.0).clamp(220.0, 700.0)),
             Handle::Panes(i) => {
                 let pos = match self.panes.axis {
@@ -1533,8 +1592,8 @@ impl App {
     fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![
             keyboard::listen().map(Message::Key),
-            window::close_requests().map(|_| Message::CloseRequested),
-            window::resize_events().map(|(_, size)| Message::WindowSized(size)),
+            window::close_requests().map(Message::CloseWindow),
+            window::resize_events().map(|(id, size)| Message::WindowSized(id, size)),
         ];
         if self.chat_visible() {
             subs.push(iced::time::every(std::time::Duration::from_secs(15)).map(|_| Message::Chat(ChatMsg::Sync)));
@@ -1546,8 +1605,8 @@ impl App {
             subs.push(iced::time::every(std::time::Duration::from_secs(2)).map(|_| Message::TreeTick));
         }
         if self.drag.is_some() || self.tab_drag.is_some() || self.item_drag.is_some() {
-            subs.push(iced::event::listen_with(|event, _status, _window| match event {
-                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::PointerMoved(position)),
+            subs.push(iced::event::listen_with(|event, _status, window| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Message::PointerMoved(window, position)),
                 iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::PointerUp),
                 _ => None,
             }));

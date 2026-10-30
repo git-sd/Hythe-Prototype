@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use hythe_git::ChatMessage;
 use iced::widget::{button, column, container, mouse_area, row, space, text, text_input};
-use iced::{Alignment, Color, Element, Length, Padding, Task, Theme};
+use iced::{window, Alignment, Color, Element, Length, Padding, Task, Theme};
 
 use crate::icons::{icon, Icon};
 use crate::scm::ScmMsg;
@@ -14,6 +14,24 @@ use crate::view::{divider_h, icon_button, vscroll, Edge, TAB_H};
 use crate::{theme, App, Handle, Message};
 
 const HISTORY: usize = 300;
+
+/// Where the chat sits when it is not in its own window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChatMode {
+    /// Floating over the editor, movable.
+    #[default]
+    Overlay,
+    /// A column beside the editor.
+    Docked,
+}
+
+/// What the chat panel is being drawn into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    Docked,
+    Overlay,
+    Window,
+}
 
 #[derive(Default)]
 pub struct Chat {
@@ -41,6 +59,12 @@ pub struct Chat {
 pub enum ChatMsg {
     Show,
     Hide,
+    /// Switch between floating over the editor and docked beside it.
+    ToggleDock,
+    /// Open the chat in its own window.
+    PopOut,
+    /// Bring the chat back from its own window.
+    PopIn,
     /// Close the chat shown in place of the welcome screen.
     Dismiss,
     Input(String),
@@ -126,7 +150,35 @@ impl App {
                 self.focus_term = false;
                 return Task::batch([self.chat_load(), self.chat_sync()]);
             }
-            ChatMsg::Hide | ChatMsg::Dismiss => self.chat.dismissed = true,
+            ChatMsg::Hide | ChatMsg::Dismiss => {
+                self.chat.dismissed = true;
+                if let Some(id) = self.chat_window.take() {
+                    return window::close(id);
+                }
+            }
+            ChatMsg::ToggleDock => {
+                self.chat_mode = if self.chat_mode == ChatMode::Overlay { ChatMode::Docked } else { ChatMode::Overlay };
+            }
+            ChatMsg::PopOut => {
+                if self.chat_window.is_some() {
+                    return Task::none();
+                }
+                self.chat.dismissed = false;
+                let (id, open) = window::open(window::Settings {
+                    size: iced::Size::new(380.0, 640.0),
+                    min_size: Some(iced::Size::new(260.0, 320.0)),
+                    position: window::Position::Centered,
+                    exit_on_close_request: false,
+                    ..window::Settings::default()
+                });
+                self.chat_window = Some(id);
+                return open.map(|_| Message::Noop);
+            }
+            ChatMsg::PopIn => {
+                if let Some(id) = self.chat_window.take() {
+                    return window::close(id);
+                }
+            }
             ChatMsg::Input(s) => self.chat.input = s,
             ChatMsg::Attach => {
                 if let Some(files) = rfd::FileDialog::new().set_title("Attach files").pick_files() {
@@ -292,8 +344,30 @@ impl App {
         self.repo.is_some() && !self.chat.dismissed
     }
 
-    /// The chat panel. Drag its header to dock it on the other side.
-    pub(crate) fn chat_view(&self) -> Element<'_, Message> {
+    /// The chat is a column beside the editor.
+    pub(crate) fn chat_docked(&self) -> bool {
+        self.chat_visible() && self.chat_window.is_none() && self.chat_mode == ChatMode::Docked
+    }
+
+    /// The chat floats over the window.
+    pub(crate) fn chat_overlay(&self) -> bool {
+        self.chat_visible() && self.chat_window.is_none() && self.chat_mode == ChatMode::Overlay
+    }
+
+    /// The floating chat, placed by its margins from the bottom-right corner.
+    pub(crate) fn chat_overlay_layer(&self) -> Element<'_, Message> {
+        container(iced::widget::opaque(self.chat_view_in(Place::Overlay)))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::End)
+            .align_y(Alignment::End)
+            .padding(Padding { right: self.chat_off.0, bottom: self.chat_off.1, ..Padding::ZERO })
+            .into()
+    }
+
+    /// The chat panel. Drag its header to move it (overlay) or dock it on the other side.
+    pub(crate) fn chat_view_in(&self, place: Place) -> Element<'_, Message> {
+        let docked = place == Place::Docked;
         let c = &self.chat;
         let dim = theme::TEXT_DIM;
         let msg = |m: ChatMsg| Message::Chat(m);
@@ -308,7 +382,7 @@ impl App {
         };
         let header = container(
             row![
-                self.header_left(Edge::Chat),
+                if docked { self.header_left(Edge::Chat) } else { iced::widget::space::horizontal().width(Length::Shrink).into() },
                 icon(Icon::Chat, 13.0, dim),
                 container(text(title).size(12).color(title_color).wrapping(text::Wrapping::None))
                     .width(Length::Fill)
@@ -317,9 +391,19 @@ impl App {
                     .padding([2, 6])
                     .style(theme::flat(false))
                     .on_press_maybe(c.busy.is_none().then(|| msg(ChatMsg::Sync))),
+                if place == Place::Window {
+                    icon_button(Icon::Panels, theme::TEXT_FAINT, false, msg(ChatMsg::PopIn))
+                } else {
+                    icon_button(Icon::Panels, theme::TEXT_FAINT, docked, msg(ChatMsg::ToggleDock))
+                },
+                if place == Place::Window {
+                    iced::widget::space::horizontal().width(Length::Shrink).into()
+                } else {
+                    icon_button(Icon::Expand, theme::TEXT_FAINT, false, msg(ChatMsg::PopOut))
+                },
                 icon_button(Icon::Close, theme::TEXT_FAINT, false, msg(ChatMsg::Hide)),
             ]
-            .push(self.header_extra(Edge::Chat))
+            .push(if docked { self.header_extra(Edge::Chat) } else { iced::widget::space::horizontal().width(Length::Shrink).into() })
             .spacing(6)
             .align_y(Alignment::Center)
             .padding([0, 8]),
@@ -327,7 +411,11 @@ impl App {
         .height(Length::Fixed(TAB_H))
         .width(Length::Fill)
         .align_y(Alignment::Center);
-        let header = mouse_area(header).on_press(Message::DragStart(Handle::ChatDock)).interaction(iced::mouse::Interaction::Grab);
+        let header: Element<'_, Message> = match place {
+            Place::Docked => mouse_area(header).on_press(Message::DragStart(Handle::ChatDock)).interaction(iced::mouse::Interaction::Grab).into(),
+            Place::Overlay => mouse_area(header).on_press(Message::DragStart(Handle::ChatMove)).interaction(iced::mouse::Interaction::Grab).into(),
+            Place::Window => header.into(),
+        };
 
         let branch = self.git.as_ref().map(|g| g.branch.clone()).unwrap_or_else(|| "—".into());
         let small = |label: &'static str, m: ScmMsg| {
@@ -435,11 +523,29 @@ impl App {
         .spacing(6)
         .padding([10, 14]);
 
-        container(column![header, divider_h(), strip, divider_h(), vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer])
-            .width(Length::Fixed(self.chat_w))
-            .height(Length::Fill)
-            .style(theme::bg(theme::PANEL_BG))
-            .into()
+        let body = column![header, divider_h(), strip, divider_h(), vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer];
+        match place {
+            Place::Docked => container(body).width(Length::Fixed(self.chat_w)).height(Length::Fill).style(theme::bg(theme::PANEL_BG)).into(),
+            Place::Window => container(body).width(Length::Fill).height(Length::Fill).style(theme::bg(theme::PANEL_BG)).into(),
+            Place::Overlay => {
+                let height = (self.win.height - self.chat_off.1 - 60.0).clamp(240.0, 640.0);
+                container(body)
+                    .width(Length::Fixed(self.chat_w))
+                    .height(Length::Fixed(height))
+                    .clip(true)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::PANEL_BG.into()),
+                        border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 8.0.into() },
+                        shadow: iced::Shadow {
+                            color: Color { a: 0.45, ..Color::BLACK },
+                            offset: iced::Vector::new(0.0, 6.0),
+                            blur_radius: 18.0,
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+            }
+        }
     }
 
     /// Your own picture, beside the message box.
