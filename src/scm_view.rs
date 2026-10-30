@@ -415,7 +415,7 @@ impl App {
         let body: Element<'_, Message> = if commit.body.is_empty() {
             space::vertical().height(Length::Fixed(0.0)).into()
         } else {
-            container(text(commit.body.clone()).size(12).color(dim)).max_height(84.0).clip(true).into()
+            container(text(commit.body.clone()).size(12).color(dim)).max_height(200.0).clip(true).into()
         };
 
         let mut files = column![].spacing(1);
@@ -456,7 +456,7 @@ impl App {
             column![
                 head,
                 files_label,
-                container(crate::view::vscroll(files).height(Length::Shrink)).max_height(170.0),
+                container(crate::view::vscroll(files).height(Length::Shrink)).max_height(380.0),
                 body,
             ]
             .spacing(8)
