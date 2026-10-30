@@ -1,4 +1,5 @@
 mod add_repo;
+mod ai;
 mod avatar;
 mod buffer;
 mod chat;
@@ -173,6 +174,9 @@ struct App {
     files_open: bool,
     /// The Changes tab is the one showing in the editor area.
     changes_tab: bool,
+    /// Conversations with Claude, and the one showing in the thread column.
+    ai: Vec<ai::AiThread>,
+    ai_active: Option<usize>,
     /// A tab being dragged: (pane, tab).
     tab_drag: Option<(usize, usize)>,
     /// A rail tile, terminal or pinned file being dragged.
@@ -312,6 +316,8 @@ pub enum Message {
     ToggleFiles,
     /// Click on the Changes tab.
     ShowChanges,
+    /// A conversation with Claude.
+    Ai(ai::AiMsg),
     AvatarReady(Option<PathBuf>),
     MemberAvatar(String, Option<PathBuf>),
     DragStart(Handle),
@@ -417,6 +423,8 @@ impl App {
             fullscreen: false,
             files_open: false,
             changes_tab: false,
+            ai: Vec::new(),
+            ai_active: None,
             tab_drag: None,
             item_drag: None,
             agent_right: false,
@@ -797,6 +805,7 @@ impl App {
 
     /// Start a shell (`None`) or the n-th detected agent in the project folder.
     fn new_terminal(&mut self, profile: Option<usize>) {
+        self.ai_active = None;
         self.agent_menu = false;
         let profile = match profile {
             Some(i) => match self.agents.get(i) {
@@ -1098,6 +1107,7 @@ impl App {
             Message::MinimizeWindow => return window::oldest().and_then(|id| window::minimize(id, true)),
             Message::ResetWindow => return self.fit_window_task(),
             Message::ToggleFiles => self.files_open = !self.files_open,
+            Message::Ai(m) => return self.ai_update(m),
             Message::ShowChanges => {
                 self.changes_tab = true;
                 if let Some(repo) = self.repo.clone() {
@@ -1308,6 +1318,7 @@ impl App {
             }
             Message::CloseTermTab(id) => self.close_terminal(id),
             Message::TermSelect(id) => {
+                self.ai_active = None;
                 self.term_active = Some(id);
                 self.focus_term = true;
                 self.refresh_term_snapshot();

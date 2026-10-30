@@ -577,7 +577,23 @@ impl App {
             if !active {
                 continue;
             }
-            // The open repository's threads (terminals and agents), then its files.
+            // The open repository's threads: conversations with Claude, terminals and agents, then its files.
+            for (n, t) in self.ai.iter().enumerate().filter(|(_, t)| self.root.as_ref().is_some_and(|r| r.path == t.root)) {
+                list = list.push(list_row(
+                    row![
+                        space::horizontal().width(Length::Fixed(20.0)),
+                        icon(Icon::Sparkle, 13.0, dim),
+                        text(t.title.clone()).size(14).wrapping(text::Wrapping::None),
+                        space::horizontal(),
+                        if t.busy { Element::from(dot(theme::ACCENT)) } else { space::horizontal().width(Length::Shrink).into() },
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into(),
+                    self.ai_active == Some(n),
+                    Message::Ai(crate::ai::AiMsg::Select(n)),
+                ));
+            }
             for info in self.terms.list() {
                 let glyph = if self.agents.iter().any(|a| a.name == info.name) { Icon::Sparkle } else { Icon::Terminal };
                 list = list.push(drag_row(
@@ -657,7 +673,8 @@ impl App {
                         .align_y(Alignment::Center)
                         .into(),
                     false,
-                    Message::NewTerminal(Some(i)),
+                    // Claude gets a conversation like Zed's; other agents run in a terminal.
+                    if agent.name == "Claude Code" { Message::Ai(crate::ai::AiMsg::New) } else { Message::NewTerminal(Some(i)) },
                 ));
             }
         }
@@ -705,17 +722,21 @@ impl App {
     fn agent_panel(&self) -> Element<'_, Message> {
         let session = self.term_active.and_then(|id| self.terms.get(id));
         // With no terminal or agent running, the column holds the team's conversation.
-        let title = session.as_ref().map(|s| s.name().to_string()).unwrap_or_else(|| {
-            if self.repo.is_some() { "Team chat".into() } else { "New Thread".into() }
-        });
+        let thread = self.ai_thread();
+        let title = match thread {
+            Some(t) => t.title.clone(),
+            None => session.as_ref().map(|s| s.name().to_string()).unwrap_or_else(|| {
+                if self.repo.is_some() { "Team chat".into() } else { "New Thread".into() }
+            }),
+        };
         let dim = theme::TEXT_DIM;
 
         let header = container(
             row![
                 self.header_left(Edge::Agent),
-                text(title).size(14).wrapping(text::Wrapping::None),
+                // A long title is cut off rather than pushing the buttons out of view.
+                container(text(title).size(14).wrapping(text::Wrapping::None)).width(Length::Fill).clip(true),
                 self.people_bar(),
-                space::horizontal(),
                 self.share_controls(false),
                 icon_button(Icon::Plus, dim, false, Message::NewTerminal(None)),
                 icon_button(Icon::More, dim, self.menu == Some(1), Message::OpenMenu(1)),
@@ -734,6 +755,8 @@ impl App {
             .interaction(iced::mouse::Interaction::Grab);
 
         let body: Element<'_, Message> = match (&self.term_snap, session) {
+            // A Claude thread, when one is chosen, takes the column.
+            _ if thread.is_some() => self.ai_view(thread.unwrap()),
             (Some(snap), Some(session)) => Canvas::new(TerminalView { snap, session, focused: self.focus_term })
                 .width(Length::Fill)
                 .height(Length::Fill)

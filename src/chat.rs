@@ -53,8 +53,9 @@ pub struct Chat {
     pub loaded_for: Option<PathBuf>,
     /// Closed from the welcome area, which shows the welcome menu again.
     pub dismissed: bool,
-    /// The message the next one will comment on.
+    /// The message the next one will comment on, and the words of it being quoted.
     pub replying: Option<String>,
+    pub quote: String,
     /// Messages whose comments are showing.
     pub open_threads: HashSet<String>,
 }
@@ -75,6 +76,8 @@ pub enum ChatMsg {
     /// Comment on a message: the next message sent replies to it.
     Reply(String),
     CancelReply,
+    /// Edit which words of the message the comment quotes.
+    Quote(String),
     /// Show or hide a message's comments.
     ToggleThread(String),
     Attach,
@@ -183,7 +186,13 @@ impl App {
                 }
             }
             ChatMsg::Input(s) => self.chat.input = s,
-            ChatMsg::Reply(id) => self.chat.replying = Some(id),
+            ChatMsg::Reply(id) => {
+                // Start from the message's first line; trim it down to the words that matter.
+                let parent = self.chat.messages.iter().find(|m| m.id == id);
+                self.chat.quote = parent.and_then(|m| m.body.lines().find(|l| !l.trim().is_empty())).unwrap_or("").trim().to_string();
+                self.chat.replying = Some(id);
+            }
+            ChatMsg::Quote(q) => self.chat.quote = q,
             ChatMsg::CancelReply => self.chat.replying = None,
             ChatMsg::ToggleThread(id) => {
                 if !self.chat.open_threads.remove(&id) {
@@ -208,6 +217,13 @@ impl App {
                 }
                 let files = std::mem::take(&mut self.chat.files);
                 let reply_to = self.chat.replying.take();
+                // Keep the quote only if it really is part of the message.
+                let quote = std::mem::take(&mut self.chat.quote);
+                let quote = reply_to
+                    .as_ref()
+                    .and_then(|id| self.chat.messages.iter().find(|m| &m.id == id))
+                    .filter(|m| !quote.trim().is_empty() && m.body.contains(quote.trim()))
+                    .map(|_| quote.trim().to_string());
                 if let Some(id) = &reply_to {
                     self.chat.open_threads.insert(id.clone());
                 }
@@ -216,7 +232,7 @@ impl App {
                 self.chat.busy = Some("Sending…");
                 return Task::perform(
                     async move {
-                        tokio::task::spawn_blocking(move || repo.chat_post(&body, &files, reply_to.as_deref()))
+                        tokio::task::spawn_blocking(move || repo.chat_post(&body, &files, reply_to.as_deref(), quote.as_deref()))
                             .await
                             .unwrap_or_else(|e| Err(e.to_string()))
                     },
@@ -456,10 +472,15 @@ impl App {
         }
         let can_send = !(c.input.trim().is_empty() && c.files.is_empty()) && c.busy != Some("Sending…");
         let replying: Element<'_, Message> = match c.replying.as_ref().and_then(|id| c.messages.iter().find(|m| &m.id == id)) {
-            Some(parent) => container(
+            Some(_) => container(
                 row![
                     text("Commenting on").size(12).color(theme::TEXT_FAINT),
-                    text(excerpt(&parent.body)).size(12).color(theme::TEXT_DIM).wrapping(text::Wrapping::None),
+                    // Trim this to the exact words; they're highlighted in the message.
+                    text_input("words to quote", &c.quote)
+                        .on_input(|s| Message::Chat(ChatMsg::Quote(s)))
+                        .padding([2, 6])
+                        .size(12)
+                        .style(|t: &Theme, st| text_input::Style { background: Color { a: 0.22, ..PURPLE }.into(), ..theme::bare(t, st) }),
                     space::horizontal(),
                     button(icon(Icon::Close, 11.0, theme::TEXT_FAINT)).padding(2).style(theme::flat(false)).on_press(msg(ChatMsg::CancelReply)),
                 ]
@@ -527,7 +548,7 @@ impl App {
     }
 
     /// Your own picture, beside the message box.
-    fn my_face(&self) -> Element<'_, Message> {
+    pub(crate) fn my_face(&self) -> Element<'_, Message> {
         match &self.avatar {
             Some(h) => iced::widget::image(h.clone()).width(Length::Fixed(22.0)).height(Length::Fixed(22.0)).border_radius(11.0).into(),
             None => self.chat_face(&self.user, None, None, 0),
@@ -646,8 +667,16 @@ impl App {
         let c = &self.chat;
         let avatar = self.chat_face(&m.author, m.login.as_ref(), Some(m.time_ms / 1000), now);
         let mut body = column![].spacing(8);
+        // Words other people commented on are highlighted, as in Zed.
+        let quotes: Vec<&str> = c
+            .messages
+            .iter()
+            .filter(|r| r.reply_to.as_deref() == Some(m.id.as_str()))
+            .filter_map(|r| r.quote.as_deref())
+            .collect();
         for part in split_code(&m.body) {
             body = body.push(match part {
+                Part::Text(t) if quotes.iter().any(|q| t.contains(q)) => highlighted(&t, &quotes),
                 Part::Text(t) => text(t).size(14).line_height(1.45).into(),
                 Part::Code { info, lines } => code_card(info, lines),
             });
@@ -692,7 +721,6 @@ impl App {
     /// Comments on a message, like Zed's: "N comments", and when open, a card quoting
     /// the message with each comment under a coloured bar.
     fn chat_thread<'a>(&'a self, parent: &'a ChatMessage, replies: &[&'a ChatMessage], now: i64) -> Element<'a, Message> {
-        const PURPLE: Color = Color::from_rgb8(0xb4, 0x77, 0xcf);
         let open = self.chat.open_threads.contains(&parent.id);
         let n = replies.len();
         let toggle = button(
@@ -708,7 +736,8 @@ impl App {
         .on_press(Message::Chat(ChatMsg::ToggleThread(parent.id.clone())));
         let mut col = column![toggle].spacing(6);
         if open {
-            let quote = container(text(excerpt(&parent.body)).size(13))
+            let quoted = replies.iter().find_map(|r| r.quote.clone()).unwrap_or_else(|| excerpt(&parent.body));
+            let quote = container(text(quoted).size(13))
                 .padding([1, 4])
                 .style(|_: &Theme| container::Style { background: Some(Color { a: 0.22, ..PURPLE }.into()), ..Default::default() });
             let mut card = column![quote].spacing(8);
@@ -739,21 +768,52 @@ impl App {
     }
 }
 
+/// The colour of comments: their bar, and the highlight on the words they quote.
+const PURPLE: Color = Color::from_rgb8(0xb4, 0x77, 0xcf);
+
+/// Prose with every quoted phrase highlighted and underlined.
+fn highlighted<'a>(prose: &str, quotes: &[&str]) -> Element<'a, Message> {
+    let mut spans: Vec<iced::widget::text::Span<'a, (), iced::Font>> = Vec::new();
+    let mut rest = prose;
+    while !rest.is_empty() {
+        // The earliest quote still ahead.
+        let next = quotes.iter().filter(|q| !q.is_empty()).filter_map(|q| rest.find(q).map(|at| (at, q.len()))).min();
+        match next {
+            Some((at, len)) => {
+                if at > 0 {
+                    spans.push(iced::widget::span(rest[..at].to_string()));
+                }
+                spans.push(
+                    iced::widget::span(rest[at..at + len].to_string())
+                        .background(Color { a: 0.22, ..PURPLE })
+                        .underline(true),
+                );
+                rest = &rest[at + len..];
+            }
+            None => {
+                spans.push(iced::widget::span(rest.to_string()));
+                rest = "";
+            }
+        }
+    }
+    iced::widget::rich_text(spans).size(14).line_height(1.45).into()
+}
+
 /// The first line of a message, shortened, for quoting it.
-fn excerpt(body: &str) -> String {
+pub(crate) fn excerpt(body: &str) -> String {
     let line = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
     if line.chars().count() > 60 { format!("{}…", line.chars().take(60).collect::<String>()) } else { line.to_string() }
 }
 
 /// A piece of a message: prose, or a fenced code block.
-enum Part {
+pub(crate) enum Part {
     Text(String),
     /// `info`: what follows the opening fence, often a language or a file path.
     Code { info: String, lines: Vec<String> },
 }
 
 /// Split a message on ``` fences. An unclosed fence runs to the end.
-fn split_code(body: &str) -> Vec<Part> {
+pub(crate) fn split_code(body: &str) -> Vec<Part> {
     let mut parts = Vec::new();
     let mut prose = String::new();
     let mut code: Option<(String, Vec<String>)> = None;
@@ -789,7 +849,7 @@ fn split_code(body: &str) -> Vec<Part> {
 
 /// A code block as Zed draws one in a thread: a small title, then the code in a card.
 /// Lines starting with `+` or `-` are tinted like a diff.
-fn code_card<'a>(info: String, lines: Vec<String>) -> Element<'a, Message> {
+pub(crate) fn code_card<'a>(info: String, lines: Vec<String>) -> Element<'a, Message> {
     let mut rows = column![];
     for l in lines {
         let tint = if l.starts_with('+') {
