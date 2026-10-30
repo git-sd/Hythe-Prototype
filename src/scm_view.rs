@@ -76,17 +76,18 @@ impl App {
         let panel = column![head, body];
         match place {
             ScmPlace::Window => container(panel).width(Length::Fill).height(Length::Fill).style(theme::bg(theme::EDITOR_BG)).into(),
+            // A drawer on the left: full height, no dimming, so the code stays visible to its right.
             ScmPlace::Overlay => container(panel)
                 .width(Length::Fixed(self.scm_overlay_w()))
-                .height(Length::Fixed((self.win.height * 0.82).min(900.0)))
+                .height(Length::Fill)
                 .clip(true)
                 .style(|_: &Theme| container::Style {
                     background: Some(theme::EDITOR_BG.into()),
-                    border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 8.0.into() },
+                    border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 0.0.into() },
                     shadow: iced::Shadow {
-                        color: Color { a: 0.5, ..Color::BLACK },
-                        offset: iced::Vector::new(0.0, 8.0),
-                        blur_radius: 24.0,
+                        color: Color { a: 0.45, ..Color::BLACK },
+                        offset: iced::Vector::new(6.0, 0.0),
+                        blur_radius: 18.0,
                     },
                     ..Default::default()
                 })
@@ -95,22 +96,23 @@ impl App {
     }
 
     pub(crate) fn scm_overlay_w(&self) -> f32 {
-        (self.win.width * 0.85).min(1200.0).max(560.0)
+        (self.win.width * 0.55).min(900.0).max(520.0)
     }
 
-    /// The floating Source Control panel over a dimmed window; clicking outside closes it.
+    /// Where the drawer starts: just right of the sidebar.
+    pub(crate) fn scm_drawer_left(&self) -> f32 {
+        if self.show_sidebar { crate::view::RAIL_W + self.list_w + crate::view::HANDLE_W } else { 0.0 }
+    }
+
+    /// The Source Control drawer, sliding over the content from the left edge (beside the
+    /// sidebar and above the bottom bar). Close it with its X to collapse it.
     pub(crate) fn scm_overlay_layer(&self) -> Element<'_, Message> {
-        iced::widget::stack![
-            iced::widget::mouse_area(
-                container(space::horizontal().width(Length::Fill).height(Length::Fill))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .style(theme::bg(Color { a: 0.35, ..Color::BLACK })),
-            )
-            .on_press(scm(ScmMsg::Hide)),
-            container(iced::widget::opaque(self.scm_view_in(ScmPlace::Overlay))).center(Length::Fill),
-        ]
-        .into()
+        container(iced::widget::opaque(self.scm_view_in(ScmPlace::Overlay)))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Start)
+            .padding(Padding { left: self.scm_drawer_left(), bottom: crate::view::BAR_H + 1.0, ..Padding::ZERO })
+            .into()
     }
 
     /// Title and close button at the top of the left column.

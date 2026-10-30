@@ -1590,8 +1590,7 @@ impl App {
                 self.drag = Some(drag);
             }
             Handle::Scm => {
-                let overlay_left = (win.width - self.scm_overlay_w()) / 2.0;
-                self.scm_w = (p.x - overlay_left).clamp(220.0, (self.scm_overlay_w() - 300.0).clamp(220.0, 700.0));
+                self.scm_w = (p.x - self.scm_drawer_left()).clamp(220.0, (self.scm_overlay_w() - 300.0).clamp(220.0, 700.0));
             }
             Handle::Panes(i) => {
                 let pos = match self.panes.axis {
