@@ -161,8 +161,8 @@ impl App {
             let mut rows = column![];
             for (index, l) in lines.iter().enumerate().filter(|(_, l)| l.kind != LineKind::Header).take(MAX_DIFF_LINES) {
                 let (tint, color) = match l.kind {
-                    LineKind::Added => (Some(Color { a: 0.16, ..theme::ADDED }), theme::TEXT),
-                    LineKind::Removed => (Some(Color { a: 0.18, ..theme::REMOVED }), theme::TEXT),
+                    LineKind::Added => (Some(theme::ADDED_BG), theme::TEXT),
+                    LineKind::Removed => (Some(theme::REMOVED_BG), theme::TEXT),
                     LineKind::Hunk => (None, theme::TEXT_FAINT),
                     _ => (None, theme::TEXT_DIM),
                 };
@@ -657,8 +657,8 @@ fn diff_body(diff: &[DiffLine], pane_w: f32) -> Element<'static, Message> {
         let mut lines = column![];
         for l in diff.iter().take(MAX_DIFF_LINES) {
             let (tint, color, marker) = match l.kind {
-                LineKind::Added => (Some(Color { a: 0.14, ..theme::ADDED }), theme::TEXT, "+"),
-                LineKind::Removed => (Some(Color { a: 0.16, ..theme::REMOVED }), theme::TEXT, "−"),
+                LineKind::Added => (Some(theme::ADDED_BG), theme::TEXT, "+"),
+                LineKind::Removed => (Some(theme::REMOVED_BG), theme::TEXT, "−"),
                 LineKind::Hunk => (Some(Color { a: 0.10, ..theme::ACCENT }), theme::ACCENT, " "),
                 LineKind::Header => (None, theme::TEXT_DIM, " "),
                 LineKind::Context => (None, theme::TEXT_DIM, " "),

@@ -480,7 +480,7 @@ impl App {
                         .on_input(|s| Message::Chat(ChatMsg::Quote(s)))
                         .padding([2, 6])
                         .size(12)
-                        .style(|t: &Theme, st| text_input::Style { background: Color { a: 0.22, ..PURPLE }.into(), ..theme::bare(t, st) }),
+                        .style(|t: &Theme, st| text_input::Style { background: theme::COMMENT_BG.into(), ..theme::bare(t, st) }),
                     space::horizontal(),
                     button(icon(Icon::Close, 11.0, theme::TEXT_FAINT)).padding(2).style(theme::flat(false)).on_press(msg(ChatMsg::CancelReply)),
                 ]
@@ -739,12 +739,12 @@ impl App {
             let quoted = replies.iter().find_map(|r| r.quote.clone()).unwrap_or_else(|| excerpt(&parent.body));
             let quote = container(text(quoted).size(13))
                 .padding([1, 4])
-                .style(|_: &Theme| container::Style { background: Some(Color { a: 0.22, ..PURPLE }.into()), ..Default::default() });
+                .style(|_: &Theme| container::Style { background: Some(theme::COMMENT_BG.into()), ..Default::default() });
             let mut card = column![quote].spacing(8);
             for r in replies {
                 let bar = container(iced::widget::space::vertical().height(Length::Fill))
                     .width(Length::Fixed(2.0))
-                    .style(|_: &Theme| container::Style { background: Some(PURPLE.into()), ..Default::default() });
+                    .style(|_: &Theme| container::Style { background: Some(theme::COMMENT.into()), ..Default::default() });
                 card = card.push(
                     row![
                         bar,
@@ -769,7 +769,6 @@ impl App {
 }
 
 /// The colour of comments: their bar, and the highlight on the words they quote.
-const PURPLE: Color = Color::from_rgb8(0xb4, 0x77, 0xcf);
 
 /// Prose with every quoted phrase highlighted and underlined.
 fn highlighted<'a>(prose: &str, quotes: &[&str]) -> Element<'a, Message> {
@@ -785,7 +784,7 @@ fn highlighted<'a>(prose: &str, quotes: &[&str]) -> Element<'a, Message> {
                 }
                 spans.push(
                     iced::widget::span(rest[at..at + len].to_string())
-                        .background(Color { a: 0.22, ..PURPLE })
+                        .background(theme::COMMENT_BG)
                         .underline(true),
                 );
                 rest = &rest[at + len..];
@@ -853,9 +852,9 @@ pub(crate) fn code_card<'a>(info: String, lines: Vec<String>) -> Element<'a, Mes
     let mut rows = column![];
     for l in lines {
         let tint = if l.starts_with('+') {
-            Some(Color { a: 0.16, ..theme::ADDED })
+            Some(theme::ADDED_BG)
         } else if l.starts_with('-') {
-            Some(Color { a: 0.18, ..theme::REMOVED })
+            Some(theme::REMOVED_BG)
         } else {
             None
         };

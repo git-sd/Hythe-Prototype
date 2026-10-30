@@ -1,26 +1,34 @@
 use iced::widget::{button, container, text_input};
 use iced::{Background, Border, Color, Theme};
 
-// A One Dark-style palette in the spirit of Zed's default theme.
-pub const EDITOR_BG: Color = Color::from_rgb8(0x28, 0x2c, 0x34);
-/// Sidebar, title bar and bottom bar.
-pub const PANEL_BG: Color = Color::from_rgb8(0x21, 0x25, 0x2b);
-pub const BAR_BG: Color = Color::from_rgb8(0x21, 0x25, 0x2b);
-/// Middle column that hosts terminals and agents.
-pub const AGENT_BG: Color = Color::from_rgb8(0x26, 0x2a, 0x32);
-/// Diff cards in the Changes view.
-pub const CARD_BG: Color = Color::from_rgb8(0x1e, 0x21, 0x27);
-pub const TAB_BAR_BG: Color = Color::from_rgb8(0x2b, 0x30, 0x38);
-pub const BORDER: Color = Color::from_rgb8(0x18, 0x1a, 0x1f);
-pub const HOVER: Color = Color::from_rgb8(0x2c, 0x31, 0x3a);
-pub const SELECTED: Color = Color::from_rgb8(0x2f, 0x34, 0x3e);
-pub const TEXT: Color = Color::from_rgb8(0xdc, 0xe0, 0xe5);
-pub const TEXT_DIM: Color = Color::from_rgb8(0x8a, 0x91, 0x9e);
-pub const TEXT_FAINT: Color = Color::from_rgb8(0x5d, 0x63, 0x6f);
-pub const GUTTER: Color = Color::from_rgb8(0x4b, 0x52, 0x63);
+// Colours sampled from Zed's dark theme (see the reference screenshot): near-black
+// editor and thread columns, a slightly lighter sidebar, and light borders.
+pub const EDITOR_BG: Color = Color::from_rgb8(0x19, 0x1c, 0x1f);
+/// Sidebar.
+pub const PANEL_BG: Color = Color::from_rgb8(0x20, 0x23, 0x27);
+/// Footer, tooltips and menus.
+pub const BAR_BG: Color = Color::from_rgb8(0x19, 0x1c, 0x1f);
+/// Middle column that hosts threads, terminals and agents.
+pub const AGENT_BG: Color = Color::from_rgb8(0x19, 0x1c, 0x1f);
+/// Diff and code cards.
+pub const CARD_BG: Color = Color::from_rgb8(0x16, 0x19, 0x1b);
+pub const TAB_BAR_BG: Color = Color::from_rgb8(0x21, 0x24, 0x2a);
+pub const BORDER: Color = Color::from_rgb8(0x2a, 0x2c, 0x32);
+pub const HOVER: Color = Color::from_rgb8(0x26, 0x29, 0x2e);
+pub const SELECTED: Color = Color::from_rgb8(0x2d, 0x2f, 0x35);
+pub const TEXT: Color = Color::from_rgb8(0xdd, 0xe0, 0xe5);
+pub const TEXT_DIM: Color = Color::from_rgb8(0xaa, 0xaf, 0xbc);
+pub const TEXT_FAINT: Color = Color::from_rgb8(0x6b, 0x71, 0x7d);
+pub const GUTTER: Color = Color::from_rgb8(0x5d, 0x63, 0x70);
 pub const ACCENT: Color = Color::from_rgb8(0x74, 0xad, 0xe8);
 pub const ADDED: Color = Color::from_rgb8(0xa1, 0xc1, 0x81);
 pub const REMOVED: Color = Color::from_rgb8(0xd0, 0x72, 0x77);
+/// Row backgrounds for added and removed lines.
+pub const ADDED_BG: Color = Color::from_rgb8(0x20, 0x2e, 0x25);
+pub const REMOVED_BG: Color = Color::from_rgb8(0x36, 0x1e, 0x23);
+/// Comments: their bar, and (as `COMMENT_BG`) the highlight on quoted words.
+pub const COMMENT: Color = Color::from_rgb8(0xb5, 0x8b, 0xe2);
+pub const COMMENT_BG: Color = Color::from_rgb8(0x38, 0x32, 0x46);
 
 pub fn bg(color: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
