@@ -88,7 +88,21 @@ impl App {
 
     /// A changed file or a commit's file is chosen, so its diff should show beside the code.
     pub(crate) fn scm_showing_diff(&self) -> bool {
-        self.scm_docked() && self.scm.show_diff
+        self.scm.show_diff && self.scm_window.is_none() && (self.scm.open || self.scm_inline())
+    }
+
+    /// With no file open, History fills the editor area instead of a welcome screen.
+    pub(crate) fn scm_inline(&self) -> bool {
+        self.repo.is_some()
+            && !self.scm.open
+            && self.scm_window.is_none()
+            && self.panes.list.len() == 1
+            && self.panes.list[0].tabs.is_empty()
+    }
+
+    /// History as the page you see when nothing is open: changes, then commits.
+    pub(crate) fn scm_inline_body(&self) -> Element<'_, Message> {
+        self.scm_left_in(Length::Fill)
     }
 
     /// History as a column on the left, like the sidebar: Changes and commits in one list.
@@ -166,6 +180,10 @@ impl App {
     }
 
     fn scm_left(&self) -> Element<'_, Message> {
+        self.scm_left_in(Length::Fixed(self.scm_w))
+    }
+
+    fn scm_left_in(&self, width: Length) -> Element<'_, Message> {
         let s = &self.scm;
         let dim = theme::TEXT_DIM;
         let branch = self.git.as_ref().map(|g| g.branch.clone()).unwrap_or_else(|| "—".into());
@@ -306,7 +324,7 @@ impl App {
                 .spacing(10)
                 .padding(10),
         )
-        .width(Length::Fixed(self.scm_w))
+        .width(width)
         .height(Length::Fill)
         .style(theme::bg(theme::PANEL_BG))
         .into()

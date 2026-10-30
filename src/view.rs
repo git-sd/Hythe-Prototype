@@ -150,10 +150,10 @@ impl App {
         // History is the outermost column on the right, pushing everything else over.
         if self.scm_docked() {
             main = main.push(self.handle(Handle::Scm, true)).push(self.scm_sidebar());
-            // Clicking something in History opens its details in a column to its right.
-            if self.scm_showing_diff() {
-                main = main.push(self.handle(Handle::ScmDetail, true)).push(self.scm_detail_panel());
-            }
+        }
+        // Clicking something in History opens its details in a column to its right.
+        if self.scm_showing_diff() {
+            main = main.push(self.handle(Handle::ScmDetail, true)).push(self.scm_detail_panel());
         }
         let right = column![main, divider_h(), self.bottom_bar()].width(Length::Fill);
 
@@ -840,6 +840,7 @@ impl App {
             let strip = container(
                 row![
                     self.header_left(Edge::Editor),
+                    if self.scm_inline() { text("History").size(13).into() } else { Element::from(space::horizontal().width(Length::Shrink)) },
                     mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
                         .on_press(Message::DragWindow)
                         .on_double_click(Message::ToggleMaximize),
@@ -851,7 +852,9 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fixed(TAB_H))
             .style(theme::bg(theme::TAB_BAR_BG));
-            return container(column![strip, divider_h(), self.welcome()])
+            // With a repository open, History is what you see here; otherwise the welcome menu.
+            let page: Element<'_, Message> = if self.scm_inline() { self.scm_inline_body() } else { self.welcome() };
+            return container(column![strip, divider_h(), page])
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(theme::bg(theme::EDITOR_BG))

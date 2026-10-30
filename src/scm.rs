@@ -167,7 +167,7 @@ impl App {
     /// Open or refresh whatever source-control state is on screen.
     pub(crate) fn scm_reload(&mut self) {
         if let Some(repo) = self.repo.clone() {
-            if self.scm.open || self.scm_window.is_some() || self.scm.branch_menu {
+            if self.scm.open || self.scm_window.is_some() || self.scm.branch_menu || self.scm_inline() {
                 self.scm.reload(&repo);
             }
         }
