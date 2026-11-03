@@ -23,7 +23,7 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::auth::Auth;
-use crate::proto::{b64, close, unb64, ClientMsg, Peer, ServerMsg};
+use crate::proto::{b64, close, unb64, ClientMsg, LockInfo, Peer, ServerMsg};
 use crate::shared::SharedDoc;
 use crate::store::Store;
 
@@ -140,6 +140,9 @@ struct Room {
     peers: HashMap<u64, (Peer, Tx)>,
     docs: HashMap<String, DocState>,
     empty_since: Option<Instant>,
+    /// File locks: document name to the id of the peer holding it. Never persisted;
+    /// a lock dies with its holder's connection.
+    locks: HashMap<String, u64>,
 }
 
 impl Room {
@@ -175,14 +178,14 @@ struct Hub {
 }
 
 impl Hub {
-    fn join(&self, room_name: &str, name: String, color: u32, tx: Tx) -> Result<(u64, Vec<Peer>), String> {
+    fn join(&self, room_name: &str, name: String, color: u32, login: Option<String>, tx: Tx) -> Result<(u64, Vec<Peer>), String> {
         let mut rooms = self.rooms.lock().unwrap();
         let room = rooms.entry(room_name.to_string()).or_default();
         if room.peers.len() >= self.cfg.limits.max_peers_per_room {
             return Err("this room is full".into());
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-        let peer = Peer { id, name, color };
+        let peer = Peer { id, name, color, login };
         let others: Vec<Peer> = room.peers.values().map(|(p, _)| p.clone()).collect();
         for (_, other_tx) in room.peers.values() {
             other_tx.send(ServerMsg::PeerJoined { peer: peer.clone() });
@@ -197,8 +200,12 @@ impl Hub {
         let Some(room) = rooms.get_mut(room_name) else { return };
         room.peers.remove(&id);
         room.release(id);
+        let released = release_locks(room, id);
         for (_, tx) in room.peers.values() {
             tx.send(ServerMsg::PeerLeft { id });
+        }
+        if released {
+            broadcast_locks(room);
         }
         if room.peers.is_empty() {
             // Keep the documents for a while so rejoining peers find them (see `sweep`).
@@ -240,6 +247,9 @@ impl Hub {
         };
         let mut rooms = self.rooms.lock().unwrap();
         let room = rooms.get_mut(room_name)?;
+        if let Some(denied) = lock_denial(room, from, &doc_name) {
+            return Some(denied);
+        }
         if !room.docs.contains_key(&doc_name) && room.docs.len() >= self.cfg.limits.max_docs_per_room {
             return Some(ServerMsg::Error { message: "too many documents in this room".into() });
         }
@@ -266,6 +276,38 @@ impl Hub {
             if *id != from {
                 tx.send(ServerMsg::Cursor { doc: doc.clone(), id: from, head, anchor });
             }
+        }
+    }
+
+    /// `id` asks for the lock on `doc`. Returns `LockDenied` if someone else has it.
+    fn lock(&self, room_name: &str, id: u64, doc: String) -> Option<ServerMsg> {
+        let mut rooms = self.rooms.lock().unwrap();
+        let room = rooms.get_mut(room_name)?;
+        if let Some(denied) = lock_denial(room, id, &doc) {
+            return Some(denied);
+        }
+        if room.locks.insert(doc, id).is_none() {
+            broadcast_locks(room);
+        }
+        None
+    }
+
+    /// Only the holder can release; anyone else is ignored.
+    fn unlock(&self, room_name: &str, id: u64, doc: &str) {
+        let mut rooms = self.rooms.lock().unwrap();
+        let Some(room) = rooms.get_mut(room_name) else { return };
+        if room.locks.get(doc) == Some(&id) {
+            room.locks.remove(doc);
+            broadcast_locks(room);
+        }
+    }
+
+    /// Tell one peer (just welcomed) about the current locks.
+    fn send_locks(&self, room_name: &str, id: u64) {
+        let rooms = self.rooms.lock().unwrap();
+        let Some(room) = rooms.get(room_name) else { return };
+        if let Some((_, tx)) = room.peers.get(&id) {
+            tx.send(ServerMsg::Locks { locks: lock_list(room) });
         }
     }
 
@@ -345,6 +387,43 @@ impl Hub {
             _ => true,
         });
     }
+}
+
+/// `LockDenied` if `doc` is locked by someone other than `id`.
+fn lock_denial(room: &Room, id: u64, doc: &str) -> Option<ServerMsg> {
+    let owner = *room.locks.get(doc)?;
+    if owner == id {
+        return None;
+    }
+    let owner_name = room.peers.get(&owner).map(|(p, _)| p.name.clone()).unwrap_or_default();
+    Some(ServerMsg::LockDenied { doc: doc.to_string(), owner_name })
+}
+
+fn lock_list(room: &Room) -> Vec<LockInfo> {
+    let mut list: Vec<LockInfo> = room
+        .locks
+        .iter()
+        .filter_map(|(doc, owner)| {
+            let (p, _) = room.peers.get(owner)?;
+            Some(LockInfo { doc: doc.clone(), owner_id: *owner, owner_name: p.name.clone(), login: p.login.clone() })
+        })
+        .collect();
+    list.sort_by(|a, b| a.doc.cmp(&b.doc));
+    list
+}
+
+fn broadcast_locks(room: &Room) {
+    let locks = lock_list(room);
+    for (_, tx) in room.peers.values() {
+        tx.send(ServerMsg::Locks { locks: locks.clone() });
+    }
+}
+
+/// Drop every lock `id` holds. True if there were any.
+fn release_locks(room: &mut Room, id: u64) -> bool {
+    let before = room.locks.len();
+    room.locks.retain(|_, owner| *owner != id);
+    room.locks.len() != before
 }
 
 /// A running relay: shared state plus the entry points to serve it.
@@ -512,7 +591,7 @@ async fn connection(hub: Arc<Hub>, stream: TcpStream) {
                     continue;
                 };
                 match (&session, msg) {
-                    (None, ClientMsg::Hello { room, name, color, token }) => {
+                    (None, ClientMsg::Hello { room, name, color, token, login }) => {
                         if !valid_name(&room, MAX_ROOM_NAME) || !valid_name(&name, MAX_PEER_NAME) {
                             tx.reject(close::BAD_REQUEST, "invalid room or name");
                             break_after_flush().await;
@@ -526,9 +605,10 @@ async fn connection(hub: Arc<Hub>, stream: TcpStream) {
                             break;
                         }
                         hub.ensure_loaded(&room).await;
-                        match hub.join(&room, name, color, tx.clone()) {
+                        match hub.join(&room, name, color, login, tx.clone()) {
                             Ok((id, peers)) => {
                                 tx.send(ServerMsg::Welcome { you: id, peers });
+                                hub.send_locks(&room, id);
                                 session = Some((room, id));
                             }
                             Err(why) => {
@@ -554,6 +634,14 @@ async fn connection(hub: Arc<Hub>, stream: TcpStream) {
                             tx.send(err);
                         }
                     }
+                    (Some((room, id)), ClientMsg::Lock { doc }) => {
+                        if !valid_name(&doc, MAX_DOC_NAME) {
+                            tx.send(ServerMsg::Error { message: "invalid document name".into() });
+                        } else if let Some(denied) = hub.lock(room, *id, doc) {
+                            tx.send(denied);
+                        }
+                    }
+                    (Some((room, id)), ClientMsg::Unlock { doc }) => hub.unlock(room, *id, &doc),
                     (Some((room, id)), ClientMsg::Cursor { doc, head, anchor }) => hub.cursor(room, *id, doc, head, anchor),
                 }
             }

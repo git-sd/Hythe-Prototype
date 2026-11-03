@@ -40,6 +40,8 @@ fn join(url: &str, room: &str, name: &str) -> (Client, u64) {
     let Event::Connected { you, .. } = wait_for(&client, |e| matches!(e, Event::Connected { .. } | Event::Disconnected(_))) else {
         panic!("could not join {room} as {name}")
     };
+    // The server follows the welcome with the room's current locks.
+    wait_for(&client, |e| matches!(e, Event::Message(ServerMsg::Locks { .. })));
     (client, you)
 }
 

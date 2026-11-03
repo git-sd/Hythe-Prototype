@@ -8,6 +8,7 @@ mod completion_ui;
 mod doc;
 mod editor;
 mod explorer;
+mod find;
 mod github;
 mod highlight;
 mod icons;
@@ -112,6 +113,8 @@ struct App {
     agents: Vec<Profile>,
     status: String,
     palette: Option<Palette>,
+    find: find::Find,
+    psearch: find::ProjSearch,
     /// Open top-bar dropdown (index into `menus::MENUS`).
     menu: Option<usize>,
     /// Open completion popup in the focused editor.
@@ -190,6 +193,10 @@ struct App {
     agent_w_set: bool,
     /// The thread column's own width while History has squeezed it narrower.
     agent_w_saved: Option<f32>,
+    /// The sidebar's own width while a tight window squeezes it.
+    list_w_saved: Option<f32>,
+    /// (pane, active tab, tab count, Changes showing) last time the tab strips were scrolled.
+    tab_snap: Vec<(usize, usize, bool)>,
     /// History needs the room, so the thread column steps aside until it closes.
     agent_hidden: bool,
     chat_w: f32,
@@ -359,6 +366,14 @@ pub enum Message {
     SelectAll,
     OpenPalette,
     ClosePalette,
+    /// Ctrl+F / Ctrl+H: the find bar.
+    Find(find::FindMsg),
+    /// Search across the project's files.
+    Project(find::ProjMsg),
+    /// Move the caret to a 1-based line (and column, 0 for none).
+    GoToLine { line: usize, col: usize },
+    /// Open the palette ready for a line number.
+    GoToLinePrompt,
     RunPalette(usize),
 }
 
@@ -390,6 +405,8 @@ impl App {
             agents: hythe_term::known_agents(),
             status: String::new(),
             palette: None,
+            find: find::Find::default(),
+            psearch: find::ProjSearch::default(),
             menu: None,
             completion: None,
             highlighter: Highlighter::new(),
@@ -439,6 +456,8 @@ impl App {
             agent_right: false,
             agent_w_set: false,
             agent_w_saved: None,
+            list_w_saved: None,
+            tab_snap: Vec::new(),
             agent_hidden: false,
             chat_w: view::CHAT_W,
             chat_right: true,
@@ -966,28 +985,52 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.update_inner(message);
+        // Matches follow the text as it is edited or the tab changes.
+        self.find_recompute(false);
         self.fit_columns();
         // Anything that edited the text or moved the cursor is sent to collaborators.
         self.collab_flush();
-        Task::batch([task, self.git_task(), self.picture_tasks()])
+        Task::batch([task, self.git_task(), self.picture_tasks(), self.follow_active_tabs()])
+    }
+
+    /// Scrolls a tab strip to its current tab whenever that tab (or the Changes view) changes.
+    fn follow_active_tabs(&mut self) -> Task<Message> {
+        let changes = self.changes_visible();
+        let key: Vec<(usize, usize, bool)> =
+            self.panes.list.iter().map(|p| (p.active, p.tabs.len(), changes)).collect();
+        if key == self.tab_snap {
+            return Task::none();
+        }
+        let old = std::mem::replace(&mut self.tab_snap, key.clone());
+        let tasks = (0..key.len()).filter(|&i| old.get(i) != key.get(i)).map(|i| {
+            iced::widget::operation::snap_to(
+                view::tab_strip_id(i),
+                iced::widget::operation::RelativeOffset { x: Some(self.active_tab_fraction(i)), y: None },
+            )
+        });
+        Task::batch(tasks)
     }
 
     /// Keeps the editor/Changes area readable when History and its details column open:
     /// the details column narrows first, then History, then the thread column, each
     /// down to a floor. The thread column gets its own width back once there is room.
     fn fit_columns(&mut self) {
-        const MIN_MAIN: f32 = 300.0;
         const MIN_DETAIL: f32 = 300.0;
         const MIN_HISTORY: f32 = 250.0;
         const MIN_AGENT: f32 = 300.0;
+        const MIN_LIST: f32 = 200.0;
         let h = view::HANDLE_W;
         if let Some(w) = self.agent_w_saved.take() {
             self.agent_w = w;
         }
-        self.agent_hidden = false;
-        if !self.scm_docked() {
-            return;
+        if let Some(w) = self.list_w_saved.take() {
+            self.list_w = w;
         }
+        self.agent_hidden = false;
+        let scm = self.scm_docked();
+        // The editor keeps more room when History is closed; with History open the
+        // History's own columns give way first.
+        let min_main = if scm { 300.0 } else { 400.0f32.max(300.0 * self.panes.list.len() as f32) };
         let sidebar = if self.show_sidebar { self.list_w + h } else { 0.0 };
         let chat = if self.chat_docked() { self.chat_w + h } else { 0.0 };
         let width = self.win.width;
@@ -996,16 +1039,15 @@ impl App {
         // Can everything stay on screen with each column at its floor?
         let floors = sidebar
             + chat
-            + MIN_MAIN
-            + MIN_HISTORY
-            + h
+            + min_main
+            + if scm { MIN_HISTORY + h } else { 0.0 }
             + if detail_on { MIN_DETAIL + h } else { 0.0 }
             + if agent_on { MIN_AGENT + h } else { 0.0 };
         if floors > width {
             self.agent_hidden = agent_on;
         }
         let agent = |s: &Self| if agent_on && !s.agent_hidden { s.agent_w + h } else { 0.0 };
-        let mut excess = sidebar + agent(self) + chat + self.scm_l() + MIN_MAIN - width;
+        let mut excess = sidebar + agent(self) + chat + self.scm_l() + min_main - width;
         if excess <= 0.0 {
             return;
         }
@@ -1014,19 +1056,33 @@ impl App {
             self.scm_detail_w -= cut;
             excess -= cut;
         }
-        let cut = excess.min((self.scm_w - MIN_HISTORY).max(0.0));
-        self.scm_w -= cut;
-        excess -= cut;
+        if scm {
+            let cut = excess.min((self.scm_w - MIN_HISTORY).max(0.0));
+            self.scm_w -= cut;
+            excess -= cut;
+        }
         if excess > 0.0 && agent_on && !self.agent_hidden {
             let cut = excess.min((self.agent_w - MIN_AGENT).max(0.0));
             if cut > 0.0 {
                 self.agent_w_saved = Some(self.agent_w);
                 self.agent_w -= cut;
+                excess -= cut;
+            }
+        }
+        // Last resort: the sidebar narrows to a floor too.
+        if excess > 0.0 && self.show_sidebar {
+            let cut = excess.min((self.list_w - MIN_LIST).max(0.0));
+            if cut > 0.0 {
+                self.list_w_saved = Some(self.list_w);
+                self.list_w -= cut;
             }
         }
     }
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
+        if self.blocked_by_lock(&message) {
+            return Task::none();
+        }
         // The completion popup belongs to one cursor position; almost anything
         // other than typing, scrolling or picking an entry invalidates it.
         if !matches!(
@@ -1065,6 +1121,7 @@ impl App {
             }
             Message::Click { pane, line, col, select } => {
                 self.focus_term = false;
+                self.find.focus = find::Field::Editor;
                 self.panes.focus_pane(pane);
                 if let Some(d) = self.docs.get_mut(self.panes.cur()) {
                     d.buffer.set_cursor(line, col, select);
@@ -1087,8 +1144,16 @@ impl App {
                 if self.palette.is_some() {
                     return self.palette_key(key, modifiers, text.as_deref());
                 }
+                if self.psearch.open {
+                    return self.proj_key(key, modifiers, text.as_deref());
+                }
                 if self.show_term && self.focus_term {
                     return self.term_key(key, modifiers, text.as_deref());
+                }
+                if self.find.open && self.find.focus != find::Field::Editor {
+                    let task = self.find_key(key, modifiers, text.as_deref());
+                    self.find_recompute(false);
+                    return task;
                 }
                 if self.completion_key(&key, modifiers) {
                     self.reveal_cursor();
@@ -1196,7 +1261,9 @@ impl App {
             Message::WindowSized(id, size) => {
                 if id == self.main_window {
                     self.win = size;
-                    self.agent_w_saved = None;
+                    if let Some(w) = self.agent_w_saved.take() {
+                        self.agent_w = w;
+                    }
                     // Like Zed, the thread column takes about a third of the window.
                     if !self.agent_w_set {
                         self.agent_w = (size.width * 0.33).clamp(420.0, 720.0);
@@ -1462,6 +1529,14 @@ impl App {
                     d.buffer.select_all();
                 }
             }
+            Message::Find(m) => return self.find_update(m),
+            Message::Project(m) => return self.proj_update(m),
+            Message::GoToLine { line, col } => self.go_to_line(line, col),
+            Message::GoToLinePrompt => {
+                let mut p = Palette::new();
+                p.query = ":".into();
+                self.palette = Some(p);
+            }
             Message::OpenPalette => self.palette = Some(Palette::new()),
             Message::ClosePalette => self.palette = None,
             Message::RunPalette(i) => {
@@ -1486,8 +1561,15 @@ impl App {
                 let i = p.selected;
                 return self.update(Message::RunPalette(i));
             }
-            Key::Named(Named::ArrowDown) => p.selected = (p.selected + 1).min(count.saturating_sub(1)),
-            Key::Named(Named::ArrowUp) => p.selected = p.selected.saturating_sub(1),
+            Key::Named(Named::ArrowDown) | Key::Named(Named::ArrowUp) => {
+                let down = matches!(key.as_ref(), Key::Named(Named::ArrowDown));
+                p.selected = if down { (p.selected + 1).min(count.saturating_sub(1)) } else { p.selected.saturating_sub(1) };
+                let y = if count > 1 { p.selected as f32 / (count - 1) as f32 } else { 0.0 };
+                return iced::widget::operation::snap_to(
+                    view::palette_list_id(),
+                    iced::widget::operation::RelativeOffset { x: None, y: Some(y) },
+                );
+            }
             Key::Named(Named::Backspace) => {
                 p.query.pop();
                 p.selected = 0;
@@ -1515,6 +1597,15 @@ impl App {
         if matches!(key.as_ref(), Key::Named(Named::F11)) {
             return self.update(Message::ToggleFullscreen);
         }
+        if self.find.open {
+            match key.as_ref() {
+                Key::Named(Named::Escape) => return self.update(Message::Find(find::FindMsg::Close)),
+                Key::Named(Named::F3) => {
+                    return self.update(Message::Find(if shift { find::FindMsg::Prev } else { find::FindMsg::Next }))
+                }
+                _ => {}
+            }
+        }
 
         if ctrl {
             if let Key::Character(c) = key.as_ref() {
@@ -1526,6 +1617,10 @@ impl App {
                     ("p", true) => return self.update(Message::OpenPalette),
                     ("b", _) => return self.update(Message::ToggleSidebar),
                     ("g", true) => return self.update(Message::Scm(ScmMsg::Show)),
+                    ("f", false) => return self.update(Message::Find(find::FindMsg::Open { replace: false })),
+                    ("h", _) => return self.update(Message::Find(find::FindMsg::Open { replace: true })),
+                    ("f", true) => return self.update(Message::Project(find::ProjMsg::Open)),
+                    ("l", _) => return self.update(Message::GoToLinePrompt),
                     ("0", true) | (")", _) => return self.update(Message::ResetWindow),
                     ("-", _) | ("_", _) => return self.update(Message::Zoom(-1)),
                     ("=", _) | ("+", _) => return self.update(Message::Zoom(1)),
@@ -1702,7 +1797,10 @@ impl App {
         let chat_l = if chat_on && !self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         let chat_r = if chat_on && self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         match drag.handle {
-            Handle::List => self.list_w = p.x.clamp(180.0, (win.width - 300.0).clamp(180.0, 520.0)),
+            Handle::List => {
+                self.list_w_saved = None;
+                self.list_w = p.x.clamp(180.0, (win.width - 300.0).clamp(180.0, 520.0))
+            }
             Handle::Agent if self.agent_right => {
                 self.agent_w_set = true;
                 self.agent_w_saved = None;

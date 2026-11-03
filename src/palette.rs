@@ -1,6 +1,7 @@
 use crate::add_repo::AddRepoMsg;
 use crate::panes::Axis;
 use crate::scm::ScmMsg;
+use crate::find::{FindMsg, ProjMsg};
 use crate::Message;
 
 pub struct Palette {
@@ -38,6 +39,10 @@ fn all(agents: &[String]) -> Vec<Command> {
         c("Undo", "Ctrl+Z", Message::Undo),
         c("Redo", "Ctrl+Y", Message::Redo),
         c("Select All", "Ctrl+A", Message::SelectAll),
+        c("Find", "Ctrl+F", Message::Find(FindMsg::Open { replace: false })),
+        c("Find and Replace", "Ctrl+H", Message::Find(FindMsg::Open { replace: true })),
+        c("Find in Project", "Ctrl+Shift+F", Message::Project(ProjMsg::Open)),
+        c("Go to Line…", "Ctrl+L", Message::GoToLinePrompt),
         c("Show Suggestions", "Ctrl+Space", Message::TriggerCompletion),
         c("Split Right", "Ctrl+\\", Message::Split(Axis::Horizontal)),
         c("Split Down", "Ctrl+Shift+\\", Message::Split(Axis::Vertical)),
@@ -64,6 +69,19 @@ fn all(agents: &[String]) -> Vec<Command> {
     commands
 }
 
+/// The single entry for a `:line` or `:line:column` query.
+fn go_to_line(rest: &str) -> Command {
+    let mut parts = rest.trim().splitn(2, ':');
+    let line = parts.next().and_then(|n| n.trim().parse::<usize>().ok());
+    let col = parts.next().and_then(|n| n.trim().parse::<usize>().ok());
+    let (label, message) = match (line, col) {
+        (Some(line), Some(col)) => (format!("Go to Line {line}, Column {col}"), Message::GoToLine { line, col }),
+        (Some(line), None) => (format!("Go to Line {line}"), Message::GoToLine { line, col: 0 }),
+        _ => ("Type a line number (or line:column) to go to".to_string(), Message::Noop),
+    };
+    Command { label, shortcut: "", message }
+}
+
 /// Subsequence match; lower score is better. `None` if `query` doesn't match.
 fn fuzzy(query: &str, label: &str) -> Option<usize> {
     let label = label.to_lowercase();
@@ -83,6 +101,9 @@ fn fuzzy(query: &str, label: &str) -> Option<usize> {
 
 /// Commands matching `query`, best match first.
 pub fn filter(query: &str, agents: &[String]) -> Vec<Command> {
+    if let Some(rest) = query.strip_prefix(':') {
+        return vec![go_to_line(rest.trim_start_matches(':'))];
+    }
     let mut scored: Vec<(usize, Command)> = all(agents)
         .into_iter()
         .filter_map(|c| fuzzy(query, &c.label).map(|s| (s, c)))
@@ -101,6 +122,17 @@ mod tests {
         assert_eq!(filter("sav", &[])[0].label, "Save File");
         assert_eq!(filter("tgl exp", &[])[0].label, "Toggle Explorer");
         assert!(filter("zzz", &[]).is_empty());
+    }
+
+    #[test]
+    fn colon_prefix_goes_to_line() {
+        let hit = filter(":42", &[]);
+        assert_eq!(hit.len(), 1);
+        assert!(matches!(hit[0].message, Message::GoToLine { line: 42, col: 0 }));
+        assert!(matches!(filter(":7:3", &[])[0].message, Message::GoToLine { line: 7, col: 3 }));
+        assert!(matches!(filter(":", &[])[0].message, Message::Noop));
+        assert!(matches!(filter(":x", &[])[0].message, Message::Noop));
+        assert_eq!(filter("go to", &[])[0].label, "Go to Line…");
     }
 
     #[test]

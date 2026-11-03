@@ -1611,6 +1611,7 @@ dependencies = [
  "hythe-relay",
  "hythe-term",
  "iced",
+ "regex",
  "rfd",
  "ropey",
  "serde_json",

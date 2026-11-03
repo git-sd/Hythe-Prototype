@@ -28,6 +28,19 @@ pub struct Peer {
     pub name: String,
     /// 0xRRGGBB, used for their cursor.
     pub color: u32,
+    /// GitHub account, when the person's app knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
+}
+
+/// A file somebody has locked: only they may edit it until they unlock it or leave.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockInfo {
+    pub doc: String,
+    pub owner_id: u64,
+    pub owner_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +54,8 @@ pub enum ClientMsg {
         /// Shared secret, when the server or room requires one. Absent for open servers.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        login: Option<String>,
     },
     /// Ask for the shared state of `doc`.
     Open { doc: String },
@@ -48,6 +63,10 @@ pub enum ClientMsg {
     Update { doc: String, data: String },
     /// Cursor and selection anchor, as UTF-16 offsets into the document.
     Cursor { doc: String, head: u32, anchor: u32 },
+    /// Claim `doc` so nobody else can edit it. First come, first served.
+    Lock { doc: String },
+    /// Release a lock you hold.
+    Unlock { doc: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +83,10 @@ pub enum ServerMsg {
     Update { doc: String, data: String, from: u64 },
     Cursor { doc: String, id: u64, head: u32, anchor: u32 },
     Error { message: String },
+    /// Every lock in the room; sent after `Welcome` and whenever locks change.
+    Locks { locks: Vec<LockInfo> },
+    /// Your `Lock` or `Update` for `doc` was refused: `owner_name` holds the lock.
+    LockDenied { doc: String, owner_name: String },
 }
 
 pub fn b64(bytes: &[u8]) -> String {
@@ -94,10 +117,16 @@ mod tests {
     fn hello_without_a_token_still_parses_and_omits_it() {
         let old = r#"{"t":"hello","room":"r","name":"n","color":1}"#;
         let m: ClientMsg = serde_json::from_str(old).unwrap();
-        assert_eq!(m, ClientMsg::Hello { room: "r".into(), name: "n".into(), color: 1, token: None });
+        assert_eq!(m, ClientMsg::Hello { room: "r".into(), name: "n".into(), color: 1, token: None, login: None });
         assert!(!serde_json::to_string(&m).unwrap().contains("token"));
-        let with = ClientMsg::Hello { room: "r".into(), name: "n".into(), color: 1, token: Some("s".into()) };
+        let with = ClientMsg::Hello { room: "r".into(), name: "n".into(), color: 1, token: Some("s".into()), login: Some("octo".into()) };
         assert_eq!(serde_json::from_str::<ClientMsg>(&serde_json::to_string(&with).unwrap()).unwrap(), with);
+    }
+
+    #[test]
+    fn old_peer_without_login_still_parses() {
+        let p: Peer = serde_json::from_str(r#"{"id":1,"name":"n","color":1}"#).unwrap();
+        assert_eq!(p.login, None);
     }
 
     #[test]

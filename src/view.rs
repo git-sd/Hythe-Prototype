@@ -52,6 +52,14 @@ pub(crate) enum Edge {
     Chat,
 }
 
+pub(crate) fn palette_list_id() -> iced::widget::Id {
+    iced::widget::Id::new("palette-list")
+}
+
+pub(crate) fn tab_strip_id(pane: usize) -> iced::widget::Id {
+    iced::widget::Id::from(format!("tab-strip-{pane}"))
+}
+
 pub(crate) fn divider_h<'a>() -> Element<'a, Message> {
     container(space::vertical().height(Length::Fixed(1.0)))
         .width(Length::Fill)
@@ -182,6 +190,15 @@ impl App {
         } else {
             base
         };
+        if self.psearch.open {
+            return stack![
+                base,
+                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
+                    .on_press(Message::Project(crate::find::ProjMsg::Close)),
+                self.psearch_view(),
+            ]
+            .into();
+        }
         if let Some(p) = &self.palette {
             return stack![
                 base,
@@ -220,7 +237,7 @@ impl App {
         row![
             icon_button(Icon::Menu, dim, self.menu == Some(0), Message::OpenMenu(0)),
             icon_button(Icon::Sidebar, dim, self.show_sidebar, Message::ToggleSidebar),
-            icon_button(Icon::Search, dim, false, Message::OpenPalette),
+            icon_button(Icon::Search, dim, self.psearch.open, Message::Project(crate::find::ProjMsg::Open)),
         ]
         .spacing(2)
         .align_y(Alignment::Center)
@@ -252,8 +269,16 @@ impl App {
     /// The window buttons (and, with the thread column hidden, Share and friends).
     fn right_controls(&self, compact: bool) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
-        let shared: Element<'_, Message> = if self.agent_on() {
+        // The editor header keeps its tabs readable: the sharing controls give way first.
+        let room = self.win.width
+            - if self.show_sidebar { self.list_w + HANDLE_W } else { 0.0 }
+            - if self.agent_on() { self.agent_w + HANDLE_W } else { 0.0 }
+            - if self.chat_docked() { self.chat_w + HANDLE_W } else { 0.0 }
+            - self.scm_l();
+        let shared: Element<'_, Message> = if self.agent_on() || room < 430.0 {
             space::horizontal().width(Length::Shrink).into()
+        } else if room < 560.0 {
+            self.share_controls(true)
         } else {
             row![self.people_bar(), self.share_controls(compact)].align_y(Alignment::Center).into()
         };
@@ -468,8 +493,11 @@ impl App {
         )
         .padding([10, 14])
         .width(Length::Fill);
-        let panel = container(column![input, divider_h(), list])
-            .width(Length::Fixed(520.0))
+        // The list scrolls inside the window instead of running off its bottom edge.
+        let list_h = (self.win.height - 70.0 - 60.0 - 24.0).max(80.0);
+        let list = vscroll(list).id(palette_list_id()).height(Length::Shrink);
+        let panel = container(column![input, divider_h(), container(list).max_height(list_h)])
+            .width(Length::Fixed(520.0f32.min((self.win.width - 24.0).max(200.0))))
             .style(|_: &Theme| container::Style {
                 background: Some(theme::PANEL_BG.into()),
                 border: iced::Border {
@@ -649,6 +677,8 @@ impl App {
                                 .size(14)
                                 .color(if node.is_dir { theme::TEXT } else { theme::TEXT_DIM })
                                 .wrapping(text::Wrapping::None),
+                            space::horizontal(),
+                            if node.is_dir { space::horizontal().width(Length::Shrink).into() } else { self.lock_badge(Some(&node.path)) },
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center)
@@ -920,6 +950,8 @@ impl App {
                 popup: if focused && !self.focus_term { self.completion.as_ref() } else { None },
                 blame: if focused { self.blame_text(doc) } else { None },
                 remotes: self.remote_cursors(tab.doc),
+                finds: if focused && self.find.open { &self.find.matches } else { &[] },
+                find_cur: if focused && self.find.open { self.find.current } else { None },
             })
             .width(Length::Fill)
             .height(Length::Fill)
@@ -932,6 +964,9 @@ impl App {
         let mut col = column![self.tab_bar(index)];
         if let Some(b) = breadcrumb {
             col = col.push(b);
+        }
+        if focused && self.find.open && current.is_some() {
+            col = col.push(self.find_bar(pane.viewport.get().width));
         }
         let share = Length::FillPortion((pane.weight * 1000.0).round().clamp(1.0, 60000.0) as u16);
         let (w, h) = match self.panes.axis {
@@ -958,7 +993,8 @@ impl App {
             row![
                 text(label).size(13).color(theme::TEXT_DIM),
                 space::horizontal(),
-                icon_button(Icon::Search, theme::TEXT_FAINT, false, Message::OpenPalette),
+                self.lock_button(path),
+                icon_button(Icon::Search, theme::TEXT_FAINT, false, Message::Find(crate::find::FindMsg::Open { replace: false })),
             ]
             .align_y(Alignment::Center)
             .padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 16.0 }),
@@ -975,6 +1011,27 @@ impl App {
             Axis::Vertical => 0,
         };
         self.tab_bar_with(pane_index, pane_index == last)
+    }
+
+    /// Where the current tab sits along the tab strip, 0..1, estimated from name lengths.
+    /// Scrolling the strip to this fraction always leaves that tab on screen.
+    pub(crate) fn active_tab_fraction(&self, pane_index: usize) -> f32 {
+        let pane = &self.panes.list[pane_index];
+        let width = |n: usize| n as f32 * 7.5 + 52.0;
+        let mut before = if pane_index == 0 && self.repo.is_some() { 100.0 } else { 0.0 };
+        let mut centre = before;
+        let mut total = before;
+        for (i, t) in pane.tabs.iter().enumerate() {
+            let w = self.docs.get(t.doc).map_or(80.0, |d| width(d.name().chars().count()));
+            if i == pane.active && !self.changes_visible() {
+                // The first tab is anchored by its left edge, the last by its right edge.
+                let t = if pane.tabs.len() > 1 { i as f32 / (pane.tabs.len() - 1) as f32 } else { 0.0 };
+                centre = total + w * t;
+            }
+            total += w;
+        }
+        before = total + 120.0;
+        if self.changes_visible() { 0.0 } else { (centre / before).clamp(0.0, 1.0) }
     }
 
     /// `edge`: this bar is at the window's right edge, so it carries the window buttons.
@@ -997,8 +1054,15 @@ impl App {
             // over another tab (in this pane or another) moves it there.
             let tab = row![
                 mouse_area(
-                    container(text(d.name()).size(13).color(if active { theme::TEXT } else { theme::TEXT_DIM }))
-                        .padding([8, 6]),
+                    container(
+                        row![
+                            self.lock_badge(d.path.as_deref()),
+                            text(d.name()).size(13).color(if active { theme::TEXT } else { theme::TEXT_DIM }),
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([8, 6]),
                 )
                 .on_press(Message::TabPress { pane: pane_index, tab: i })
                 .interaction(iced::mouse::Interaction::Pointer),
@@ -1050,6 +1114,7 @@ impl App {
                     .on_double_click(Message::ToggleMaximize),
             ),
         )
+        .id(tab_strip_id(pane_index))
         .width(Length::Fill)
         .direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(0).scroller_width(0)));
         let bar = container(
@@ -1112,14 +1177,19 @@ impl App {
         if self.repo.is_none() || self.chat_visible() {
             return space::horizontal().width(Length::Shrink).into();
         }
-        iced::widget::text_input("Message the team…", &self.chat.input)
-            .on_input(|s| Message::Chat(ChatMsg::Input(s)))
-            .on_submit(Message::Chat(ChatMsg::Send))
-            .padding([3, 8])
-            .size(12)
-            .width(Length::Fixed(260.0))
-            .style(theme::input)
-            .into()
+        // Shares the bar with the repository label instead of crowding it out.
+        container(
+            iced::widget::text_input("Message the team…", &self.chat.input)
+                .on_input(|s| Message::Chat(ChatMsg::Input(s)))
+                .on_submit(Message::Chat(ChatMsg::Send))
+                .padding([3, 8])
+                .size(12)
+                .width(Length::Fill)
+                .style(theme::input),
+        )
+        .width(Length::Fill)
+        .max_width(260.0)
+        .into()
     }
 
     /// `narrow`: drawn under the thread column, so it leaves out the message box and cursor position.
@@ -1131,11 +1201,11 @@ impl App {
             Some(g) => button(
                 row![
                     icon(Icon::Folder, 13.0, dim),
-                    text(g.repo.clone()).size(12),
+                    text(g.repo.clone()).size(12).wrapping(text::Wrapping::None),
                     text("/").size(12).color(theme::TEXT_FAINT),
-                    text(g.branch.clone()).size(12),
-                    text(format!("+{}", g.added)).size(12).color(theme::ADDED),
-                    text(format!("−{}", g.removed)).size(12).color(theme::REMOVED),
+                    text(g.branch.clone()).size(12).wrapping(text::Wrapping::None),
+                    text(format!("+{}", g.added)).size(12).color(theme::ADDED).wrapping(text::Wrapping::None),
+                    text(format!("−{}", g.removed)).size(12).color(theme::REMOVED).wrapping(text::Wrapping::None),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -1178,12 +1248,12 @@ impl App {
 
         container(
             row![
-                git,
+                container(git).width(Length::Fill).clip(true).max_width(520.0),
                 if narrow { space::horizontal().width(Length::Shrink).into() } else { self.message_bar() },
-                container(text(self.status.clone()).size(12).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None))
-                    .width(Length::Fill)
+                container(text(if narrow { String::new() } else { self.status.clone() }).size(12).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None))
+                    .width(if narrow { Length::Shrink } else { Length::Fill })
                     .clip(true)
-                    .padding([0, 10]),
+                    .padding([0, if narrow { 0 } else { 10 }]),
                 if narrow { space::horizontal().width(Length::Shrink).into() } else { session_state },
                 text(if narrow { String::new() } else { position }).size(12).color(dim),
                 icons,

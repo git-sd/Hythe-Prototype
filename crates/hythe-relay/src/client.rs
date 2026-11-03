@@ -32,6 +32,8 @@ pub enum Event {
 pub struct Options {
     /// Shared secret for servers or rooms that require one.
     pub token: Option<String>,
+    /// GitHub login to tell the room (shown with locks).
+    pub login: Option<String>,
     /// Retry after failures and dropped connections.
     pub reconnect: bool,
     pub connect_timeout: Duration,
@@ -46,6 +48,7 @@ impl Default for Options {
     fn default() -> Options {
         Options {
             token: None,
+            login: None,
             reconnect: true,
             connect_timeout: Duration::from_secs(8),
             ping_interval: Duration::from_secs(10),
@@ -121,12 +124,17 @@ impl Client {
         Client::connect_with(url, room, name, color, Options { reconnect: false, ..Options::default() })
     }
 
+    /// Like [`Client::connect`], also telling the room your GitHub login (no retrying).
+    pub fn connect_as(url: &str, room: &str, name: &str, color: u32, login: Option<String>) -> Client {
+        Client::connect_with(url, room, name, color, Options { reconnect: false, login, ..Options::default() })
+    }
+
     /// Start connecting to `url` (for example `ws://127.0.0.1:7878`) and join `room`,
     /// reconnecting automatically according to `opts`.
     pub fn connect_with(url: &str, room: &str, name: &str, color: u32, opts: Options) -> Client {
         let (to_server, commands) = unbounded_channel::<ClientMsg>();
         let (event_tx, events) = channel::<Event>();
-        let hello = ClientMsg::Hello { room: room.to_string(), name: name.to_string(), color, token: opts.token.clone() };
+        let hello = ClientMsg::Hello { room: room.to_string(), name: name.to_string(), color, token: opts.token.clone(), login: opts.login.clone() };
         let url = normalize_url(url);
 
         std::thread::spawn(move || {
