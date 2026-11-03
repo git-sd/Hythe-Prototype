@@ -58,6 +58,7 @@ fn main() {
                     synced = true;
                     println!("[{name}] saw an edit; text is now {} bytes", doc.text().len());
                 }
+                Event::Reconnecting { attempt, reason, .. } => println!("[{name}] link lost ({reason}); retry #{attempt}"),
                 Event::Message(other) => println!("[{name}] {other:?}"),
             }
         }

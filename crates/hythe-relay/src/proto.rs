@@ -10,6 +10,17 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PORT: u16 = 7878;
 
+/// WebSocket close codes (application range) the server uses, so a client can
+/// tell "don't retry" from "network trouble".
+pub mod close {
+    /// Malformed handshake or invalid names.
+    pub const BAD_REQUEST: u16 = 4400;
+    /// Missing or wrong token.
+    pub const UNAUTHORIZED: u16 = 4401;
+    /// Room is full, or the client is too fast or too slow.
+    pub const LIMIT: u16 = 4429;
+}
+
 /// Someone in a room.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Peer {
@@ -23,7 +34,14 @@ pub struct Peer {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ClientMsg {
     /// Must be the first message.
-    Hello { room: String, name: String, color: u32 },
+    Hello {
+        room: String,
+        name: String,
+        color: u32,
+        /// Shared secret, when the server or room requires one. Absent for open servers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
+    },
     /// Ask for the shared state of `doc`.
     Open { doc: String },
     /// A CRDT update (base64) for `doc`.
@@ -70,6 +88,16 @@ mod tests {
         let s = ServerMsg::State { doc: "x".into(), data: None, seed: true };
         assert_eq!(serde_json::from_str::<ServerMsg>(&serde_json::to_string(&s).unwrap()).unwrap(), s);
         assert!(serde_json::from_str::<ClientMsg>(r#"{"t":"nope"}"#).is_err());
+    }
+
+    #[test]
+    fn hello_without_a_token_still_parses_and_omits_it() {
+        let old = r#"{"t":"hello","room":"r","name":"n","color":1}"#;
+        let m: ClientMsg = serde_json::from_str(old).unwrap();
+        assert_eq!(m, ClientMsg::Hello { room: "r".into(), name: "n".into(), color: 1, token: None });
+        assert!(!serde_json::to_string(&m).unwrap().contains("token"));
+        let with = ClientMsg::Hello { room: "r".into(), name: "n".into(), color: 1, token: Some("s".into()) };
+        assert_eq!(serde_json::from_str::<ClientMsg>(&serde_json::to_string(&with).unwrap()).unwrap(), with);
     }
 
     #[test]

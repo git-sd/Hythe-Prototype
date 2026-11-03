@@ -14,9 +14,10 @@ path = "src/main.rs"
 
 [dependencies]
 yrs = { version = "0.25", features = ["sync"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util"] }
-tokio-tungstenite = "0.30"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "signal"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
