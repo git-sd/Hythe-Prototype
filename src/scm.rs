@@ -37,6 +37,8 @@ pub struct Scm {
     pub commit_files: Vec<CommitFile>,
     pub commit_file: Option<String>,
     pub commit_diff: Vec<DiffLine>,
+    /// The last failure, shown in the History column until dismissed or the next action.
+    pub notice: Option<String>,
 }
 
 /// What Source Control is drawn into.
@@ -67,13 +69,24 @@ impl Scm {
     pub fn reload(&mut self, repo: &Repo) {
         self.changes = repo.status().unwrap_or_default();
         self.ahead_behind = repo.ahead_behind();
-        // Keep the selection if it still exists on that side; otherwise show nothing.
-        let still_there = self.selected.as_ref().is_some_and(|(path, staged)| {
-            self.changes.iter().any(|c| &c.path == path && if *staged { c.staged.is_some() } else { c.unstaged.is_some() })
-        });
-        if !still_there {
-            self.selected = None;
-            self.diff.clear();
+        // Keep the selection if it still exists on that side; if the file moved to the other
+        // side (it was staged or unstaged), follow it; otherwise show nothing.
+        if let Some((path, staged)) = self.selected.clone() {
+            let has = |s: &Self, side: bool| {
+                s.changes.iter().any(|c| c.path == path && if side { c.staged.is_some() } else { c.unstaged.is_some() })
+            };
+            if !has(self, staged) {
+                if has(self, !staged) {
+                    self.selected = Some((path, !staged));
+                } else {
+                    self.selected = None;
+                    self.diff.clear();
+                    // Nothing left to show in the details column beside History.
+                    if self.tab == ScmTab::Changes {
+                        self.show_diff = false;
+                    }
+                }
+            }
         }
         if let Some((path, staged)) = self.selected.clone() {
             self.diff = repo.diff(&path, staged).unwrap_or_default();
@@ -163,6 +176,7 @@ pub enum ScmMsg {
     ToggleBlame,
     SelectCommit(String),
     SelectCommitFile(String),
+    DismissNotice,
 }
 
 /// Run a slow git command off the UI thread.
@@ -188,7 +202,7 @@ impl App {
     /// changed is committed, like VS Code's smart commit. True if it worked.
     pub(crate) fn scm_commit(&mut self, repo: &Repo) -> bool {
         if self.scm.message.trim().is_empty() {
-            self.status = "Write a commit message first".into();
+            self.scm_error("Write a commit message first".into());
             return false;
         }
         if self.scm.staged().next().is_none() {
@@ -201,7 +215,7 @@ impl App {
                         true
                     }
                     Err(e) => {
-                        self.status = e;
+                        self.scm_error(e);
                         false
                     }
                 };
@@ -212,7 +226,7 @@ impl App {
             let paths: Vec<String> = self.scm.changes.iter().map(|c| c.path.clone()).collect();
             let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
             if let Err(e) = repo.stage(&refs) {
-                self.status = e;
+                self.scm_error(e);
                 return false;
             }
         }
@@ -223,7 +237,7 @@ impl App {
                 true
             }
             Err(e) => {
-                self.status = e;
+                self.scm_error(e);
                 false
             }
         };
@@ -271,13 +285,25 @@ impl App {
     /// Read every changed file's diff off the UI thread, for the Changes view.
     pub(crate) fn load_all_diffs(&self) -> Task<Message> {
         let Some(repo) = self.repo.clone() else { return Task::none() };
-        let paths: Vec<(String, u32)> =
-            self.scm.changes.iter().map(|c| (c.path.clone(), self.scm.context.get(&c.path).copied().unwrap_or(3))).collect();
+        let paths: Vec<(String, u32, bool)> = self
+            .scm
+            .changes
+            .iter()
+            .map(|c| {
+                // A pure rename has no lines of its own: say so instead of showing the whole file as added.
+                let renamed = c.staged == Some(hythe_git::Status::Renamed) && c.unstaged.is_none();
+                (c.path.clone(), self.scm.context.get(&c.path).copied().unwrap_or(3), renamed)
+            })
+            .collect();
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    paths.into_iter().map(|(p, context)| {
-                        let lines = repo.diff_head(&p, context).unwrap_or_default();
+                    paths.into_iter().map(|(p, context, renamed)| {
+                        let lines = if renamed {
+                            vec![DiffLine { kind: LineKind::Header, text: "Renamed, no changes to the contents".into(), old: None, new: None }]
+                        } else {
+                            repo.diff_head(&p, context).unwrap_or_default()
+                        };
                         (p, lines)
                     }).collect::<Vec<_>>()
                 })
@@ -295,7 +321,14 @@ impl App {
             }
             return Task::none();
         };
+        if !matches!(
+            msg,
+            ScmMsg::Refresh | ScmMsg::AllDiffs(_) | ScmMsg::MoreContext(_) | ScmMsg::Select { .. } | ScmMsg::SelectCommit(_) | ScmMsg::SelectCommitFile(_) | ScmMsg::Text(_) | ScmMsg::NewBranchText(_)
+        ) {
+            self.scm.notice = None;
+        }
         match msg {
+            ScmMsg::DismissNotice => {}
             ScmMsg::Show => {
                 self.scm.open = true;
                 self.scm.show_diff = false;
@@ -335,7 +368,15 @@ impl App {
                     ..iced::window::Settings::default()
                 });
                 self.scm_window = Some(id);
+                self.scm_win = iced::Size::new(1000.0, 680.0);
                 self.scm.open = true;
+                // The window has room for the diff, so open on a file rather than an empty pane.
+                if self.scm.tab == ScmTab::Changes && self.scm.selected.is_none() {
+                    if let Some(c) = self.scm.changes.first() {
+                        let (path, staged) = (c.path.clone(), c.staged.is_some() && c.unstaged.is_none());
+                        self.scm.select(&repo, path, staged);
+                    }
+                }
                 return open.map(|_| Message::Noop);
             }
             ScmMsg::PopIn => {
@@ -367,7 +408,7 @@ impl App {
                 let paths: Vec<String> = self.scm.unstaged().map(|c| c.path.clone()).collect();
                 let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
                 if let Err(e) = repo.stage(&refs) {
-                    self.status = e;
+                    self.scm_error(e);
                 }
                 self.refresh_git();
                 self.scm.reload(&repo);
@@ -376,7 +417,7 @@ impl App {
                 let paths: Vec<String> = self.scm.staged().map(|c| c.path.clone()).collect();
                 let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
                 if let Err(e) = repo.unstage(&refs) {
-                    self.status = e;
+                    self.scm_error(e);
                 }
                 self.refresh_git();
                 self.scm.reload(&repo);
@@ -395,10 +436,13 @@ impl App {
             ScmMsg::Fetch => return self.scm_background(repo, "Fetching…", |r| r.fetch()),
             ScmMsg::Done(result) => {
                 self.scm.busy = None;
-                self.status = match result {
-                    Ok(out) => out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("Done").trim().to_string(),
-                    Err(e) => e.lines().next().unwrap_or("git failed").to_string(),
-                };
+                match result {
+                    Ok(out) => {
+                        self.status = out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("Done").trim().to_string();
+                        self.scm.notice = None;
+                    }
+                    Err(e) => self.scm_error(e),
+                }
                 self.reload_open_files();
                 self.refresh_git();
                 self.scm.reload(&repo);
@@ -424,7 +468,7 @@ impl App {
                         self.status = format!("Switched to {name}");
                         self.reload_open_files();
                     }
-                    Err(e) => self.status = e.lines().next().unwrap_or("checkout failed").to_string(),
+                    Err(e) => self.scm_error(e),
                 }
                 self.refresh_git();
                 self.scm.reload(&repo);
@@ -438,7 +482,7 @@ impl App {
                         self.scm.branch_menu = false;
                         self.scm.new_branch.clear();
                     }
-                    Err(e) => self.status = e.lines().next().unwrap_or("could not create branch").to_string(),
+                    Err(e) => self.scm_error(e),
                 }
                 self.refresh_git();
                 self.scm.reload(&repo);
@@ -454,9 +498,16 @@ impl App {
         Task::none()
     }
 
+    /// A command failed: say so in the status line, and in History where there is room to read it.
+    fn scm_error(&mut self, e: String) {
+        let e = e.trim().to_string();
+        self.status = e.lines().next().unwrap_or("command failed").to_string();
+        self.scm.notice = Some(e.lines().take(4).collect::<Vec<_>>().join("\n"));
+    }
+
     fn scm_op(&mut self, repo: &Repo, op: fn(&Repo, &str) -> hythe_git::Result<()>, path: &str) {
         if let Err(e) = op(repo, path) {
-            self.status = e;
+            self.scm_error(e);
         }
         self.refresh_git();
         self.scm.reload(repo);

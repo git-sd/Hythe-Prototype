@@ -112,6 +112,8 @@ struct App {
     /// CLI agents found on PATH, offered as terminal profiles.
     agents: Vec<Profile>,
     status: String,
+    /// The status line as last seen, and when it first appeared, so old messages fade out.
+    status_seen: (String, std::time::Instant),
     palette: Option<Palette>,
     find: find::Find,
     psearch: find::ProjSearch,
@@ -173,6 +175,8 @@ struct App {
     scm_window: Option<window::Id>,
     /// Width of the details column that opens beside History.
     scm_detail_w: f32,
+    /// Size of History's pop-out window, as last reported.
+    scm_win: iced::Size,
     /// Shift is held, for sideways scrolling with the wheel.
     shift: bool,
     fullscreen: bool,
@@ -197,6 +201,9 @@ struct App {
     list_w_saved: Option<f32>,
     /// (pane, active tab, tab count, Changes showing) last time the tab strips were scrolled.
     tab_snap: Vec<(usize, usize, bool)>,
+    /// History's and its details column's own widths, given back when there is room again.
+    scm_w_saved: Option<f32>,
+    scm_detail_saved: Option<f32>,
     /// History needs the room, so the thread column steps aside until it closes.
     agent_hidden: bool,
     chat_w: f32,
@@ -404,6 +411,7 @@ impl App {
             term_snap: None,
             agents: hythe_term::known_agents(),
             status: String::new(),
+            status_seen: (String::new(), std::time::Instant::now()),
             palette: None,
             find: find::Find::default(),
             psearch: find::ProjSearch::default(),
@@ -445,6 +453,7 @@ impl App {
             chat_window: None,
             scm_window: None,
             scm_detail_w: 480.0,
+            scm_win: iced::Size::new(1000.0, 680.0),
             shift: false,
             fullscreen: false,
             files_open: false,
@@ -458,6 +467,8 @@ impl App {
             agent_w_saved: None,
             list_w_saved: None,
             tab_snap: Vec::new(),
+            scm_w_saved: None,
+            scm_detail_saved: None,
             agent_hidden: false,
             chat_w: view::CHAT_W,
             chat_right: true,
@@ -988,6 +999,13 @@ impl App {
         // Matches follow the text as it is edited or the tab changes.
         self.find_recompute(false);
         self.fit_columns();
+        // A status message stays for a while (errors included), then clears itself.
+        if self.status != self.status_seen.0 {
+            self.status_seen = (self.status.clone(), std::time::Instant::now());
+        } else if !self.status.is_empty() && self.scm.busy.is_none() && self.status_seen.1.elapsed() > std::time::Duration::from_secs(12) {
+            self.status.clear();
+            self.status_seen.0.clear();
+        }
         // Anything that edited the text or moved the cursor is sent to collaborators.
         self.collab_flush();
         Task::batch([task, self.git_task(), self.picture_tasks(), self.follow_active_tabs()])
@@ -1018,13 +1036,19 @@ impl App {
         const MIN_DETAIL: f32 = 300.0;
         const MIN_HISTORY: f32 = 250.0;
         const MIN_AGENT: f32 = 300.0;
-        const MIN_LIST: f32 = 200.0;
+        const MIN_SIDEBAR: f32 = 200.0;
         let h = view::HANDLE_W;
         if let Some(w) = self.agent_w_saved.take() {
             self.agent_w = w;
         }
         if let Some(w) = self.list_w_saved.take() {
             self.list_w = w;
+        }
+        if let Some(w) = self.scm_w_saved.take() {
+            self.scm_w = w;
+        }
+        if let Some(w) = self.scm_detail_saved.take() {
+            self.scm_detail_w = w;
         }
         self.agent_hidden = false;
         let scm = self.scm_docked();
@@ -1051,6 +1075,8 @@ impl App {
         if excess <= 0.0 {
             return;
         }
+        self.scm_w_saved = Some(self.scm_w);
+        self.scm_detail_saved = Some(self.scm_detail_w);
         if detail_on {
             let cut = excess.min((self.scm_detail_w - MIN_DETAIL).max(0.0));
             self.scm_detail_w -= cut;
@@ -1069,13 +1095,25 @@ impl App {
                 excess -= cut;
             }
         }
-        // Last resort: the sidebar narrows to a floor too.
+        // Still too wide: the sidebar gives up some width, down to a floor.
         if excess > 0.0 && self.show_sidebar {
-            let cut = excess.min((self.list_w - MIN_LIST).max(0.0));
+            let cut = excess.min((self.list_w - MIN_SIDEBAR).max(0.0));
             if cut > 0.0 {
                 self.list_w_saved = Some(self.list_w);
                 self.list_w -= cut;
+                excess -= cut;
             }
+        }
+        // A very narrow window: History and its details go below their usual floors, so the
+        // window buttons at the right edge stay on screen.
+        if excess > 0.0 && detail_on {
+            let cut = excess.min((self.scm_detail_w - 260.0).max(0.0));
+            self.scm_detail_w -= cut;
+            excess -= cut;
+        }
+        if excess > 0.0 {
+            let cut = excess.min((self.scm_w - 230.0).max(0.0));
+            self.scm_w -= cut;
         }
     }
 
@@ -1259,6 +1297,9 @@ impl App {
                 }
             }
             Message::WindowSized(id, size) => {
+                if Some(id) == self.scm_window {
+                    self.scm_win = size;
+                }
                 if id == self.main_window {
                     self.win = size;
                     if let Some(w) = self.agent_w_saved.take() {
@@ -1827,10 +1868,12 @@ impl App {
                 self.drag = Some(drag);
             }
             Handle::ScmDetail => {
+                self.scm_detail_saved = None;
                 let history = self.scm_w + view::HANDLE_W;
                 self.scm_detail_w = (win.width - p.x).clamp(260.0, (win.width - sidebar - history - 300.0).clamp(260.0, 900.0));
             }
             Handle::Scm => {
+                self.scm_w_saved = None;
                 let detail = if self.scm_showing_diff() { self.scm_detail_w + view::HANDLE_W } else { 0.0 };
                 self.scm_w = (win.width - detail - p.x).clamp(220.0, (win.width - sidebar - 300.0).clamp(220.0, 700.0));
             }
