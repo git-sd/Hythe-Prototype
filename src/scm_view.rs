@@ -30,7 +30,7 @@ impl App {
         if self.scm_window.is_some() {
             (self.scm_win.width - self.scm_w - crate::view::HANDLE_W).max(300.0)
         } else {
-            (self.scm_detail_w - 20.0).max(240.0)
+            self.scm_detail_w.max(240.0)
         }
     }
 
@@ -72,8 +72,7 @@ impl App {
         };
         let head = container(
             row![
-                text(title).size(13).wrapping(text::Wrapping::None),
-                space::horizontal(),
+                container(text(title).size(13).wrapping(text::Wrapping::None)).width(Length::Fill).clip(true),
                 icon_button(Icon::Close, theme::TEXT_FAINT, false, scm(ScmMsg::CloseDiff)),
             ]
             .push(self.header_extra(crate::view::Edge::ScmDetail))
@@ -290,7 +289,8 @@ impl App {
                 .align_y(Alignment::Center)
                 .style(theme::bg(theme::PANEL_BG)),
             divider_h(),
-        ];
+        ]
+        .width(Length::Fixed(self.scm_w));
         // A fixed-height stand-in for the drag handle below, so the header row stays one row tall.
         let gap = container(
             container(space::horizontal().width(Length::Fixed(1.0)))
@@ -699,7 +699,7 @@ fn diff_body(diff: &[DiffLine], pane_w: f32) -> Element<'static, Message> {
                 .into()
         };
         let longest = diff.iter().take(MAX_DIFF_LINES).map(|l| l.text.chars().count()).max().unwrap_or(0);
-        let row_w = (44.0 * 2.0 + 18.0 + 12.0 + longest as f32 * DIFF_CHAR_W + 24.0).max(pane_w - 20.0);
+        let row_w = (44.0 * 2.0 + 18.0 + 12.0 + longest as f32 * DIFF_CHAR_W + 24.0).max(pane_w - 6.0);
         let mut lines = column![];
         for l in diff.iter().take(MAX_DIFF_LINES) {
             let (tint, color, marker) = match l.kind {

@@ -192,6 +192,8 @@ struct App {
     agent_w_set: bool,
     /// The thread column's own width while History has squeezed it narrower.
     agent_w_saved: Option<f32>,
+    /// The sidebar's own width while History squeezed it; given back when History closes.
+    list_w_saved: Option<f32>,
     /// History needs the room, so the thread column steps aside until it closes.
     agent_hidden: bool,
     chat_w: f32,
@@ -442,6 +444,7 @@ impl App {
             agent_right: false,
             agent_w_set: false,
             agent_w_saved: None,
+            list_w_saved: None,
             agent_hidden: false,
             chat_w: view::CHAT_W,
             chat_right: true,
@@ -983,9 +986,13 @@ impl App {
         const MIN_DETAIL: f32 = 300.0;
         const MIN_HISTORY: f32 = 250.0;
         const MIN_AGENT: f32 = 300.0;
+        const MIN_SIDEBAR: f32 = 200.0;
         let h = view::HANDLE_W;
         if let Some(w) = self.agent_w_saved.take() {
             self.agent_w = w;
+        }
+        if let Some(w) = self.list_w_saved.take() {
+            self.list_w = w;
         }
         self.agent_hidden = false;
         if !self.scm_docked() {
@@ -1025,7 +1032,28 @@ impl App {
             if cut > 0.0 {
                 self.agent_w_saved = Some(self.agent_w);
                 self.agent_w -= cut;
+                excess -= cut;
             }
+        }
+        // Still too wide: the sidebar gives up some width, down to a floor.
+        if excess > 0.0 && self.show_sidebar {
+            let cut = excess.min((self.list_w - MIN_SIDEBAR).max(0.0));
+            if cut > 0.0 {
+                self.list_w_saved = Some(self.list_w);
+                self.list_w -= cut;
+                excess -= cut;
+            }
+        }
+        // A very narrow window: History and its details go below their usual floors, so the
+        // window buttons at the right edge stay on screen.
+        if excess > 0.0 && detail_on {
+            let cut = excess.min((self.scm_detail_w - 260.0).max(0.0));
+            self.scm_detail_w -= cut;
+            excess -= cut;
+        }
+        if excess > 0.0 {
+            let cut = excess.min((self.scm_w - 230.0).max(0.0));
+            self.scm_w -= cut;
         }
     }
 
@@ -1708,7 +1736,10 @@ impl App {
         let chat_l = if chat_on && !self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         let chat_r = if chat_on && self.chat_right { self.chat_w + view::HANDLE_W } else { 0.0 };
         match drag.handle {
-            Handle::List => self.list_w = p.x.clamp(180.0, (win.width - 300.0).clamp(180.0, 520.0)),
+            Handle::List => {
+                self.list_w_saved = None;
+                self.list_w = p.x.clamp(180.0, (win.width - 300.0).clamp(180.0, 520.0))
+            }
             Handle::Agent if self.agent_right => {
                 self.agent_w_set = true;
                 self.agent_w_saved = None;
