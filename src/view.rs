@@ -102,6 +102,11 @@ pub(crate) fn dot<'a>(color: Color) -> Element<'a, Message> {
 }
 
 impl App {
+    /// The thread column is showing: switched on, and not stepped aside for History.
+    pub(crate) fn agent_on(&self) -> bool {
+        self.show_term && !self.agent_hidden
+    }
+
     /// A divider you can drag to resize the panels on either side of it.
     /// `across` is true for a vertical bar between columns.
     pub(crate) fn handle(&self, h: Handle, across: bool) -> Element<'static, Message> {
@@ -132,12 +137,12 @@ impl App {
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let mut main = row![].height(Length::Fill);
         // Source Control wants the width for diffs, so the thread column steps aside.
-        let agent_right = self.show_term && self.agent_right;
+        let agent_right = self.agent_on() && self.agent_right;
         let chat_on = self.chat_docked();
         if chat_on && !self.chat_right {
             main = main.push(self.chat_view_in(chat::Place::Docked)).push(self.handle(Handle::Chat, true));
         }
-        if self.show_term && !agent_right {
+        if self.agent_on() && !agent_right {
             main = main.push(self.agent_panel()).push(self.handle(Handle::Agent, true));
         }
         main = main.push(self.editor_area());
@@ -156,7 +161,7 @@ impl App {
             main = main.push(self.handle(Handle::ScmDetail, true)).push(self.scm_detail_panel());
         }
         // As in Zed, the footer belongs to the thread column; without it, it runs under the editor.
-        let right: Element<'_, Message> = if self.show_term {
+        let right: Element<'_, Message> = if self.agent_on() {
             container(main).width(Length::Fill).into()
         } else {
             column![main, divider_h(), self.bottom_bar(false)].width(Length::Fill).into()
@@ -247,7 +252,7 @@ impl App {
     /// The window buttons (and, with the thread column hidden, Share and friends).
     fn right_controls(&self, compact: bool) -> Element<'_, Message> {
         let dim = theme::TEXT_DIM;
-        let shared: Element<'_, Message> = if self.show_term {
+        let shared: Element<'_, Message> = if self.agent_on() {
             space::horizontal().width(Length::Shrink).into()
         } else {
             row![self.people_bar(), self.share_controls(compact)].align_y(Alignment::Center).into()
@@ -270,7 +275,7 @@ impl App {
             Edge::Scm
         } else if self.chat_docked() && self.chat_right {
             Edge::Chat
-        } else if self.show_term && self.agent_right {
+        } else if self.agent_on() && self.agent_right {
             Edge::Agent
         } else {
             Edge::Editor
@@ -281,7 +286,7 @@ impl App {
     pub(crate) fn leftmost(&self) -> Edge {
         if self.chat_docked() && !self.chat_right {
             Edge::Chat
-        } else if self.show_term && !self.agent_right {
+        } else if self.agent_on() && !self.agent_right {
             Edge::Agent
         } else {
             Edge::Editor

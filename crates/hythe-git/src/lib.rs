@@ -602,7 +602,7 @@ pub fn parse_diff(text: &str) -> Vec<DiffLine> {
             out.push(DiffLine { kind: LineKind::Hunk, text: format!("@@{rest}"), old: None, new: None });
         } else if !in_hunk {
             if line.starts_with("Binary files") {
-                out.push(DiffLine { kind: LineKind::Header, text: line.to_string(), old: None, new: None });
+                out.push(DiffLine { kind: LineKind::Header, text: "Binary file, no preview".to_string(), old: None, new: None });
             }
             // Skip `diff --git`, `index`, `---`, `+++` preamble.
         } else if let Some(t) = line.strip_prefix('+') {
