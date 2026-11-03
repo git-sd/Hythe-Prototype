@@ -3,9 +3,10 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Instant;
 
 use hythe_relay::proto::{b64, unb64};
-use hythe_relay::{Client, ClientMsg, Event, Peer, ServerMsg, SharedDoc};
+use hythe_relay::{normalize_url, Client, ClientMsg, DocSession, Event, Options, Peer, Remote, ServerMsg};
 use iced::widget::{button, column, container, mouse_area, opaque, row, space, stack, text, text_input};
 use iced::{Alignment, Color, Element, Length, Padding, Task, Theme};
 
@@ -16,16 +17,19 @@ use crate::{theme, App, Message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Link {
+    /// First attempt in progress.
     Connecting,
     Online,
+    /// The link is down and the client is retrying. `was_online` says whether
+    /// we ever got in (a lost connection) or never reached the server at all.
+    Reconnecting { attempt: u32, reason: String, retry_at: Instant, was_online: bool },
+    /// Gave up: refused (wrong password) or otherwise not worth retrying.
     Offline(String),
 }
 
 /// Our side of one shared document.
 struct Shared {
-    doc: SharedDoc,
-    /// We have exchanged state with the room (seeded it, or adopted its text).
-    synced: bool,
+    session: DocSession,
     last_cursor: Option<(u32, u32)>,
 }
 
@@ -35,6 +39,8 @@ pub struct Collab {
     pub url: String,
     pub room: String,
     pub you: Option<u64>,
+    /// Joined at least once; distinguishes "lost the connection" from "never reached it".
+    was_online: bool,
     pub peers: Vec<Peer>,
     docs: HashMap<String, Shared>,
     cursors: HashMap<(String, u64), (u32, u32)>,
@@ -53,6 +59,8 @@ pub struct CollabUi {
     pub url: String,
     pub room: String,
     pub name: String,
+    /// Optional shared password for the relay or room.
+    pub token: String,
 }
 
 impl Default for CollabUi {
@@ -62,6 +70,7 @@ impl Default for CollabUi {
             url: format!("ws://127.0.0.1:{}", hythe_relay::DEFAULT_PORT),
             room: String::new(),
             name: String::new(),
+            token: String::new(),
         }
     }
 }
@@ -72,6 +81,7 @@ pub enum CollabMsg {
     Url(String),
     Room(String),
     Name(String),
+    Token(String),
     Connect,
     Disconnect,
     Tick,
@@ -115,18 +125,22 @@ impl App {
             CollabMsg::Url(s) => self.collab_ui.url = s,
             CollabMsg::Room(s) => self.collab_ui.room = s,
             CollabMsg::Name(s) => self.collab_ui.name = s,
+            CollabMsg::Token(s) => self.collab_ui.token = s,
             CollabMsg::Connect => {
                 let ui = &self.collab_ui;
                 if ui.room.trim().is_empty() || ui.name.trim().is_empty() {
                     self.status = "Enter a room and your name first".into();
                 } else {
-                    let client = Client::connect(ui.url.trim(), ui.room.trim(), ui.name.trim(), color_for(&ui.name));
+                    let url = normalize_url(&ui.url);
+                    let opts = Options { token: Some(ui.token.clone()).filter(|t| !t.is_empty()), ..Options::default() };
+                    let client = Client::connect_with(&url, ui.room.trim(), ui.name.trim(), color_for(&ui.name), opts);
                     self.collab = Some(Collab {
                         client,
                         link: Link::Connecting,
-                        url: ui.url.trim().to_string(),
+                        url,
                         room: ui.room.trim().to_string(),
                         you: None,
+                        was_online: false,
                         peers: Vec::new(),
                         docs: HashMap::new(),
                         cursors: HashMap::new(),
@@ -163,7 +177,7 @@ impl App {
         }
         let Some(id) = self.docs.get(index).and_then(|d| doc_id(&root.path, d)) else { return };
         if !c.docs.contains_key(&id) {
-            c.docs.insert(id.clone(), Shared { doc: SharedDoc::new(), synced: false, last_cursor: None });
+            c.docs.insert(id.clone(), Shared { session: DocSession::new(), last_cursor: None });
             c.client.send(ClientMsg::Open { doc: id });
         }
     }
@@ -178,21 +192,67 @@ impl App {
         }
     }
 
+    /// Carry out what a sync step decided: update the editor text, send our state.
+    fn collab_apply(&mut self, client: &mut Client, id: &str, index: usize, outcome: hythe_relay::Outcome) {
+        match outcome.remote {
+            Remote::Nothing => {}
+            Remote::Replace(text) => self.collab_adopt(index, &text),
+            Remote::Patch(changes) => {
+                if let Some(d) = self.docs.get_mut(index) {
+                    d.buffer.apply_remote(changes.iter().map(|ch| (ch.pos, ch.remove, ch.insert.as_str())));
+                    d.dirty = true;
+                    d.blame = None;
+                    d.rehighlight(&mut self.highlighter);
+                }
+            }
+        }
+        if let Some(update) = outcome.send {
+            client.send(ClientMsg::Update { doc: id.to_string(), data: b64(&update) });
+        }
+        if let Some(d) = self.docs.get_mut(index) {
+            d.buffer.track_edits(true);
+        }
+    }
+
     /// Handle everything the server has said since the last tick.
     pub(crate) fn collab_poll(&mut self) {
         let Some(mut c) = self.collab.take() else { return };
         while let Some(event) = c.client.poll() {
             match event {
                 Event::Connected { you, peers } => {
+                    let rejoined = c.was_online;
                     c.link = Link::Online;
+                    c.was_online = true;
                     c.you = Some(you);
                     c.peers = peers;
-                    self.status = format!("Sharing {} on {}", c.room, c.url);
+                    c.cursors.clear();
+                    for shared in c.docs.values_mut() {
+                        shared.last_cursor = None;
+                    }
+                    self.status = if rejoined {
+                        format!("Reconnected to {}; syncing your changes", c.url)
+                    } else {
+                        format!("Sharing {} on {}", c.room, c.url)
+                    };
                     self.collab = Some(c);
                     for i in 0..self.docs.len() {
                         self.collab_open_doc(i);
                     }
                     c = self.collab.take().expect("just put back");
+                }
+                Event::Reconnecting { attempt, retry_in, reason } => {
+                    // Keep recording edits: they stay in the CRDT and sync after reconnecting.
+                    for shared in c.docs.values_mut() {
+                        shared.session.on_disconnect();
+                    }
+                    c.peers.clear();
+                    c.cursors.clear();
+                    self.status = if c.was_online {
+                        format!("Connection lost, retrying ({reason})")
+                    } else {
+                        format!("Cannot reach the relay: {reason}")
+                    };
+                    c.link = Link::Reconnecting { attempt, reason, retry_at: Instant::now() + retry_in, was_online: c.was_online };
                 }
                 Event::Disconnected(why) => {
                     c.link = Link::Offline(why.clone());
@@ -223,19 +283,11 @@ impl App {
             ServerMsg::State { doc, data, seed } => {
                 let Some(index) = self.collab_doc_index(&doc) else { return };
                 let Some(shared) = c.docs.get_mut(&doc) else { return };
-                if let Some(bytes) = data.as_deref().and_then(|d| unb64(d).ok()) {
-                    if shared.doc.apply_update(&bytes).is_ok() {
-                        shared.synced = true;
-                        let text = shared.doc.text();
-                        self.collab_adopt(index, &text);
-                    }
-                } else if seed {
-                    // We're first: our text becomes the shared document.
-                    let text = self.docs[index].buffer.text();
-                    let update = shared.doc.replace(0, 0, &text);
-                    shared.synced = true;
-                    c.client.send(ClientMsg::Update { doc, data: b64(&update) });
-                    self.docs[index].buffer.track_edits(true);
+                let bytes = data.as_deref().and_then(|d| unb64(d).ok());
+                let local = if shared.session.synced { String::new() } else { self.docs[index].buffer.text() };
+                match shared.session.on_state(bytes.as_deref(), seed, &local) {
+                    Ok(outcome) => self.collab_apply(&mut c.client, &doc, index, outcome),
+                    Err(e) => self.status = format!("Relay: {e}"),
                 }
                 // Otherwise someone else is seeding; their update arrives next.
             }
@@ -243,19 +295,13 @@ impl App {
                 let Some(index) = self.collab_doc_index(&doc) else { return };
                 let Some(shared) = c.docs.get_mut(&doc) else { return };
                 let Ok(bytes) = unb64(&data) else { return };
-                let was_synced = shared.synced;
-                let Ok(changes) = shared.doc.apply_update(&bytes) else { return };
-                shared.synced = true;
-                if !was_synced {
-                    let text = shared.doc.text();
-                    self.collab_adopt(index, &text);
-                } else if let Some(d) = self.docs.get_mut(index) {
-                    d.buffer.apply_remote(changes.iter().map(|ch| (ch.pos, ch.remove, ch.insert.as_str())));
-                    d.dirty = true;
-                    d.blame = None;
-                    d.rehighlight(&mut self.highlighter);
+                match shared.session.on_update(&bytes) {
+                    Ok(outcome) => {
+                        self.collab_apply(&mut c.client, &doc, index, outcome);
+                        self.reveal_cursor();
+                    }
+                    Err(e) => self.status = format!("Relay: {e}"),
                 }
-                self.reveal_cursor();
             }
             ServerMsg::Cursor { doc, id, head, anchor } => {
                 c.cursors.insert((doc, id), (head, anchor));
@@ -268,7 +314,8 @@ impl App {
     /// Send our edits and cursor for the focused document. Runs after every update.
     pub(crate) fn collab_flush(&mut self) {
         let Some(c) = self.collab.as_mut() else { return };
-        if c.link != Link::Online {
+        // While reconnecting, edits still go into the CRDT; they are sent after the resync.
+        if !matches!(c.link, Link::Online | Link::Reconnecting { .. }) {
             return;
         }
         let Some(root) = self.root.as_ref().map(|r| r.path.clone()) else { return };
@@ -277,12 +324,13 @@ impl App {
         let Some(shared) = c.docs.get_mut(&id) else { return };
 
         let ops = doc.buffer.drain_edits();
-        if !shared.synced {
-            return; // not part of the room yet; the seed or adoption covers these
-        }
         for op in ops {
-            let update = shared.doc.replace(op.pos, op.remove, &op.insert);
-            c.client.send(ClientMsg::Update { doc: id.clone(), data: b64(&update) });
+            if let Some(update) = shared.session.local_edit(op.pos, op.remove, &op.insert) {
+                c.client.send(ClientMsg::Update { doc: id.clone(), data: b64(&update) });
+            }
+        }
+        if c.link != Link::Online || shared.session.is_resyncing() {
+            return;
         }
         let cursor = doc.buffer.cursor_utf16();
         if shared.last_cursor != Some(cursor) {
@@ -326,6 +374,26 @@ impl App {
                 .spacing(6)
                 .align_y(Alignment::Center)
                 .into(),
+            Some(Link::Reconnecting { attempt, reason, retry_at, was_online }) => {
+                let secs = retry_at.saturating_duration_since(Instant::now()).as_secs() + 1;
+                let (headline, detail) = if *was_online {
+                    (
+                        format!("Connection lost. Reconnecting (try {attempt}, next in {secs}s)"),
+                        "Your edits are kept and will sync when the relay is back.".to_string(),
+                    )
+                } else {
+                    (
+                        format!("Can't reach the relay (try {attempt}, next in {secs}s)"),
+                        format!("{reason}. Start one with `hythe-relay`, or enter the address your host gave you."),
+                    )
+                };
+                column![
+                    row![dot(theme::REMOVED), text(headline).size(12).color(theme::REMOVED)].spacing(6).align_y(Alignment::Center),
+                    text(detail).size(11).color(theme::TEXT_DIM),
+                ]
+                .spacing(3)
+                .into()
+            }
             Some(Link::Offline(why)) => text(format!("Disconnected: {why}")).size(12).color(theme::REMOVED).into(),
         };
 
@@ -371,10 +439,15 @@ impl App {
                 field("Relay server", &ui.url, CollabMsg::Url),
                 field("Room", &ui.room, CollabMsg::Room),
                 field("Your name", &ui.name, CollabMsg::Name),
+                column![
+                    text("Password (if the relay needs one)").size(11).color(theme::TEXT_DIM),
+                    text_input("", &ui.token).on_input(|s| Message::Collab(CollabMsg::Token(s))).secure(true).padding(7).size(13).style(theme::input),
+                ]
+                .spacing(3),
                 status,
                 people,
                 action,
-                text("Everyone with the same server and room edits together. Run your own server with: hythe-relay --listen 0.0.0.0:7878")
+                text("Everyone with the same server and room edits together. 127.0.0.1 means this computer: run `hythe-relay` here, or enter a shared server (ws://host:7878, or wss://host behind HTTPS). Host your own with: hythe-relay --listen 0.0.0.0:7878 --token SECRET --data-dir ./relay-data")
                     .size(11)
                     .color(theme::TEXT_FAINT),
             ]
