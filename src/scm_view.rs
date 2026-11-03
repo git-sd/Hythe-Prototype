@@ -347,7 +347,7 @@ impl App {
                 } else if changed > 0 {
                     format!("Commit all {}", files_word(changed))
                 } else {
-                    "Commit message".into()
+                    "Commit".into()
                 })
                     .size(13)
                     .center()
@@ -367,7 +367,14 @@ impl App {
             button(text("Commit & Push").size(13).center().width(Length::Fill))
                 .width(Length::Fill)
                 .padding([6, 8])
-                .style(theme::flat(false))
+                .style(move |t: &Theme, st| {
+                    let mut style = theme::flat(false)(t, st);
+                    style.border = iced::Border { color: theme::SELECTED, width: 1.0, radius: 4.0.into() };
+                    if !can_commit {
+                        style.text_color = theme::TEXT_FAINT;
+                    }
+                    style
+                })
                 .on_press_maybe(can_commit.then(|| scm(ScmMsg::CommitPush))),
         ]
         .spacing(6);
@@ -521,7 +528,8 @@ impl App {
                 text(time_ago(commit.time, now)).size(12).color(theme::TEXT_FAINT),
                 text(commit.short.clone()).size(12).font(crate::theme::MONO).color(theme::ACCENT),
             ]
-            .spacing(10),
+            .spacing(10)
+            .wrap(),
         ]
         .spacing(4);
         // The full message sits under the file list, clipped, so the files stay in view.

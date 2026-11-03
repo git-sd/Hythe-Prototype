@@ -611,7 +611,9 @@ impl App {
             ]
             .align_y(Alignment::Center),
         );
-        if open {
+        // The details column beside History already lists this commit's files.
+        let listed_beside = self.scm_showing_diff() && self.scm.selected_commit.as_deref() == Some(k.sha.as_str());
+        if open && !listed_beside {
             let mut files = column![].spacing(1);
             if self.chat.expanded_files.is_empty() {
                 files = files.push(text("Loading files…").size(11).color(theme::TEXT_FAINT));

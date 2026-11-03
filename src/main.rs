@@ -188,6 +188,10 @@ struct App {
     agent_right: bool,
     /// The thread column's width was set by hand; until then it follows the window's size.
     agent_w_set: bool,
+    /// The thread column's own width while History has squeezed it narrower.
+    agent_w_saved: Option<f32>,
+    /// History needs the room, so the thread column steps aside until it closes.
+    agent_hidden: bool,
     chat_w: f32,
     /// The chat panel is docked on the right (otherwise the left).
     chat_right: bool,
@@ -434,6 +438,8 @@ impl App {
             item_drag: None,
             agent_right: false,
             agent_w_set: false,
+            agent_w_saved: None,
+            agent_hidden: false,
             chat_w: view::CHAT_W,
             chat_right: true,
         };
@@ -960,9 +966,64 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.update_inner(message);
+        self.fit_columns();
         // Anything that edited the text or moved the cursor is sent to collaborators.
         self.collab_flush();
         Task::batch([task, self.git_task(), self.picture_tasks()])
+    }
+
+    /// Keeps the editor/Changes area readable when History and its details column open:
+    /// the details column narrows first, then History, then the thread column, each
+    /// down to a floor. The thread column gets its own width back once there is room.
+    fn fit_columns(&mut self) {
+        const MIN_MAIN: f32 = 300.0;
+        const MIN_DETAIL: f32 = 300.0;
+        const MIN_HISTORY: f32 = 250.0;
+        const MIN_AGENT: f32 = 300.0;
+        let h = view::HANDLE_W;
+        if let Some(w) = self.agent_w_saved.take() {
+            self.agent_w = w;
+        }
+        self.agent_hidden = false;
+        if !self.scm_docked() {
+            return;
+        }
+        let sidebar = if self.show_sidebar { self.list_w + h } else { 0.0 };
+        let chat = if self.chat_docked() { self.chat_w + h } else { 0.0 };
+        let width = self.win.width;
+        let agent_on = self.show_term && self.chat_window.is_none();
+        let detail_on = self.scm_showing_diff();
+        // Can everything stay on screen with each column at its floor?
+        let floors = sidebar
+            + chat
+            + MIN_MAIN
+            + MIN_HISTORY
+            + h
+            + if detail_on { MIN_DETAIL + h } else { 0.0 }
+            + if agent_on { MIN_AGENT + h } else { 0.0 };
+        if floors > width {
+            self.agent_hidden = agent_on;
+        }
+        let agent = |s: &Self| if agent_on && !s.agent_hidden { s.agent_w + h } else { 0.0 };
+        let mut excess = sidebar + agent(self) + chat + self.scm_l() + MIN_MAIN - width;
+        if excess <= 0.0 {
+            return;
+        }
+        if detail_on {
+            let cut = excess.min((self.scm_detail_w - MIN_DETAIL).max(0.0));
+            self.scm_detail_w -= cut;
+            excess -= cut;
+        }
+        let cut = excess.min((self.scm_w - MIN_HISTORY).max(0.0));
+        self.scm_w -= cut;
+        excess -= cut;
+        if excess > 0.0 && agent_on && !self.agent_hidden {
+            let cut = excess.min((self.agent_w - MIN_AGENT).max(0.0));
+            if cut > 0.0 {
+                self.agent_w_saved = Some(self.agent_w);
+                self.agent_w -= cut;
+            }
+        }
     }
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
@@ -1135,6 +1196,7 @@ impl App {
             Message::WindowSized(id, size) => {
                 if id == self.main_window {
                     self.win = size;
+                    self.agent_w_saved = None;
                     // Like Zed, the thread column takes about a third of the window.
                     if !self.agent_w_set {
                         self.agent_w = (size.width * 0.33).clamp(420.0, 720.0);
@@ -1643,10 +1705,12 @@ impl App {
             Handle::List => self.list_w = p.x.clamp(180.0, (win.width - 300.0).clamp(180.0, 520.0)),
             Handle::Agent if self.agent_right => {
                 self.agent_w_set = true;
+                self.agent_w_saved = None;
                 self.agent_w = (win.width - scm_l - chat_r - p.x).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
             }
             Handle::Agent => {
                 self.agent_w_set = true;
+                self.agent_w_saved = None;
                 self.agent_w = (p.x - sidebar - chat_l).clamp(220.0, (win.width - sidebar - 300.0).max(220.0))
             }
             Handle::Chat if self.chat_right => {
