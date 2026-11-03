@@ -194,6 +194,9 @@ struct App {
     agent_w_saved: Option<f32>,
     /// The sidebar's own width while History squeezed it; given back when History closes.
     list_w_saved: Option<f32>,
+    /// History's and its details column's own widths, given back when there is room again.
+    scm_w_saved: Option<f32>,
+    scm_detail_saved: Option<f32>,
     /// History needs the room, so the thread column steps aside until it closes.
     agent_hidden: bool,
     chat_w: f32,
@@ -445,6 +448,8 @@ impl App {
             agent_w_set: false,
             agent_w_saved: None,
             list_w_saved: None,
+            scm_w_saved: None,
+            scm_detail_saved: None,
             agent_hidden: false,
             chat_w: view::CHAT_W,
             chat_right: true,
@@ -994,6 +999,12 @@ impl App {
         if let Some(w) = self.list_w_saved.take() {
             self.list_w = w;
         }
+        if let Some(w) = self.scm_w_saved.take() {
+            self.scm_w = w;
+        }
+        if let Some(w) = self.scm_detail_saved.take() {
+            self.scm_detail_w = w;
+        }
         self.agent_hidden = false;
         if !self.scm_docked() {
             return;
@@ -1019,6 +1030,8 @@ impl App {
         if excess <= 0.0 {
             return;
         }
+        self.scm_w_saved = Some(self.scm_w);
+        self.scm_detail_saved = Some(self.scm_detail_w);
         if detail_on {
             let cut = excess.min((self.scm_detail_w - MIN_DETAIL).max(0.0));
             self.scm_detail_w -= cut;
@@ -1766,10 +1779,12 @@ impl App {
                 self.drag = Some(drag);
             }
             Handle::ScmDetail => {
+                self.scm_detail_saved = None;
                 let history = self.scm_w + view::HANDLE_W;
                 self.scm_detail_w = (win.width - p.x).clamp(260.0, (win.width - sidebar - history - 300.0).clamp(260.0, 900.0));
             }
             Handle::Scm => {
+                self.scm_w_saved = None;
                 let detail = if self.scm_showing_diff() { self.scm_detail_w + view::HANDLE_W } else { 0.0 };
                 self.scm_w = (win.width - detail - p.x).clamp(220.0, (win.width - sidebar - 300.0).clamp(220.0, 700.0));
             }
