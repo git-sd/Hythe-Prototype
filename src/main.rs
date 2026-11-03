@@ -111,6 +111,8 @@ struct App {
     /// CLI agents found on PATH, offered as terminal profiles.
     agents: Vec<Profile>,
     status: String,
+    /// The status line as last seen, and when it first appeared, so old messages fade out.
+    status_seen: (String, std::time::Instant),
     palette: Option<Palette>,
     /// Open top-bar dropdown (index into `menus::MENUS`).
     menu: Option<usize>,
@@ -396,6 +398,7 @@ impl App {
             term_snap: None,
             agents: hythe_term::known_agents(),
             status: String::new(),
+            status_seen: (String::new(), std::time::Instant::now()),
             palette: None,
             menu: None,
             completion: None,
@@ -978,6 +981,13 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.update_inner(message);
         self.fit_columns();
+        // A status message stays for a while (errors included), then clears itself.
+        if self.status != self.status_seen.0 {
+            self.status_seen = (self.status.clone(), std::time::Instant::now());
+        } else if !self.status.is_empty() && self.scm.busy.is_none() && self.status_seen.1.elapsed() > std::time::Duration::from_secs(12) {
+            self.status.clear();
+            self.status_seen.0.clear();
+        }
         // Anything that edited the text or moved the cursor is sent to collaborators.
         self.collab_flush();
         Task::batch([task, self.git_task(), self.picture_tasks()])

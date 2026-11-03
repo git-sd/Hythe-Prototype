@@ -417,6 +417,22 @@ impl App {
         ]
         .spacing(6);
 
+        let notice: Element<'_, Message> = match &s.notice {
+            Some(n) => mouse_area(
+                container(text(n.clone()).size(11).color(theme::REMOVED))
+                    .width(Length::Fill)
+                    .padding([6, 8])
+                    .style(|_: &Theme| container::Style {
+                        background: Some(Color { a: 0.10, ..theme::REMOVED }.into()),
+                        border: iced::Border { color: Color { a: 0.35, ..theme::REMOVED }, width: 1.0, radius: 4.0.into() },
+                        ..Default::default()
+                    }),
+            )
+            .on_press(scm(ScmMsg::DismissNotice))
+            .into(),
+            None => space::vertical().height(Length::Fixed(0.0)).into(),
+        };
+
         let file_row = |c: &Change, staged: bool| -> Element<'_, Message> {
             let status = if staged { c.staged } else { c.unstaged }.unwrap_or(Status::Modified);
             let (name, dir) = match c.path.rsplit_once('/') {
@@ -478,7 +494,7 @@ impl App {
         }
 
         container(
-            column![top, commit_box, crate::view::vscroll(column![files, self.commit_list()].spacing(4)).height(Length::Fill)]
+            column![top, commit_box, notice, crate::view::vscroll(column![files, self.commit_list()].spacing(4)).height(Length::Fill)]
                 .spacing(10)
                 .padding(10),
         )
@@ -670,13 +686,16 @@ impl App {
                 border: iced::Border { color: theme::SELECTED, width: 1.0, radius: 4.0.into() },
                 ..Default::default()
             });
+        // Beside the History column's branch button when it is open, else above the bottom bar.
+        let (align, pad) = if self.scm_docked() {
+            let left = (self.win.width - self.scm_l() + crate::view::HANDLE_W + 8.0).min(self.win.width - 300.0 - 8.0).max(8.0);
+            (Alignment::Start, Padding { top: crate::view::TAB_H + 36.0, left, ..Padding::ZERO })
+        } else {
+            (Alignment::End, Padding { bottom: BAR_H + 6.0, left: self.list_w + crate::view::HANDLE_W + 8.0, ..Padding::ZERO })
+        };
         stack![
             mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill)).on_press(scm(ScmMsg::BranchMenu(false))),
-            container(opaque(panel))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_y(Alignment::End)
-                .padding(Padding { bottom: BAR_H + 6.0, left: self.list_w + crate::view::HANDLE_W + 8.0, ..Padding::ZERO }),
+            container(opaque(panel)).width(Length::Fill).height(Length::Fill).align_y(align).padding(pad),
         ]
         .into()
     }
