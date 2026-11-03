@@ -11,7 +11,7 @@ use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::proto::{b64, unb64, ClientMsg, Peer, ServerMsg};
+use crate::proto::{b64, unb64, ClientMsg, LockInfo, Peer, ServerMsg};
 use crate::shared::SharedDoc;
 
 type Tx = UnboundedSender<ServerMsg>;
@@ -26,6 +26,8 @@ struct DocState {
 struct Room {
     peers: HashMap<u64, (Peer, Tx)>,
     docs: HashMap<String, DocState>,
+    /// File locks: document name to the id of the peer holding it.
+    locks: HashMap<String, u64>,
 }
 
 #[derive(Default)]
@@ -35,9 +37,9 @@ struct Hub {
 }
 
 impl Hub {
-    fn join(&self, room: &str, name: String, color: u32, tx: Tx) -> (u64, Vec<Peer>) {
+    fn join(&self, room: &str, name: String, color: u32, login: Option<String>, tx: Tx) -> (u64, Vec<Peer>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-        let peer = Peer { id, name, color };
+        let peer = Peer { id, name, color, login };
         let mut rooms = self.rooms.lock().unwrap();
         let room = rooms.entry(room.to_string()).or_default();
         let others: Vec<Peer> = room.peers.values().map(|(p, _)| p.clone()).collect();
@@ -52,11 +54,15 @@ impl Hub {
         let mut rooms = self.rooms.lock().unwrap();
         let Some(room) = rooms.get_mut(room_name) else { return };
         room.peers.remove(&id);
+        let released = release_locks(room, id);
         for doc in room.docs.values_mut().filter(|d| d.claimed_by == Some(id)) {
             doc.claimed_by = None;
         }
         for (_, tx) in room.peers.values() {
             let _ = tx.send(ServerMsg::PeerLeft { id });
+        }
+        if released {
+            broadcast_locks(room);
         }
         if room.peers.is_empty() {
             // Nobody left to remember the documents for.
@@ -91,6 +97,9 @@ impl Hub {
         };
         let mut rooms = self.rooms.lock().unwrap();
         let room = rooms.get_mut(room_name)?;
+        if let Some(denied) = lock_denial(room, from, &doc_name) {
+            return Some(denied);
+        }
         let state = room.docs.entry(doc_name.clone()).or_insert_with(|| DocState { doc: SharedDoc::new(), claimed_by: None });
         if let Err(e) = state.doc.apply_update(&bytes) {
             return Some(ServerMsg::Error { message: e });
@@ -113,6 +122,79 @@ impl Hub {
             }
         }
     }
+}
+
+// ---- File locks ----------------------------------------------------------
+
+impl Hub {
+    /// `id` asks for the lock on `doc`. Returns `LockDenied` if someone else has it.
+    fn lock(&self, room_name: &str, id: u64, doc: String) -> Option<ServerMsg> {
+        let mut rooms = self.rooms.lock().unwrap();
+        let room = rooms.get_mut(room_name)?;
+        if let Some(denied) = lock_denial(room, id, &doc) {
+            return Some(denied);
+        }
+        if room.locks.insert(doc, id).is_none() {
+            broadcast_locks(room);
+        }
+        None
+    }
+
+    /// Only the holder can release; anyone else is ignored.
+    fn unlock(&self, room_name: &str, id: u64, doc: &str) {
+        let mut rooms = self.rooms.lock().unwrap();
+        let Some(room) = rooms.get_mut(room_name) else { return };
+        if room.locks.get(doc) == Some(&id) {
+            room.locks.remove(doc);
+            broadcast_locks(room);
+        }
+    }
+
+    /// Tell one peer (just welcomed) about the current locks.
+    fn send_locks(&self, room_name: &str, id: u64) {
+        let rooms = self.rooms.lock().unwrap();
+        let Some(room) = rooms.get(room_name) else { return };
+        if let Some((_, tx)) = room.peers.get(&id) {
+            let _ = tx.send(ServerMsg::Locks { locks: lock_list(room) });
+        }
+    }
+}
+
+/// `LockDenied` if `doc` is locked by someone other than `id`.
+fn lock_denial(room: &Room, id: u64, doc: &str) -> Option<ServerMsg> {
+    let owner = *room.locks.get(doc)?;
+    if owner == id {
+        return None;
+    }
+    let owner_name = room.peers.get(&owner).map(|(p, _)| p.name.clone()).unwrap_or_default();
+    Some(ServerMsg::LockDenied { doc: doc.to_string(), owner_name })
+}
+
+fn lock_list(room: &Room) -> Vec<LockInfo> {
+    let mut list: Vec<LockInfo> = room
+        .locks
+        .iter()
+        .filter_map(|(doc, owner)| {
+            let (p, _) = room.peers.get(owner)?;
+            Some(LockInfo { doc: doc.clone(), owner_id: *owner, owner_name: p.name.clone(), login: p.login.clone() })
+        })
+        .collect();
+    list.sort_by(|a, b| a.doc.cmp(&b.doc));
+    list
+}
+
+fn broadcast_locks(room: &Room) {
+    let locks = lock_list(room);
+    for (_, tx) in room.peers.values() {
+        let _ = tx.send(ServerMsg::Locks { locks: locks.clone() });
+    }
+}
+
+/// Drop every lock `id` holds. True if there were any.
+fn release_locks(room: &mut Room, id: u64) -> bool {
+    let before = room.locks.len();
+    room.locks.retain(|_, owner| *owner != id);
+    room.locks.len() != before
 }
 
 /// Listen on `addr` and serve forever.
@@ -156,9 +238,10 @@ async fn connection(hub: Arc<Hub>, stream: TcpStream) {
             continue;
         };
         match (&session, msg) {
-            (None, ClientMsg::Hello { room, name, color }) => {
-                let (id, peers) = hub.join(&room, name, color, tx.clone());
+            (None, ClientMsg::Hello { room, name, color, login }) => {
+                let (id, peers) = hub.join(&room, name, color, login, tx.clone());
                 let _ = tx.send(ServerMsg::Welcome { you: id, peers });
+                hub.send_locks(&room, id);
                 session = Some((room, id));
             }
             (None, _) => {
@@ -176,6 +259,12 @@ async fn connection(hub: Arc<Hub>, stream: TcpStream) {
                     let _ = tx.send(err);
                 }
             }
+            (Some((room, id)), ClientMsg::Lock { doc }) => {
+                if let Some(denied) = hub.lock(room, *id, doc) {
+                    let _ = tx.send(denied);
+                }
+            }
+            (Some((room, id)), ClientMsg::Unlock { doc }) => hub.unlock(room, *id, &doc),
             (Some((room, id)), ClientMsg::Cursor { doc, head, anchor }) => hub.cursor(room, *id, doc, head, anchor),
         }
     }

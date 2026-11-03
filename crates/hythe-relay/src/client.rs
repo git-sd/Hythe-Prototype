@@ -28,9 +28,14 @@ impl Client {
     /// Start connecting to `url` (for example `ws://127.0.0.1:7878`) and join `room`.
     /// Returns immediately; watch [`Client::poll`] for `Connected` or `Disconnected`.
     pub fn connect(url: &str, room: &str, name: &str, color: u32) -> Client {
+        Client::connect_as(url, room, name, color, None)
+    }
+
+    /// Like [`Client::connect`], also telling the room your GitHub login.
+    pub fn connect_as(url: &str, room: &str, name: &str, color: u32, login: Option<String>) -> Client {
         let (to_server, mut commands) = unbounded_channel::<ClientMsg>();
         let (event_tx, events) = channel::<Event>();
-        let hello = ClientMsg::Hello { room: room.to_string(), name: name.to_string(), color };
+        let hello = ClientMsg::Hello { room: room.to_string(), name: name.to_string(), color, login };
         let url = url.to_string();
 
         std::thread::spawn(move || {
