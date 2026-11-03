@@ -11,6 +11,8 @@ use crate::theme;
 use crate::Message;
 
 const SELECTION: Color = Color::from_rgba(0.45, 0.68, 0.91, 0.25);
+const FIND_MATCH: Color = Color::from_rgba(0.93, 0.70, 0.25, 0.28);
+const FIND_CURRENT: Color = Color::from_rgba(0.93, 0.70, 0.25, 0.60);
 const CURRENT_LINE: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.035);
 
 pub(crate) fn class_color(class: u8) -> Color {
@@ -49,6 +51,9 @@ pub struct EditorView<'a> {
     pub blame: Option<String>,
     /// Collaborators' carets in this document.
     pub remotes: Vec<crate::collab::RemoteCursor>,
+    /// Find-bar matches (char ranges, sorted) and which one is current.
+    pub finds: &'a [(usize, usize)],
+    pub find_cur: Option<usize>,
 }
 
 #[derive(Default)]
@@ -154,6 +159,25 @@ impl canvas::Program<Message> for EditorView<'_> {
 
             if line == cur_line && self.focused {
                 frame.fill_rectangle(Point::new(0.0, y), Size::new(bounds.width, m.line_h), CURRENT_LINE);
+            }
+            if !self.finds.is_empty() {
+                let ls = buf.line_start_char(line);
+                let le = ls + len;
+                let from = self.finds.partition_point(|m| m.1 <= ls);
+                for (i, &(ms, me)) in self.finds.iter().enumerate().skip(from) {
+                    if ms > le {
+                        break;
+                    }
+                    let (s, e) = (ms.max(ls) - ls, me.min(le) - ls);
+                    let x0 = text_x + visual_col(&text, s) as f32 * m.char_w;
+                    let x1 = text_x + visual_col(&text, e) as f32 * m.char_w;
+                    let cur = self.find_cur == Some(i);
+                    frame.fill_rectangle(
+                        Point::new(x0, y + 1.0),
+                        Size::new((x1 - x0).max(2.0), m.line_h - 2.0),
+                        if cur { FIND_CURRENT } else { FIND_MATCH },
+                    );
+                }
             }
             if let Some((s, e)) = buf.selection_on_line(line) {
                 let x0 = text_x + visual_col(&text, s) as f32 * m.char_w;

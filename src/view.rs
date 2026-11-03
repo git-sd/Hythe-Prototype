@@ -182,6 +182,15 @@ impl App {
         } else {
             base
         };
+        if self.psearch.open {
+            return stack![
+                base,
+                mouse_area(space::horizontal().width(Length::Fill).height(Length::Fill))
+                    .on_press(Message::Project(crate::find::ProjMsg::Close)),
+                self.psearch_view(),
+            ]
+            .into();
+        }
         if let Some(p) = &self.palette {
             return stack![
                 base,
@@ -220,7 +229,7 @@ impl App {
         row![
             icon_button(Icon::Menu, dim, self.menu == Some(0), Message::OpenMenu(0)),
             icon_button(Icon::Sidebar, dim, self.show_sidebar, Message::ToggleSidebar),
-            icon_button(Icon::Search, dim, false, Message::OpenPalette),
+            icon_button(Icon::Search, dim, self.psearch.open, Message::Project(crate::find::ProjMsg::Open)),
         ]
         .spacing(2)
         .align_y(Alignment::Center)
@@ -922,6 +931,8 @@ impl App {
                 popup: if focused && !self.focus_term { self.completion.as_ref() } else { None },
                 blame: if focused { self.blame_text(doc) } else { None },
                 remotes: self.remote_cursors(tab.doc),
+                finds: if focused && self.find.open { &self.find.matches } else { &[] },
+                find_cur: if focused && self.find.open { self.find.current } else { None },
             })
             .width(Length::Fill)
             .height(Length::Fill)
@@ -934,6 +945,9 @@ impl App {
         let mut col = column![self.tab_bar(index)];
         if let Some(b) = breadcrumb {
             col = col.push(b);
+        }
+        if focused && self.find.open && current.is_some() {
+            col = col.push(self.find_bar(pane.viewport.get().width));
         }
         let share = Length::FillPortion((pane.weight * 1000.0).round().clamp(1.0, 60000.0) as u16);
         let (w, h) = match self.panes.axis {
@@ -961,7 +975,7 @@ impl App {
                 text(label).size(13).color(theme::TEXT_DIM),
                 space::horizontal(),
                 self.lock_button(path),
-                icon_button(Icon::Search, theme::TEXT_FAINT, false, Message::OpenPalette),
+                icon_button(Icon::Search, theme::TEXT_FAINT, false, Message::Find(crate::find::FindMsg::Open { replace: false })),
             ]
             .align_y(Alignment::Center)
             .padding(Padding { top: 0.0, right: 8.0, bottom: 0.0, left: 16.0 }),

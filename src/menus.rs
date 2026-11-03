@@ -1,6 +1,7 @@
 use crate::add_repo::AddRepoMsg;
 use crate::panes::Axis;
 use crate::scm::ScmMsg;
+use crate::find::{FindMsg, ProjMsg};
 use crate::Message;
 
 pub const MENUS: [&str; 4] = ["File", "Edit", "View", "Terminal"];
@@ -45,6 +46,11 @@ pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
             item("Redo", "Ctrl+Y", Message::Redo),
             Separator,
             item("Select All", "Ctrl+A", Message::SelectAll),
+            Separator,
+            item("Find", "Ctrl+F", Message::Find(FindMsg::Open { replace: false })),
+            item("Find and Replace", "Ctrl+H", Message::Find(FindMsg::Open { replace: true })),
+            item("Find in Project", "Ctrl+Shift+F", Message::Project(ProjMsg::Open)),
+            item("Go to Line…", "Ctrl+L", Message::GoToLinePrompt),
             Separator,
             item("Show Suggestions", "Ctrl+Space", Message::TriggerCompletion),
         ],

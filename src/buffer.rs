@@ -1,4 +1,10 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use ropey::Rope;
+
+/// Source of revision numbers; unique across all buffers, so a number says
+/// "this exact text" even when a buffer is replaced wholesale.
+static REVISION: AtomicU64 = AtomicU64::new(1);
 
 /// Text buffer backed by a rope. Positions are char indices.
 /// `head` is the cursor, `anchor` the other end of the selection.
@@ -12,6 +18,10 @@ pub struct Buffer {
     /// Record edits for collaboration (see `drain_edits`).
     track: bool,
     outbox: Vec<EditOp>,
+    /// Changes whenever the text does.
+    rev: u64,
+    /// Index in `undo` of an edit that later typing must not merge into.
+    sealed: Option<usize>,
 }
 
 /// One edit as a collaboration peer sees it: UTF-16 offsets, replace `remove` units at `pos` with `insert`.
@@ -47,7 +57,43 @@ impl Buffer {
             redo: Vec::new(),
             track: false,
             outbox: Vec::new(),
+            rev: REVISION.fetch_add(1, Ordering::Relaxed),
+            sealed: None,
         }
+    }
+
+    /// A number that changes whenever the text changes.
+    pub fn revision(&self) -> u64 {
+        self.rev
+    }
+
+    fn bump(&mut self) {
+        self.rev = REVISION.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn len_chars(&self) -> usize {
+        self.rope.len_chars()
+    }
+
+    /// Char index where `line` starts.
+    pub fn line_start_char(&self, line: usize) -> usize {
+        self.rope.line_to_char(line.min(self.rope.len_lines().saturating_sub(1)))
+    }
+
+    /// Select the chars `start..end`, leaving the caret at the end.
+    pub fn select_range(&mut self, start: usize, end: usize) {
+        let n = self.rope.len_chars();
+        self.anchor = start.min(n);
+        self.head = end.min(n);
+        self.goal_col = None;
+    }
+
+    /// Replace `start..end` with `text` as one undo step of its own (it never
+    /// merges with typing around it). The caret ends after the text.
+    pub fn replace_range(&mut self, start: usize, end: usize, text: &str) {
+        let n = self.rope.len_chars();
+        let (start, end) = (start.min(n), end.min(n).max(start.min(n)));
+        self.replace_with(start, end, text, true);
     }
 
     pub fn text(&self) -> String {
@@ -92,6 +138,7 @@ impl Buffer {
                 pos - removed + inserted
             }
         }
+        self.bump();
         for (pos, remove, insert) in changes {
             let units = self.rope.len_utf16_cu();
             let start = self.rope.utf16_cu_to_char((pos as usize).min(units));
@@ -207,6 +254,11 @@ impl Buffer {
     /// Replace `start..end` with `text`, leaving the caret after it and
     /// recording the change for undo. Runs of typing or deleting coalesce.
     fn replace(&mut self, start: usize, end: usize, text: &str) {
+        self.replace_with(start, end, text, false);
+    }
+
+    fn replace_with(&mut self, start: usize, end: usize, text: &str, seal: bool) {
+        self.bump();
         let removed = self.rope.slice(start..end).to_string();
         if self.track {
             self.outbox.push(EditOp {
@@ -235,12 +287,16 @@ impl Buffer {
             before,
             after: (caret, caret),
         };
-        if !self.try_merge(&edit) {
+        if seal || !self.try_merge(&edit) {
             self.undo.push(edit);
+            self.sealed = seal.then(|| self.undo.len() - 1);
         }
     }
 
     fn try_merge(&mut self, e: &Edit) -> bool {
+        if self.sealed == Some(self.undo.len().wrapping_sub(1)) {
+            return false;
+        }
         let Some(last) = self.undo.last_mut() else {
             return false;
         };
@@ -274,6 +330,7 @@ impl Buffer {
         let Some(e) = self.undo.pop() else {
             return false;
         };
+        self.bump();
         let n = e.inserted.chars().count();
         if self.track {
             self.outbox.push(EditOp {
@@ -298,6 +355,7 @@ impl Buffer {
         let Some(e) = self.redo.pop() else {
             return false;
         };
+        self.bump();
         let n = e.removed.chars().count();
         if self.track {
             self.outbox.push(EditOp {

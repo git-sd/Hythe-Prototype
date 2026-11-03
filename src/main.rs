@@ -8,6 +8,7 @@ mod completion_ui;
 mod doc;
 mod editor;
 mod explorer;
+mod find;
 mod github;
 mod highlight;
 mod icons;
@@ -112,6 +113,8 @@ struct App {
     agents: Vec<Profile>,
     status: String,
     palette: Option<Palette>,
+    find: find::Find,
+    psearch: find::ProjSearch,
     /// Open top-bar dropdown (index into `menus::MENUS`).
     menu: Option<usize>,
     /// Open completion popup in the focused editor.
@@ -359,6 +362,14 @@ pub enum Message {
     SelectAll,
     OpenPalette,
     ClosePalette,
+    /// Ctrl+F / Ctrl+H: the find bar.
+    Find(find::FindMsg),
+    /// Search across the project's files.
+    Project(find::ProjMsg),
+    /// Move the caret to a 1-based line (and column, 0 for none).
+    GoToLine { line: usize, col: usize },
+    /// Open the palette ready for a line number.
+    GoToLinePrompt,
     RunPalette(usize),
 }
 
@@ -390,6 +401,8 @@ impl App {
             agents: hythe_term::known_agents(),
             status: String::new(),
             palette: None,
+            find: find::Find::default(),
+            psearch: find::ProjSearch::default(),
             menu: None,
             completion: None,
             highlighter: Highlighter::new(),
@@ -966,6 +979,8 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.update_inner(message);
+        // Matches follow the text as it is edited or the tab changes.
+        self.find_recompute(false);
         self.fit_columns();
         // Anything that edited the text or moved the cursor is sent to collaborators.
         self.collab_flush();
@@ -1068,6 +1083,7 @@ impl App {
             }
             Message::Click { pane, line, col, select } => {
                 self.focus_term = false;
+                self.find.focus = find::Field::Editor;
                 self.panes.focus_pane(pane);
                 if let Some(d) = self.docs.get_mut(self.panes.cur()) {
                     d.buffer.set_cursor(line, col, select);
@@ -1090,8 +1106,16 @@ impl App {
                 if self.palette.is_some() {
                     return self.palette_key(key, modifiers, text.as_deref());
                 }
+                if self.psearch.open {
+                    return self.proj_key(key, modifiers, text.as_deref());
+                }
                 if self.show_term && self.focus_term {
                     return self.term_key(key, modifiers, text.as_deref());
+                }
+                if self.find.open && self.find.focus != find::Field::Editor {
+                    let task = self.find_key(key, modifiers, text.as_deref());
+                    self.find_recompute(false);
+                    return task;
                 }
                 if self.completion_key(&key, modifiers) {
                     self.reveal_cursor();
@@ -1465,6 +1489,14 @@ impl App {
                     d.buffer.select_all();
                 }
             }
+            Message::Find(m) => return self.find_update(m),
+            Message::Project(m) => return self.proj_update(m),
+            Message::GoToLine { line, col } => self.go_to_line(line, col),
+            Message::GoToLinePrompt => {
+                let mut p = Palette::new();
+                p.query = ":".into();
+                self.palette = Some(p);
+            }
             Message::OpenPalette => self.palette = Some(Palette::new()),
             Message::ClosePalette => self.palette = None,
             Message::RunPalette(i) => {
@@ -1518,6 +1550,15 @@ impl App {
         if matches!(key.as_ref(), Key::Named(Named::F11)) {
             return self.update(Message::ToggleFullscreen);
         }
+        if self.find.open {
+            match key.as_ref() {
+                Key::Named(Named::Escape) => return self.update(Message::Find(find::FindMsg::Close)),
+                Key::Named(Named::F3) => {
+                    return self.update(Message::Find(if shift { find::FindMsg::Prev } else { find::FindMsg::Next }))
+                }
+                _ => {}
+            }
+        }
 
         if ctrl {
             if let Key::Character(c) = key.as_ref() {
@@ -1529,6 +1570,10 @@ impl App {
                     ("p", true) => return self.update(Message::OpenPalette),
                     ("b", _) => return self.update(Message::ToggleSidebar),
                     ("g", true) => return self.update(Message::Scm(ScmMsg::Show)),
+                    ("f", false) => return self.update(Message::Find(find::FindMsg::Open { replace: false })),
+                    ("h", _) => return self.update(Message::Find(find::FindMsg::Open { replace: true })),
+                    ("f", true) => return self.update(Message::Project(find::ProjMsg::Open)),
+                    ("l", _) => return self.update(Message::GoToLinePrompt),
                     ("0", true) | (")", _) => return self.update(Message::ResetWindow),
                     ("-", _) | ("_", _) => return self.update(Message::Zoom(-1)),
                     ("=", _) | ("+", _) => return self.update(Message::Zoom(1)),
