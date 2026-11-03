@@ -67,13 +67,24 @@ impl Scm {
     pub fn reload(&mut self, repo: &Repo) {
         self.changes = repo.status().unwrap_or_default();
         self.ahead_behind = repo.ahead_behind();
-        // Keep the selection if it still exists on that side; otherwise show nothing.
-        let still_there = self.selected.as_ref().is_some_and(|(path, staged)| {
-            self.changes.iter().any(|c| &c.path == path && if *staged { c.staged.is_some() } else { c.unstaged.is_some() })
-        });
-        if !still_there {
-            self.selected = None;
-            self.diff.clear();
+        // Keep the selection if it still exists on that side; if the file moved to the other
+        // side (it was staged or unstaged), follow it; otherwise show nothing.
+        if let Some((path, staged)) = self.selected.clone() {
+            let has = |s: &Self, side: bool| {
+                s.changes.iter().any(|c| c.path == path && if side { c.staged.is_some() } else { c.unstaged.is_some() })
+            };
+            if !has(self, staged) {
+                if has(self, !staged) {
+                    self.selected = Some((path, !staged));
+                } else {
+                    self.selected = None;
+                    self.diff.clear();
+                    // Nothing left to show in the details column beside History.
+                    if self.tab == ScmTab::Changes {
+                        self.show_diff = false;
+                    }
+                }
+            }
         }
         if let Some((path, staged)) = self.selected.clone() {
             self.diff = repo.diff(&path, staged).unwrap_or_default();
@@ -271,13 +282,25 @@ impl App {
     /// Read every changed file's diff off the UI thread, for the Changes view.
     pub(crate) fn load_all_diffs(&self) -> Task<Message> {
         let Some(repo) = self.repo.clone() else { return Task::none() };
-        let paths: Vec<(String, u32)> =
-            self.scm.changes.iter().map(|c| (c.path.clone(), self.scm.context.get(&c.path).copied().unwrap_or(3))).collect();
+        let paths: Vec<(String, u32, bool)> = self
+            .scm
+            .changes
+            .iter()
+            .map(|c| {
+                // A pure rename has no lines of its own: say so instead of showing the whole file as added.
+                let renamed = c.staged == Some(hythe_git::Status::Renamed) && c.unstaged.is_none();
+                (c.path.clone(), self.scm.context.get(&c.path).copied().unwrap_or(3), renamed)
+            })
+            .collect();
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    paths.into_iter().map(|(p, context)| {
-                        let lines = repo.diff_head(&p, context).unwrap_or_default();
+                    paths.into_iter().map(|(p, context, renamed)| {
+                        let lines = if renamed {
+                            vec![DiffLine { kind: LineKind::Header, text: "Renamed, no changes to the contents".into(), old: None, new: None }]
+                        } else {
+                            repo.diff_head(&p, context).unwrap_or_default()
+                        };
                         (p, lines)
                     }).collect::<Vec<_>>()
                 })
@@ -335,7 +358,15 @@ impl App {
                     ..iced::window::Settings::default()
                 });
                 self.scm_window = Some(id);
+                self.scm_win = iced::Size::new(1000.0, 680.0);
                 self.scm.open = true;
+                // The window has room for the diff, so open on a file rather than an empty pane.
+                if self.scm.tab == ScmTab::Changes && self.scm.selected.is_none() {
+                    if let Some(c) = self.scm.changes.first() {
+                        let (path, staged) = (c.path.clone(), c.staged.is_some() && c.unstaged.is_none());
+                        self.scm.select(&repo, path, staged);
+                    }
+                }
                 return open.map(|_| Message::Noop);
             }
             ScmMsg::PopIn => {

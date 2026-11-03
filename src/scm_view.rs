@@ -25,18 +25,23 @@ fn status_color(s: Status) -> Color {
 }
 
 impl App {
-    /// Roughly how wide the diff is: what the window leaves after the sidebars.
+    /// Roughly how wide the diff is: the pop-out window less the list, or the details column.
     fn diff_pane_w(&self) -> f32 {
+        if self.scm_window.is_some() {
+            (self.scm_win.width - self.scm_w - crate::view::HANDLE_W).max(300.0)
+        } else {
+            (self.scm_detail_w - 20.0).max(240.0)
+        }
+    }
+
+    /// About how wide the editor area is, once the sidebar, thread column, chat and
+    /// History have taken their share.
+    fn main_area_w(&self) -> f32 {
         use crate::view::HANDLE_W;
         let sidebar = if self.show_sidebar { self.list_w + HANDLE_W } else { 0.0 };
-        let agent = if self.show_term && self.chat_window.is_none() { self.agent_w + HANDLE_W } else { 0.0 };
+        let agent = if self.agent_on() && self.chat_window.is_none() { self.agent_w + HANDLE_W } else { 0.0 };
         let chat = if self.chat_docked() { self.chat_w + HANDLE_W } else { 0.0 };
-        if self.scm_window.is_some() {
-            (self.win.width * 0.7 - self.scm_w).max(300.0)
-        } else {
-            let _ = (sidebar, agent, chat);
-        (self.scm_detail_w - 20.0).max(240.0)
-        }
+        (self.win.width - sidebar - agent - chat - self.scm_l()).max(300.0)
     }
 
     /// History is open as a column on the left (not popped out into its own window).
@@ -158,8 +163,22 @@ impl App {
                 .into()
             };
             // Every section opens with its own arrow row, so the card needs none at the top.
+            // Rows are as wide as the longest line (or the card), so long lines scroll sideways
+            // and the tints still reach the card's edge.
+            let shown: Vec<(usize, &DiffLine)> =
+                lines.iter().enumerate().filter(|(_, l)| l.kind != LineKind::Header).take(MAX_DIFF_LINES).collect();
+            let longest = shown.iter().map(|(_, l)| l.text.chars().count()).max().unwrap_or(0);
+            let card_w = (self.main_area_w() - 32.0 - 2.0).max(240.0);
+            let row_w = (44.0 + 16.0 + 16.0 + longest as f32 * 8.4).max(card_w - 10.0);
             let mut rows = column![];
-            for (index, l) in lines.iter().enumerate().filter(|(_, l)| l.kind != LineKind::Header).take(MAX_DIFF_LINES) {
+            // Binary files and the like have no lines, only a note.
+            for l in lines.iter().filter(|l| l.kind == LineKind::Header) {
+                rows = rows.push(container(text(l.text.clone()).size(12).color(theme::TEXT_FAINT)).padding([4, 16]));
+            }
+            if lines.is_empty() {
+                rows = rows.push(container(text("No textual changes").size(12).color(theme::TEXT_FAINT)).padding([4, 16]));
+            }
+            for (index, l) in shown.iter().copied() {
                 let (tint, color) = match l.kind {
                     LineKind::Added => (Some(theme::ADDED_BG), theme::TEXT),
                     LineKind::Removed => (Some(theme::REMOVED_BG), theme::TEXT),
@@ -168,7 +187,7 @@ impl App {
                 };
                 let line: Element<'_, Message> = if l.kind == LineKind::Hunk {
                     // Between hunks: arrows to fill the gap, instead of the raw @@ header.
-                    row![more(Icon::ArrowUp), text("⋯").size(12).color(color)].spacing(16).align_y(Alignment::Center).into()
+                    row![more(Icon::ArrowUp), text("\u{22ef}").size(12).color(color)].spacing(16).align_y(Alignment::Center).into()
                 } else {
                     // Like Zed: removed lines have no number, everything else shows its new line.
                     let number = l.new.map(|n| n.to_string()).unwrap_or_default();
@@ -190,16 +209,26 @@ impl App {
                     .spacing(16)
                     .into()
                 };
-                let line = container(line).width(Length::Fill).padding([2, 0]);
+                let line = container(line).width(Length::Fixed(row_w)).padding([2, 0]);
                 rows = rows.push(match tint {
                     Some(c) => line.style(theme::bg(c)),
                     None => line,
                 });
             }
+            let total = lines.iter().filter(|l| l.kind != LineKind::Header).count();
+            if total > MAX_DIFF_LINES {
+                rows = rows.push(
+                    container(text(format!("\u{2026} {} more lines not shown", total - MAX_DIFF_LINES)).size(12).color(theme::TEXT_FAINT))
+                        .padding([4, 16]),
+                );
+            }
             rows = rows.push(more(Icon::ArrowDown));
+            let rows = scrollable(rows.padding([6, 0]))
+                .direction(scrollable::Direction::Horizontal(crate::view::thin()))
+                .width(Length::Fill);
             col = col.push(
                 container(
-                    container(rows.padding([6, 0]))
+                    container(rows)
                         .width(Length::Fill)
                         .clip(true)
                         .style(|_: &Theme| container::Style {
@@ -277,7 +306,8 @@ impl App {
             .height(Length::Fixed(crate::view::TAB_H))
             .style(theme::bg(theme::TAB_BAR_BG)),
             divider_h(),
-        ];
+        ]
+        .width(Length::Fill);
         let head = row![left_head, gap, right_head];
         let body = row![self.scm_left(), self.handle(Handle::Scm, true), self.scm_diff()].height(Length::Fill);
         container(column![head, body])

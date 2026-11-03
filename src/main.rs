@@ -170,6 +170,8 @@ struct App {
     scm_window: Option<window::Id>,
     /// Width of the details column that opens beside History.
     scm_detail_w: f32,
+    /// Size of History's pop-out window, as last reported.
+    scm_win: iced::Size,
     /// Shift is held, for sideways scrolling with the wheel.
     shift: bool,
     fullscreen: bool,
@@ -428,6 +430,7 @@ impl App {
             chat_window: None,
             scm_window: None,
             scm_detail_w: 480.0,
+            scm_win: iced::Size::new(1000.0, 680.0),
             shift: false,
             fullscreen: false,
             files_open: false,
@@ -1194,6 +1197,9 @@ impl App {
                 }
             }
             Message::WindowSized(id, size) => {
+                if Some(id) == self.scm_window {
+                    self.scm_win = size;
+                }
                 if id == self.main_window {
                     self.win = size;
                     self.agent_w_saved = None;
