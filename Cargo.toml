@@ -7,6 +7,7 @@ edition = "2021"
 members = ["crates/hythe-term", "crates/hythe-complete", "crates/hythe-git", "crates/hythe-relay"]
 
 [dependencies]
+regex = "1"
 hythe-term = { path = "crates/hythe-term" }
 hythe-complete = { path = "crates/hythe-complete" }
 hythe-git = { path = "crates/hythe-git" }
