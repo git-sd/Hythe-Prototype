@@ -1224,7 +1224,7 @@ impl App {
 
         container(
             row![
-                container(git).width(Length::Fill).clip(true).max_width(420.0),
+                container(git).width(Length::Fill).clip(true).max_width(520.0),
                 if narrow { space::horizontal().width(Length::Shrink).into() } else { self.message_bar() },
                 container(text(if narrow { String::new() } else { self.status.clone() }).size(12).color(theme::TEXT_FAINT).wrapping(text::Wrapping::None))
                     .width(if narrow { Length::Shrink } else { Length::Fill })
