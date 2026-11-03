@@ -167,9 +167,12 @@ impl App {
             // and the tints still reach the card's edge.
             let shown: Vec<(usize, &DiffLine)> =
                 lines.iter().enumerate().filter(|(_, l)| l.kind != LineKind::Header).take(MAX_DIFF_LINES).collect();
-            let longest = shown.iter().map(|(_, l)| l.text.chars().count()).max().unwrap_or(0);
+            let longest = shown.iter().filter(|(_, l)| l.kind != LineKind::Hunk).map(|(_, l)| l.text.chars().count()).max().unwrap_or(0);
             let card_w = (self.main_area_w() - 32.0 - 2.0).max(240.0);
-            let row_w = (44.0 + 16.0 + 16.0 + longest as f32 * 8.4).max(card_w - 10.0);
+            let need_w = 44.0 + 16.0 + 16.0 + longest as f32 * 8.4;
+            // Only cards with lines wider than the card scroll sideways; the rest just fill it.
+            let scrolls = need_w > card_w - 8.0;
+            let row_w = if scrolls { Length::Fixed(need_w) } else { Length::Fill };
             let mut rows = column![];
             // Binary files and the like have no lines, only a note.
             for l in lines.iter().filter(|l| l.kind == LineKind::Header) {
@@ -209,7 +212,7 @@ impl App {
                     .spacing(16)
                     .into()
                 };
-                let line = container(line).width(Length::Fixed(row_w)).padding([2, 0]);
+                let line = container(line).width(row_w).padding([2, 0]);
                 rows = rows.push(match tint {
                     Some(c) => line.style(theme::bg(c)),
                     None => line,
@@ -223,9 +226,14 @@ impl App {
                 );
             }
             rows = rows.push(more(Icon::ArrowDown));
-            let rows = scrollable(rows.padding([6, 0]))
-                .direction(scrollable::Direction::Horizontal(crate::view::thin()))
-                .width(Length::Fill);
+            let rows: Element<'_, Message> = if scrolls {
+                scrollable(rows.padding([6, 0]))
+                    .direction(scrollable::Direction::Horizontal(crate::view::thin()))
+                    .width(Length::Fill)
+                    .into()
+            } else {
+                rows.padding([6, 0]).width(Length::Fill).into()
+            };
             col = col.push(
                 container(
                     container(rows)
