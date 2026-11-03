@@ -614,9 +614,15 @@ mod tests {
 
     #[test]
     fn document_ids_are_project_relative_with_forward_slashes() {
+        // Windows paths only parse as paths on Windows; elsewhere use native ones.
+        let (file, root, other) = if cfg!(windows) {
+            ("C:\\work\\repo\\src\\main.rs", "C:\\work\\repo", "C:\\other")
+        } else {
+            ("/work/repo/src/main.rs", "/work/repo", "/other")
+        };
         let mut d = Doc::empty();
-        d.path = Some(std::path::PathBuf::from("C:\\work\\repo\\src\\main.rs"));
-        assert_eq!(doc_id(Path::new("C:\\work\\repo"), &d).as_deref(), Some("src/main.rs"));
-        assert_eq!(doc_id(Path::new("C:\\other"), &d), None);
+        d.path = Some(std::path::PathBuf::from(file));
+        assert_eq!(doc_id(Path::new(root), &d).as_deref(), Some("src/main.rs"));
+        assert_eq!(doc_id(Path::new(other), &d), None);
     }
 }
