@@ -1027,6 +1027,9 @@ impl App {
     }
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
+        if self.blocked_by_lock(&message) {
+            return Task::none();
+        }
         // The completion popup belongs to one cursor position; almost anything
         // other than typing, scrolling or picking an entry invalidates it.
         if !matches!(

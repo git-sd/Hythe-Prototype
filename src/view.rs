@@ -649,6 +649,8 @@ impl App {
                                 .size(14)
                                 .color(if node.is_dir { theme::TEXT } else { theme::TEXT_DIM })
                                 .wrapping(text::Wrapping::None),
+                            space::horizontal(),
+                            if node.is_dir { space::horizontal().width(Length::Shrink).into() } else { self.lock_badge(Some(&node.path)) },
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center)
@@ -958,6 +960,7 @@ impl App {
             row![
                 text(label).size(13).color(theme::TEXT_DIM),
                 space::horizontal(),
+                self.lock_button(path),
                 icon_button(Icon::Search, theme::TEXT_FAINT, false, Message::OpenPalette),
             ]
             .align_y(Alignment::Center)
@@ -997,8 +1000,15 @@ impl App {
             // over another tab (in this pane or another) moves it there.
             let tab = row![
                 mouse_area(
-                    container(text(d.name()).size(13).color(if active { theme::TEXT } else { theme::TEXT_DIM }))
-                        .padding([8, 6]),
+                    container(
+                        row![
+                            self.lock_badge(d.path.as_deref()),
+                            text(d.name()).size(13).color(if active { theme::TEXT } else { theme::TEXT_DIM }),
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([8, 6]),
                 )
                 .on_press(Message::TabPress { pane: pane_index, tab: i })
                 .interaction(iced::mouse::Interaction::Pointer),

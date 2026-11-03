@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use hythe_relay::proto::{b64, unb64};
+use hythe_relay::proto::{b64, unb64, LockInfo};
 use hythe_relay::{Client, ClientMsg, Event, Peer, ServerMsg, SharedDoc};
 use iced::widget::{button, column, container, mouse_area, opaque, row, space, stack, text, text_input};
 use iced::{Alignment, Color, Element, Length, Padding, Task, Theme};
@@ -36,6 +36,7 @@ pub struct Collab {
     pub room: String,
     pub you: Option<u64>,
     pub peers: Vec<Peer>,
+    pub locks: Vec<LockInfo>,
     docs: HashMap<String, Shared>,
     cursors: HashMap<(String, u64), (u32, u32)>,
 }
@@ -75,6 +76,8 @@ pub enum CollabMsg {
     Connect,
     Disconnect,
     Tick,
+    /// Lock or unlock the active file.
+    ToggleLock,
 }
 
 /// A stable 0xRRGGBB colour for a person.
@@ -120,7 +123,8 @@ impl App {
                 if ui.room.trim().is_empty() || ui.name.trim().is_empty() {
                     self.status = "Enter a room and your name first".into();
                 } else {
-                    let client = Client::connect(ui.url.trim(), ui.room.trim(), ui.name.trim(), color_for(&ui.name));
+                    let login = self.github_login();
+                    let client = Client::connect_as(ui.url.trim(), ui.room.trim(), ui.name.trim(), color_for(&ui.name), login);
                     self.collab = Some(Collab {
                         client,
                         link: Link::Connecting,
@@ -128,6 +132,7 @@ impl App {
                         room: ui.room.trim().to_string(),
                         you: None,
                         peers: Vec::new(),
+                        locks: Vec::new(),
                         docs: HashMap::new(),
                         cursors: HashMap::new(),
                     });
@@ -136,6 +141,7 @@ impl App {
             }
             CollabMsg::Disconnect => self.collab_stop(),
             CollabMsg::Tick => self.collab_poll(),
+            CollabMsg::ToggleLock => self.toggle_lock(),
         }
         Task::none()
     }
@@ -260,6 +266,10 @@ impl App {
             ServerMsg::Cursor { doc, id, head, anchor } => {
                 c.cursors.insert((doc, id), (head, anchor));
             }
+            ServerMsg::Locks { locks } => c.locks = locks,
+            ServerMsg::LockDenied { doc, owner_name } => {
+                self.status = format!("{doc} is locked by {owner_name}");
+            }
             ServerMsg::Error { message } => self.status = format!("Relay: {message}"),
             ServerMsg::Welcome { .. } => {}
         }
@@ -305,6 +315,110 @@ impl App {
                 Some(RemoteCursor { name: p.name.clone(), color: rgb(p.color), head: doc.buffer.utf16_to_char(*head) })
             })
             .collect()
+    }
+
+    // ---- File locks ----
+
+    /// The lock on the file at `path`, if anyone holds one.
+    pub(crate) fn lock_of(&self, path: &Path) -> Option<&LockInfo> {
+        let c = self.collab.as_ref().filter(|c| c.link == Link::Online)?;
+        let rel = path.strip_prefix(&self.root.as_ref()?.path).ok()?.to_string_lossy().replace('\\', "/");
+        c.locks.iter().find(|l| l.doc == rel)
+    }
+
+    fn is_me(&self, lock: &LockInfo) -> bool {
+        self.collab.as_ref().and_then(|c| c.you) == Some(lock.owner_id)
+    }
+
+    /// Who the lock belongs to, as shown to others: GitHub login when known.
+    fn lock_owner_label(lock: &LockInfo) -> String {
+        lock.login.clone().unwrap_or_else(|| lock.owner_name.clone())
+    }
+
+    /// The lock on the active file, when someone else holds it.
+    fn active_lock_by_other(&self) -> Option<&LockInfo> {
+        let path = self.docs.get(self.panes.cur())?.path.as_ref()?;
+        self.lock_of(path).filter(|l| !self.is_me(l))
+    }
+
+    fn toggle_lock(&mut self) {
+        let Some(root) = self.root.as_ref().map(|r| r.path.clone()) else { return };
+        let Some(id) = self.docs.get(self.panes.cur()).and_then(|d| doc_id(&root, d)) else {
+            self.status = "Only files inside the project can be locked".into();
+            return;
+        };
+        let Some(c) = self.collab.as_ref().filter(|c| c.link == Link::Online) else {
+            self.status = "Start sharing to lock files".into();
+            return;
+        };
+        match c.locks.iter().find(|l| l.doc == id) {
+            Some(l) if Some(l.owner_id) == c.you => c.client.send(ClientMsg::Unlock { doc: id }),
+            Some(l) => self.status = format!("{id} is locked by {}", Self::lock_owner_label(l)),
+            None => c.client.send(ClientMsg::Lock { doc: id }),
+        }
+    }
+
+    /// True (and says why in the status bar) when `message` would change the active
+    /// file while somebody else has it locked.
+    pub(crate) fn blocked_by_lock(&mut self, message: &Message) -> bool {
+        use iced::keyboard::{key::Named, Event as Kb, Key};
+        let edits = match message {
+            Message::Paste(Some(_)) | Message::Undo | Message::Redo => true,
+            Message::Key(Kb::KeyPressed { key, modifiers, text, .. }) => {
+                if self.palette.is_some() || (self.show_term && self.focus_term) {
+                    false
+                } else if modifiers.command() {
+                    matches!(key.as_ref(), Key::Character("x" | "v" | "z" | "y"))
+                } else {
+                    match key.as_ref() {
+                        Key::Named(Named::Backspace | Named::Delete | Named::Enter | Named::Tab | Named::Space) => true,
+                        Key::Named(_) => false,
+                        _ => text.as_ref().is_some_and(|t| t.chars().any(|ch| !ch.is_control())) && !modifiers.control(),
+                    }
+                }
+            }
+            _ => false,
+        };
+        if !edits {
+            return false;
+        }
+        let Some(who) = self.active_lock_by_other().map(Self::lock_owner_label) else { return false };
+        self.status = format!("Locked by {who} - this file is read-only until they unlock it");
+        true
+    }
+
+    /// Padlock with the owner's name for a locked file; empty otherwise.
+    pub(crate) fn lock_badge(&self, path: Option<&Path>) -> Element<'_, Message> {
+        let Some(lock) = path.and_then(|p| self.lock_of(p)) else {
+            return space::horizontal().width(Length::Shrink).into();
+        };
+        if self.is_me(lock) {
+            return crate::icons::icon(Icon::Lock, 12.0, theme::ACCENT);
+        }
+        row![
+            crate::icons::icon(Icon::Lock, 12.0, theme::REMOVED),
+            text(Self::lock_owner_label(lock)).size(11).color(theme::REMOVED).wrapping(text::Wrapping::None),
+        ]
+        .spacing(3)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    /// "Lock this file" / "Unlock" / "Locked by …" for the breadcrumb bar.
+    pub(crate) fn lock_button(&self, path: Option<&Path>) -> Element<'_, Message> {
+        let online = self.collab.as_ref().is_some_and(|c| c.link == Link::Online);
+        let (Some(path), true) = (path, online) else { return space::horizontal().width(Length::Shrink).into() };
+        let lock = self.lock_of(path);
+        let (label, color, press) = match lock {
+            None => ("Lock this file".to_string(), theme::TEXT_DIM, true),
+            Some(l) if self.is_me(l) => ("Unlock".to_string(), theme::ACCENT, true),
+            Some(l) => (format!("Locked by {}", Self::lock_owner_label(l)), theme::REMOVED, false),
+        };
+        let content = row![crate::icons::icon(Icon::Lock, 12.0, color), text(label).size(12).color(color)]
+            .spacing(5)
+            .align_y(Alignment::Center);
+        let b = button(content).padding([2, 8]).style(theme::flat(lock.is_some_and(|l| self.is_me(l))));
+        if press { b.on_press(Message::Collab(CollabMsg::ToggleLock)).into() } else { b.into() }
     }
 
     /// The Collaborate panel, anchored above the bottom bar on the right.
