@@ -82,6 +82,8 @@ pub enum ChatMsg {
     ToggleThread(String),
     Attach,
     Unattach(usize),
+    /// Clear the error shown under the header.
+    DismissNote,
     Send,
     /// Fetch, merge and push the chat branch.
     Sync,
@@ -162,6 +164,7 @@ impl App {
                     return window::close(id);
                 }
             }
+            ChatMsg::DismissNote => self.chat.note = None,
             ChatMsg::ToggleDock => {
                 self.chat_mode = if self.chat_mode == ChatMode::Overlay { ChatMode::Docked } else { ChatMode::Overlay };
             }
@@ -260,7 +263,7 @@ impl App {
                 self.chat.busy = None;
                 match result {
                     Ok(_) => self.chat.note = None,
-                    Err(e) => self.chat.note = Some(e.lines().next().unwrap_or("sync failed").to_string()),
+                    Err(e) => self.chat.note = Some(e.trim().to_string()),
                 }
                 return self.chat_load();
             }
@@ -394,7 +397,7 @@ impl App {
         // rather than pushing Sync and the X out of view.
         let (title, title_color) = match (c.busy, &c.note) {
             (Some(b), _) => (b.to_string(), theme::TEXT_DIM),
-            (None, Some(n)) => (n.clone(), theme::REMOVED),
+            (None, Some(_)) => (format!("{repo_name} \u{2014} problem, see below"), theme::REMOVED),
             _ => (repo_name.clone(), theme::TEXT),
         };
         let header = container(
@@ -521,7 +524,22 @@ impl App {
                 .height(Length::Fill)
                 .into();
         }
-        let body = column![header, divider_h(), vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer];
+        // The whole message, wrapped, where there is room to read it; click to dismiss.
+        let banner: Element<'_, Message> = match &c.note {
+            Some(n) => mouse_area(
+                container(text(n.lines().take(4).collect::<Vec<_>>().join("\n")).size(11).color(theme::REMOVED))
+                    .width(Length::Fill)
+                    .padding([6, 12])
+                    .style(|_: &Theme| container::Style {
+                        background: Some(Color { a: 0.10, ..theme::REMOVED }.into()),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(msg(ChatMsg::DismissNote))
+            .into(),
+            None => iced::widget::space::vertical().height(Length::Fixed(0.0)).into(),
+        };
+        let body = column![header, divider_h(), banner, vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill), divider_h(), composer];
         match place {
             Place::Thread => unreachable!(),
             Place::Docked => container(body).width(Length::Fixed(self.chat_w)).height(Length::Fill).style(theme::bg(theme::PANEL_BG)).into(),
