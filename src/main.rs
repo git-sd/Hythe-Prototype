@@ -683,7 +683,6 @@ impl App {
     /// Recompute suggestions at the cursor. `explicit` is a request (Ctrl+Space)
     /// rather than a side effect of typing.
     fn refresh_completion(&mut self, explicit: bool) {
-        self.completion = None;
         let idx = self.panes.cur();
         let Some(doc) = self.docs.get(idx) else {
             return;
