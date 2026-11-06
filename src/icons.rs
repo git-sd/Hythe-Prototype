@@ -22,8 +22,6 @@ pub enum Icon {
     Close,
     Split,
     Sparkle,
-    /// A lookalike of Anthropic's mark; drop a real logo in assets/agents/ to replace it.
-    Anthropic,
     Send,
     Eye,
     More,
@@ -64,7 +62,6 @@ impl Icon {
             Icon::Minus => svg_icon!(r#"<path d="M5 12h14"/>"#),
             Icon::Close => svg_icon!(r#"<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>"#),
             Icon::Split => svg_icon!(r#"<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M12 4.5v15"/>"#),
-            Icon::Anthropic => svg_icon!(r#"<path fill="white" stroke="none" d="M2.6 20.2L9.5 3.8h4.1l7.8 16.4h-3.9L11.6 8.4 6.5 20.2z"/>"#),
             Icon::Sparkle => svg_icon!(r#"<path d="M12 3.5l1.9 5.6 5.6 1.9-5.6 1.9L12 18.5l-1.9-5.6-5.6-1.9 5.6-1.9z"/>"#),
             Icon::Send => svg_icon!(r#"<path d="M4 12l16-8-6 16-2.5-6.5z"/>"#),
             Icon::Eye => svg_icon!(r#"<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>"#),
@@ -98,7 +95,7 @@ mod tests {
             Icon::Menu, Icon::Sidebar, Icon::Search, Icon::History, Icon::Folder, Icon::FolderOpen, Icon::File,
             Icon::ChevronRight, Icon::ChevronDown, Icon::Branch, Icon::Terminal,
             Icon::Panels, Icon::Plus, Icon::Minus, Icon::Close, Icon::Split,
-            Icon::Sparkle, Icon::Anthropic, Icon::Send, Icon::Eye, Icon::More, Icon::Pin, Icon::Expand,
+            Icon::Sparkle, Icon::Send, Icon::Eye, Icon::More, Icon::Pin, Icon::Expand,
             Icon::Chat, Icon::Paperclip, Icon::ArrowUp, Icon::ArrowDown,
         ] {
             let s = icon.source();

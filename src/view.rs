@@ -811,11 +811,21 @@ impl App {
             }),
         };
         let dim = theme::TEXT_DIM;
+        // Room for the title is what is left after the buttons and the avatars; a long title
+        // is shortened with an ellipsis, and with no room at all it is left out.
+        let reserved = 170.0 + 24.0 * self.members.len().min(4) as f32;
+        let fits = ((self.agent_w - reserved) / 7.5).floor().max(0.0) as usize;
+        let title = if fits < 6 {
+            String::new()
+        } else if title.chars().count() > fits {
+            format!("{}…", title.chars().take(fits.saturating_sub(1)).collect::<String>().trim_end())
+        } else {
+            title
+        };
 
         let header = container(
             row![
                 self.header_left(Edge::Agent),
-                // A long title is cut off rather than pushing the buttons out of view.
                 container(text(title).size(14).wrapping(text::Wrapping::None)).width(Length::Fill).clip(true),
                 self.people_bar(),
                 self.share_controls(false),

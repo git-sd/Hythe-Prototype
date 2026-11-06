@@ -50,7 +50,7 @@ fn installed_programs() -> &'static Vec<String> {
 
 /// (handle, label, program on PATH, command that answers one message).
 const PLAIN_AGENTS: &[(&str, &str, &str, &str)] = &[
-    ("copilot", "Copilot", "copilot", "copilot -p {prompt}"),
+    ("copilot", "Copilot", "copilot", "copilot -s --allow-tool=write --allow-tool=shell(hythe-agent) -p {prompt}"),
     ("codex", "Codex", "codex", "codex exec -"),
     ("gemini", "Gemini", "gemini", "gemini -p {prompt}"),
     ("cursor", "Cursor", "cursor-agent", "cursor-agent -p {prompt}"),
@@ -183,6 +183,8 @@ pub struct AiThread {
     pub hops: u32,
     /// Store events already shown.
     pub seen: HashSet<String>,
+    /// When the running agent began, for the progress line.
+    pub started: Option<std::time::Instant>,
 }
 
 impl AiThread {
@@ -490,6 +492,7 @@ impl App {
         let Some(def) = known.iter().find(|a| a.name == agent).cloned() else { return Task::none() };
         let Some(t) = self.ai.get_mut(i) else { return Task::none() };
         t.running = Some(agent.clone());
+        t.started = Some(std::time::Instant::now());
         let (root, title, id, seen) = (t.root.clone(), t.title.clone(), t.id.clone(), t.seen.clone());
         let session = t.sessions.get(&agent).cloned();
         Task::perform(
@@ -508,7 +511,7 @@ impl App {
         let Some(def) = known.iter().find(|a| a.name == agent).cloned() else { return Task::none() };
         let Some(root) = self.repo.as_ref().map(|r| r.root().to_path_buf()) else { return Task::none() };
         let session = self.chat.sessions.get(&agent).cloned();
-        self.chat.working.insert(agent.clone());
+        self.chat.working.insert(agent.clone(), std::time::Instant::now());
         self.status = format!("{agent} is working…");
         Task::perform(
             async move {
@@ -584,6 +587,7 @@ impl App {
                     input: String::new(),
                     hops: 0,
                     seen: HashSet::new(),
+                    started: None,
                 });
                 self.ai_active = Some(self.ai.len() - 1);
                 self.show_term = true;
@@ -640,6 +644,7 @@ impl App {
                 let mut handoff = None;
                 if let Some(t) = self.ai.get_mut(i) {
                     t.running = None;
+                    t.started = None;
                     if done.thread.is_some() {
                         t.id = done.thread.clone();
                     }
@@ -700,6 +705,7 @@ impl App {
                         input: String::new(),
                         hops: 0,
                         seen: all.iter().filter(|e| e.thread == info.id).map(|e| e.id.clone()).collect(),
+                        started: None,
                     };
                     for m in msgs {
                         let mine = m.agent.is_none() && m.author == me;
@@ -745,10 +751,8 @@ impl App {
             };
             list = list.push(row![face, container(body).width(Length::Fill)].spacing(12));
         }
-        if let Some(who) = &t.running {
-            list = list.push(
-                row![agent_face(who, 22.0), text(format!("{who} is working…")).size(13).color(theme::TEXT_DIM)].spacing(12).align_y(Alignment::Center),
-            );
+        if let (Some(who), Some(since)) = (&t.running, t.started) {
+            list = list.push(working_row(who, since));
         }
         let can_send = !t.busy() && !t.input.trim().is_empty();
         let composer = row![
@@ -773,6 +777,27 @@ impl App {
         ]
         .into()
     }
+}
+
+/// The "agent is working" line, like Claude Code's: a rotating verb, moving dots and the seconds so far.
+pub fn working_row<'a>(who: &str, since: std::time::Instant) -> Element<'a, Message> {
+    const VERBS: [&str; 6] = ["Thinking", "Reading the code", "Working", "Pondering", "Writing", "Checking"];
+    let ms = since.elapsed().as_millis() as u64;
+    let secs = ms / 1000;
+    let verb = VERBS[((secs / 6) as usize) % VERBS.len()];
+    let dots = ".".repeat(((ms / 350) % 4) as usize);
+    let time = if secs >= 60 { format!("{}m {}s", secs / 60, secs % 60) } else { format!("{secs}s") };
+    row![
+        agent_face(who, 22.0),
+        column![
+            text(format!("{who} · {verb}{dots}")).size(13).color(theme::TEXT),
+            text(format!("{time} so far")).size(11).color(theme::TEXT_FAINT),
+        ]
+        .spacing(1),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// Brand colour of each agent (the sparkle and the ring around its picture).
@@ -819,7 +844,7 @@ fn logo_dir() -> Option<&'static PathBuf> {
 }
 
 /// An agent's picture: its own logo if `assets/agents/<name>.svg` exists, otherwise a disc
-/// in its brand colour with Anthropic's mark for the Claude family or its initial.
+/// in its brand colour with the Claude sparkle for the Claude family or its initial.
 pub fn agent_face<'a>(name: &str, size: f32) -> Element<'a, Message> {
     let color = brand(name);
     let file = logo_dir().map(|d| d.join(format!("{name}.svg"))).filter(|p| p.is_file());
@@ -828,7 +853,7 @@ pub fn agent_face<'a>(name: &str, size: f32) -> Element<'a, Message> {
             .width(Length::Fixed(size * 0.62))
             .height(Length::Fixed(size * 0.62))
             .into(),
-        None if matches!(name, "claude" | "fable" | "opus" | "sonnet" | "haiku") => icon(Icon::Anthropic, size * 0.6, color).into(),
+        None if matches!(name, "claude" | "fable" | "opus" | "sonnet" | "haiku") => icon(Icon::Sparkle, size * 0.6, color).into(),
         None => text(name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into()))
             .size(size * 0.52)
             .color(color)
@@ -858,7 +883,7 @@ mod tests {
         let known = agents();
         std::env::remove_var("HYTHE_EXTRA_AGENTS");
         let c = known.iter().find(|a| a.name == "copilot").expect("copilot is available");
-        assert_eq!(c.plain.as_deref(), Some("copilot -p {prompt}"));
+        assert!(c.plain.as_deref().is_some_and(|p| p.starts_with("copilot ") && p.contains("{prompt}")));
         assert_eq!(mentions("@copilot and @mybot and @opus, plus @nobody", &known), vec!["copilot", "mybot", "opus"]);
     }
 
@@ -891,6 +916,31 @@ mod tests {
             let _ = agents();
         }
         assert!(t.elapsed() < std::time::Duration::from_millis(500), "agents() is slow: {:?}", t.elapsed());
+    }
+
+    /// Live check against a real agent CLI: `cargo test live_agent -- --ignored --nocapture`
+    /// (set LIVE_AGENT=copilot). Uses a little of that agent's quota.
+    #[test]
+    #[ignore]
+    fn live_agent() {
+        let name = std::env::var("LIVE_AGENT").unwrap_or_else(|_| "copilot".into());
+        let def = agents().into_iter().find(|a| a.name == name).expect("that agent is not installed");
+        let dir = std::env::temp_dir().join(format!("hythe-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Tester"]);
+        git(&["config", "user.email", "t@example.com"]);
+        let tools = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("debug");
+        std::env::set_var("HYTHE_TOOLS_DIR", tools);
+        let done = step(dir.clone(), "Live".into(), None, def, None, Some(std::env::var("LIVE_PROMPT").unwrap_or_else(|_| format!("@{name} reply with exactly the word PONG"))), Vec::new(), HashSet::new(), false);
+        eprintln!("RESULT: {:?}", done.result);
+        eprintln!("NEXT: {:?}", done.next.as_ref().map(|(a, m)| (a.clone(), m.iter().map(|e| e.body.clone()).collect::<Vec<_>>())));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(done.result.is_ok());
     }
 
     #[test]

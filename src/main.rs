@@ -349,6 +349,8 @@ pub enum Message {
     PointerUp,
     WindowSized(window::Id, iced::Size),
     Noop,
+    /// Redraw while an agent works, so its progress line moves.
+    Spin,
     /// A window's close button was pressed.
     CloseWindow(window::Id),
     GitLoaded(Option<Box<GitResult>>),
@@ -1169,7 +1171,7 @@ impl App {
                     }
                 }
             }
-            Message::Noop => {}
+            Message::Noop | Message::Spin => {}
             Message::CloseWindow(id) => {
                 if Some(id) == self.chat_window {
                     self.chat_window = None;
@@ -1775,6 +1777,10 @@ impl App {
         // Collaboration: poll the connection for edits and cursors.
         if self.collab.is_some() {
             subs.push(iced::time::every(std::time::Duration::from_millis(40)).map(|_| Message::Collab(CollabMsg::Tick)));
+        }
+        // Keep the "agent is working" line moving.
+        if self.ai.iter().any(|t| t.busy()) || !self.chat.working.is_empty() {
+            subs.push(iced::time::every(std::time::Duration::from_millis(250)).map(|_| Message::Spin));
         }
         // Is the remote ahead of us? Fetch quietly and offer to update.
         if self.repo.is_some() {

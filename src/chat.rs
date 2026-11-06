@@ -59,7 +59,7 @@ pub struct Chat {
     /// Messages whose comments are showing.
     pub open_threads: HashSet<String>,
     /// Agents answering in the chat right now, and each one's session.
-    pub working: HashSet<String>,
+    pub working: HashMap<String, std::time::Instant>,
     pub sessions: HashMap<String, String>,
     /// Agent-to-agent steps since a person last wrote.
     pub hops: u32,
@@ -493,6 +493,10 @@ impl App {
             if !replies.is_empty() {
                 list = list.push(self.chat_thread(m, &replies, now));
             }
+        }
+        // Agents that are answering right now.
+        for (who, since) in &c.working {
+            list = list.push(crate::ai::working_row(who, *since));
         }
 
         let mut attached = column![].spacing(3);
