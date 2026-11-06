@@ -999,4 +999,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&remote);
         let _ = std::fs::remove_dir_all(&other);
     }
+
+    #[test]
+    fn several_teammates_pushing_are_all_noticed_and_pulled() {
+        let f = Fixture::new();
+        let remote = f.dir.with_extension("team.git");
+        let _ = std::fs::remove_dir_all(&remote);
+        run(&f.dir, &["clone", "-q", "--bare", ".", remote.to_str().unwrap()]).unwrap();
+        run(&f.dir, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+        run(&f.dir, &["fetch", "-q", "origin"]).unwrap();
+        run(&f.dir, &["branch", "-u", "origin/main"]).unwrap();
+
+        let mut clones = Vec::new();
+        let mut tips = Vec::new();
+        for (i, who) in ["Ana", "Ben", "Cy"].iter().enumerate() {
+            let dir = f.dir.with_extension(format!("team{i}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            run(&f.dir, &["clone", "-q", remote.to_str().unwrap(), dir.to_str().unwrap()]).unwrap();
+            run(&dir, &["config", "user.name", who]).unwrap();
+            run(&dir, &["config", "user.email", &format!("{who}@example.com")]).unwrap();
+            clones.push(dir);
+        }
+        // Each teammate pushes in turn; every push is noticed with the right author and totals.
+        for (i, who) in ["Ana", "Ben", "Cy"].iter().enumerate() {
+            let dir = &clones[i];
+            run(dir, &["pull", "-q", "--no-rebase", "origin", "main"]).unwrap();
+            std::fs::write(dir.join(format!("{who}.txt")), "hi
+").unwrap();
+            run(dir, &["add", "-A"]).unwrap();
+            run(dir, &["commit", "-q", "-m", &format!("{who} adds a file")]).unwrap();
+            run(dir, &["push", "-q", "origin", "main"]).unwrap();
+
+            f.repo.fetch_quiet().unwrap();
+            assert_eq!(f.repo.ahead_behind(), Some((0, i as u32 + 1)));
+            assert_eq!(f.repo.upstream_last_commit(), Some(format!("{who}: {who} adds a file")));
+            assert_eq!(f.repo.incoming_files().len(), i + 1);
+            tips.push(f.repo.upstream_head().unwrap());
+        }
+        // Every push moves the tip, so a "Later" on one state doesn't hide the next.
+        assert!(tips[0] != tips[1] && tips[1] != tips[2]);
+
+        // Uncommitted work on a file a teammate also changed makes the pull refuse, loudly.
+        std::fs::write(f.dir.join("Cy.txt"), "my own edit
+").unwrap();
+        assert!(f.repo.pull().is_err(), "pull must not overwrite local work");
+        std::fs::remove_file(f.dir.join("Cy.txt")).unwrap();
+
+        f.repo.pull().unwrap();
+        assert_eq!(f.repo.ahead_behind(), Some((0, 0)));
+        for who in ["Ana", "Ben", "Cy"] {
+            assert!(f.dir.join(format!("{who}.txt")).exists());
+        }
+        let _ = std::fs::remove_dir_all(&remote);
+        for d in clones {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
 }
