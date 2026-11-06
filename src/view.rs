@@ -140,7 +140,7 @@ impl App {
         if self.show_term && !agent_right {
             main = main.push(self.agent_panel()).push(self.handle(Handle::Agent, true));
         }
-        main = main.push(self.editor_area());
+        main = main.push(self.editor_with_dock());
         if agent_right {
             main = main.push(self.handle(Handle::Agent, true)).push(self.agent_panel());
         }
@@ -726,14 +726,86 @@ impl App {
         .align_y(Alignment::Center)
         .into()
     }
+    // --- terminal under the editor, like Zed's ---
+
+    /// A plain shell is the active terminal: it opens under the editor, not in the thread column.
+    /// Coding-agent terminals stay in the column, as threads.
+    pub(crate) fn shell_docked(&self) -> bool {
+        self.show_term
+            && self.ai_thread().is_none()
+            && self
+                .term_active
+                .and_then(|id| self.terms.list().into_iter().find(|i| i.id == id))
+                .is_some_and(|i| !self.agents.iter().any(|a| a.name == i.name))
+    }
+
+    /// The editor, with the shell docked under it when there is one.
+    fn editor_with_dock(&self) -> Element<'_, Message> {
+        if !self.shell_docked() {
+            return self.editor_area();
+        }
+        column![self.editor_area(), self.handle(Handle::Term, false), self.terminal_dock()]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn terminal_dock(&self) -> Element<'_, Message> {
+        let dim = theme::TEXT_DIM;
+        let shells: Vec<_> = self.terms.list().into_iter().filter(|i| !self.agents.iter().any(|a| a.name == i.name)).collect();
+        let mut tabs = row![].spacing(2).align_y(Alignment::Center);
+        for info in shells {
+            let selected = self.term_active == Some(info.id);
+            let label = if info.title.trim().is_empty() { info.name.clone() } else { format!("{} \u{2014} {}", info.title.trim(), info.name) };
+            tabs = tabs.push(
+                row![
+                    button(text(label).size(13).wrapping(text::Wrapping::None))
+                        .padding([4, 8])
+                        .style(theme::flat(selected))
+                        .on_press(Message::TermSelect(info.id)),
+                    button(icon(Icon::Close, 10.0, theme::TEXT_FAINT))
+                        .padding([4, 3])
+                        .style(theme::flat(false))
+                        .on_press(Message::CloseTermTab(info.id)),
+                ]
+                .align_y(Alignment::Center),
+            );
+        }
+        let header = container(
+            row![tabs, space::horizontal(), icon_button(Icon::Plus, dim, false, Message::NewTerminal(None))]
+                .spacing(2)
+                .align_y(Alignment::Center)
+                .padding([0, 10]),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(TAB_H))
+        .align_y(Alignment::Center)
+        .style(theme::bg(theme::TAB_BAR_BG));
+        let session = self.term_active.and_then(|id| self.terms.get(id));
+        let body: Element<'_, Message> = match (&self.term_snap, session) {
+            (Some(snap), Some(session)) => Canvas::new(TerminalView { snap, session, focused: self.focus_term })
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+            _ => space::vertical().into(),
+        };
+        container(column![header, body])
+            .width(Length::Fill)
+            .height(Length::Fixed(self.term_h))
+            .style(theme::bg(theme::EDITOR_BG))
+            .into()
+    }
+
     // --- agent / terminal panel ---
 
     fn agent_panel(&self) -> Element<'_, Message> {
         let session = self.term_active.and_then(|id| self.terms.get(id));
         // With no terminal or agent running, the column holds the team's conversation.
         let thread = self.ai_thread();
+        let docked = self.shell_docked();
         let title = match thread {
             Some(t) => t.title.clone(),
+            None if docked => "Team chat".into(),
             None => session.as_ref().map(|s| s.name().to_string()).unwrap_or_else(|| {
                 if self.repo.is_some() { "Team chat".into() } else { "New Thread".into() }
             }),
@@ -766,7 +838,7 @@ impl App {
         let body: Element<'_, Message> = match (&self.term_snap, session) {
             // A Claude thread, when one is chosen, takes the column.
             _ if thread.is_some() => self.ai_view(thread.unwrap()),
-            (Some(snap), Some(session)) => Canvas::new(TerminalView { snap, session, focused: self.focus_term })
+            (Some(snap), Some(session)) if !docked => Canvas::new(TerminalView { snap, session, focused: self.focus_term })
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into(),

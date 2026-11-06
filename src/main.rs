@@ -147,6 +147,8 @@ struct App {
     /// Column widths, changed by dragging the dividers.
     list_w: f32,
     agent_w: f32,
+    /// Height of the terminal under the editor.
+    term_h: f32,
     scm_w: f32,
     /// Window size, for keeping dragged columns on screen.
     win: iced::Size,
@@ -224,6 +226,8 @@ pub struct GitResult {
 pub enum Handle {
     List,
     Agent,
+    /// The top edge of the terminal under the editor.
+    Term,
     Scm,
     /// The thread column's header: drag it to the other side of the window.
     Dock,
@@ -422,6 +426,7 @@ impl App {
             avatar_tried: false,
             list_w: view::LIST_W,
             agent_w: view::AGENT_W,
+            term_h: 260.0,
             scm_w: view::SCM_W,
             win: iced::Size::new(1280.0, 780.0),
             drag: None,
@@ -1704,6 +1709,7 @@ impl App {
                 self.chat_w = (win.width - scm_l - p.x).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0))
             }
             Handle::Chat => self.chat_w = (p.x - sidebar).clamp(130.0, (win.width - sidebar - 300.0).clamp(130.0, 600.0)),
+            Handle::Term => self.term_h = (win.height - p.y).clamp(120.0, (win.height - 240.0).max(120.0)),
             Handle::Dock => self.agent_right = p.x > win.width / 2.0,
             Handle::ChatDock => self.chat_right = p.x > win.width / 2.0,
             Handle::ChatMove => {
