@@ -41,6 +41,13 @@ fn claude(name: &str, label: &str, model: Option<&str>) -> AgentDef {
     AgentDef { name: name.into(), label: label.into(), model: model.map(str::to_string), plain: None }
 }
 
+/// Agent programs found on PATH. Looking costs about a tenth of a second, and `agents()` is
+/// asked on every redraw, so it is done once.
+fn installed_programs() -> &'static Vec<String> {
+    static FOUND: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    FOUND.get_or_init(|| hythe_term::known_agents().into_iter().filter(|a| a.installed).map(|a| a.program).collect())
+}
+
 /// (handle, label, program on PATH, command that answers one message).
 const PLAIN_AGENTS: &[(&str, &str, &str, &str)] = &[
     ("copilot", "Copilot", "copilot", "copilot -p {prompt}"),
@@ -68,9 +75,9 @@ pub fn agents() -> Vec<AgentDef> {
     // Other agent CLIs found on PATH, run once per message. `{prompt}` is where the
     // message goes; without it the message is sent on stdin. These are best-effort:
     // correct them with HYTHE_EXTRA_AGENTS if your version takes different flags.
-    let installed = hythe_term::known_agents();
+    let installed = installed_programs();
     for (name, label, program, cmd) in PLAIN_AGENTS {
-        if installed.iter().any(|a| a.installed && a.program == *program) {
+        if installed.iter().any(|p| p == program) {
             list.push(AgentDef { name: (*name).into(), label: (*label).into(), model: None, plain: Some((*cmd).into()) });
         }
     }
@@ -812,7 +819,7 @@ fn logo_dir() -> Option<&'static PathBuf> {
 }
 
 /// An agent's picture: its own logo if `assets/agents/<name>.svg` exists, otherwise a disc
-/// in its brand colour with the Claude sparkle for the Claude family or its initial.
+/// in its brand colour with Anthropic's mark for the Claude family or its initial.
 pub fn agent_face<'a>(name: &str, size: f32) -> Element<'a, Message> {
     let color = brand(name);
     let file = logo_dir().map(|d| d.join(format!("{name}.svg"))).filter(|p| p.is_file());
@@ -821,7 +828,7 @@ pub fn agent_face<'a>(name: &str, size: f32) -> Element<'a, Message> {
             .width(Length::Fixed(size * 0.62))
             .height(Length::Fixed(size * 0.62))
             .into(),
-        None if matches!(name, "claude" | "fable" | "opus" | "sonnet" | "haiku") => icon(Icon::Sparkle, size * 0.6, color).into(),
+        None if matches!(name, "claude" | "fable" | "opus" | "sonnet" | "haiku") => icon(Icon::Anthropic, size * 0.6, color).into(),
         None => text(name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into()))
             .size(size * 0.52)
             .color(color)
@@ -874,6 +881,16 @@ mod tests {
             assert_ne!(brand(name), theme::TEXT_DIM, "{name} has no brand colour");
         }
         assert!(is_agent("opus") && is_agent("hythe") && !is_agent("alice"));
+    }
+
+    #[test]
+    fn asking_for_agents_is_cheap_enough_to_do_every_frame() {
+        let _ = agents(); // the first call looks at PATH
+        let t = std::time::Instant::now();
+        for _ in 0..200 {
+            let _ = agents();
+        }
+        assert!(t.elapsed() < std::time::Duration::from_millis(500), "agents() is slow: {:?}", t.elapsed());
     }
 
     #[test]
