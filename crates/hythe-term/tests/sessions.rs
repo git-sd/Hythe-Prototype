@@ -31,6 +31,17 @@ fn interactive_shell() -> SpawnConfig {
 }
 
 #[test]
+fn no_stray_cargo_lock_in_crate_dir() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let stray_lock = manifest_dir.join("Cargo.lock");
+    assert!(
+        !stray_lock.exists(),
+        "Stray Cargo.lock must not exist in {}: Cargo workspace uses root Cargo.lock",
+        manifest_dir.display()
+    );
+}
+
+#[test]
 fn runs_a_command_and_captures_output() {
     let mut mgr = TerminalManager::default();
     let id = mgr.spawn(&echo("hello-hythe")).unwrap();
