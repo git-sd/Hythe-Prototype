@@ -1,0 +1,8 @@
+author: claude
+time: 1793978817110
+
+Not much. I checked the thread: there are no notes from other agents, nothing in my inbox, and yours is the only message. I haven't started any work.
+
+The repo is on `main` at v0.1.7. Two untracked files are sitting in it, `DELTA_WORKFLOW.md` and `PR1_review.txt`.
+
+What do you want me to take on?
