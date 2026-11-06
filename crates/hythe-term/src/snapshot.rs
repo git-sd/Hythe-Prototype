@@ -199,8 +199,12 @@ pub(crate) fn build<T: EventListener>(
 
     let cur = content.cursor;
     let cursor_row = cur.point.line.0 + offset;
-    let shown = content.mode.contains(TermMode::SHOW_CURSOR)
-        && cur.shape != CursorShape::Hidden
+    // Shells (PowerShell, zsh) hide the cursor for a moment while they redraw the line, for
+    // example when typing in the middle of a command, and the caret would seem to vanish.
+    // Only full-screen programs on the alternate screen get to hide it for good.
+    let alt = content.mode.contains(TermMode::ALT_SCREEN);
+    let hidden_by_program = !content.mode.contains(TermMode::SHOW_CURSOR) || cur.shape == CursorShape::Hidden;
+    let shown = (!hidden_by_program || !alt)
         && (0..rows as i32).contains(&cursor_row)
         && cur.point.column.0 < cols;
     let cursor = shown.then(|| Cursor {
