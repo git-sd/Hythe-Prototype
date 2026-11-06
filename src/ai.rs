@@ -41,6 +41,20 @@ fn claude(name: &str, label: &str, model: Option<&str>) -> AgentDef {
     AgentDef { name: name.into(), label: label.into(), model: model.map(str::to_string), plain: None }
 }
 
+/// (handle, label, program on PATH, command that answers one message).
+const PLAIN_AGENTS: &[(&str, &str, &str, &str)] = &[
+    ("copilot", "Copilot", "copilot", "copilot -p {prompt}"),
+    ("codex", "Codex", "codex", "codex exec -"),
+    ("gemini", "Gemini", "gemini", "gemini -p {prompt}"),
+    ("cursor", "Cursor", "cursor-agent", "cursor-agent -p {prompt}"),
+    ("aider", "Aider", "aider", "aider --yes --message {prompt}"),
+    ("opencode", "OpenCode", "opencode", "opencode run {prompt}"),
+    ("qwen", "Qwen", "qwen", "qwen -p {prompt}"),
+    ("amp", "Amp", "amp", "amp -x {prompt}"),
+    ("goose", "Goose", "goose", "goose run -t {prompt}"),
+    ("crush", "Crush", "crush", "crush run {prompt}"),
+];
+
 /// Everyone who can be mentioned: Claude Code with different models, plus other
 /// CLIs found on this machine or named in `HYTHE_EXTRA_AGENTS` (`name=command,name2=command`).
 pub fn agents() -> Vec<AgentDef> {
@@ -51,10 +65,13 @@ pub fn agents() -> Vec<AgentDef> {
         claude("sonnet", "Sonnet", Some("claude-sonnet-5-5")),
         claude("haiku", "Haiku", Some("claude-haiku-5-5")),
     ];
-    for (name, label, cmd) in [("codex", "Codex", "codex exec -"), ("gemini", "Gemini", "gemini")] {
-        let installed = hythe_term::known_agents().iter().any(|a| a.installed && a.name.to_lowercase().starts_with(name));
-        if installed {
-            list.push(AgentDef { name: name.into(), label: label.into(), model: None, plain: Some(cmd.into()) });
+    // Other agent CLIs found on PATH, run once per message. `{prompt}` is where the
+    // message goes; without it the message is sent on stdin. These are best-effort:
+    // correct them with HYTHE_EXTRA_AGENTS if your version takes different flags.
+    let installed = hythe_term::known_agents();
+    for (name, label, program, cmd) in PLAIN_AGENTS {
+        if installed.iter().any(|a| a.installed && a.program == *program) {
+            list.push(AgentDef { name: (*name).into(), label: (*label).into(), model: None, plain: Some((*cmd).into()) });
         }
     }
     if let Ok(extra) = std::env::var("HYTHE_EXTRA_AGENTS") {
@@ -81,6 +98,23 @@ pub fn route(prompt: &str, known: &[AgentDef]) -> String {
         }
     }
     "claude".into()
+}
+
+/// The thread behind the team chat: `@agent` messages there run in it.
+pub const TEAM_THREAD: &str = "t-team-chat";
+
+/// Every known agent mentioned with `@name`, in order, once each.
+pub fn mentions(text: &str, known: &[AgentDef]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        if let Some(n) = word.strip_prefix('@') {
+            let n = hythe_git::threads::clean_name(n.trim_end_matches(|c: char| !c.is_ascii_alphanumeric()));
+            if known.iter().any(|a| a.name == n) && !out.contains(&n) {
+                out.push(n);
+            }
+        }
+    }
+    out
 }
 
 /// What an agent is told about the others, once, when it joins a thread.
@@ -209,12 +243,27 @@ pub fn run(root: &Path, prompt: &str, session: Option<&str>, ctx: &Ctx) -> Resul
     } else if override_cmd.is_some() {
         args.extend(["-p", "--output-format", "json", "--permission-mode", "acceptEdits"].map(String::from));
     }
-    // npm installs `claude` as a .cmd shim, which only cmd.exe can start.
+    // The whole prompt, with the introduction when the agent is new to the thread.
+    let full = if session.is_none() {
+        format!("{}{}{prompt}", preamble(&ctx.agent, &ctx.thread, &ctx.known), ctx.history)
+    } else {
+        prompt.to_string()
+    };
+    let in_args = plain.as_deref().is_some_and(|p| p.contains("{prompt}")) && override_cmd.is_none();
+    // npm installs agents as .cmd shims, which only cmd.exe can start.
     #[cfg(windows)]
     let mut cmd = {
         use std::os::windows::process::CommandExt;
         let mut c = Command::new("cmd");
-        c.arg("/C").arg(&program);
+        if in_args {
+            // The message travels in an environment variable and is expanded *after* cmd has
+            // parsed the line (`!VAR!`), so nothing in it can be read as a command.
+            let line = program.replace("{prompt}", "\"!HYTHE_PROMPT!\"");
+            c.raw_arg(format!("/V:ON /C \"{line}\""));
+            c.env("HYTHE_PROMPT", full.replace(['\r', '\n'], " ").replace('"', "'"));
+        } else {
+            c.arg("/C").arg(&program);
+        }
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         c
     };
@@ -223,7 +272,13 @@ pub fn run(root: &Path, prompt: &str, session: Option<&str>, ctx: &Ctx) -> Resul
         // A plain agent may be "codex exec -": the first word is the program.
         let mut words = program.split_whitespace();
         let mut c = Command::new(words.next().unwrap_or("claude"));
-        c.args(words);
+        for w in words {
+            if w == "{prompt}" {
+                c.arg(&full);
+            } else {
+                c.arg(w);
+            }
+        }
         c
     };
     cmd.args(&args).current_dir(root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -238,16 +293,15 @@ pub fn run(root: &Path, prompt: &str, session: Option<&str>, ctx: &Ctx) -> Resul
         }
     }
     let mut child = cmd.spawn().map_err(|e| format!("could not start {program}: {e}"))?;
-    // The prompt goes on stdin, never on the command line.
-    let full = if session.is_none() {
-        format!("{}{}{prompt}", preamble(&ctx.agent, &ctx.thread, &ctx.known), ctx.history)
-    } else {
-        prompt.to_string()
-    };
+    // Claude's prompt goes on stdin, never on the command line.
     if let Some(mut pipe) = child.stdin.take() {
-        std::thread::spawn(move || {
-            let _ = pipe.write_all(full.as_bytes());
-        });
+        if in_args {
+            drop(pipe);
+        } else {
+            std::thread::spawn(move || {
+                let _ = pipe.write_all(full.as_bytes());
+            });
+        }
     }
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -292,6 +346,7 @@ fn step(
     said: Option<String>,
     deliver: Vec<hythe_git::threads::Event>,
     seen: HashSet<String>,
+    mirror: bool,
 ) -> Done {
     use hythe_git::threads::Post;
     let known = agents();
@@ -301,6 +356,15 @@ fn step(
         thread = repo.as_ref().and_then(|r| r.thread_new(&title).ok());
     }
     let tid = thread.clone().unwrap_or_default();
+    let mut seen = seen;
+    if let (true, Some(r)) = (mirror, &repo) {
+        // The team chat shows only what is new from here, never old messages again.
+        let all = r.thread_events().unwrap_or_default();
+        if !all.iter().any(|e| e.thread == tid) {
+            let _ = r.thread_post(&Post { thread: &tid, kind: Some(hythe_git::threads::Kind::Rename), body: "Team chat", ..Default::default() });
+        }
+        seen.extend(all.iter().filter(|e| e.thread == tid).map(|e| e.id.clone()));
+    }
     // Earlier messages, for an agent that has not been in this thread yet.
     let history = match (&repo, &thread, &session) {
         (Some(r), Some(t), None) => {
@@ -359,6 +423,18 @@ fn step(
             }
         }
     }
+    // In the team chat, what agents say goes into the chat itself, where everyone sees it.
+    if let (true, Some(r)) = (mirror, &repo) {
+        for e in events.iter().filter(|e| e.agent.is_some()) {
+            let who = e.agent.clone().unwrap_or_default();
+            let body = if e.to.is_empty() { e.body.clone() } else { format!("{} {}", e.to.iter().map(|t| format!("@{t}")).collect::<Vec<_>>().join(" "), e.body.trim()) };
+            let _ = r.chat_post_as(Some(&who), &body, &[], None, None);
+        }
+        if let (Err(e), true) = (&result, events.is_empty()) {
+            let _ = r.chat_post_as(Some("hythe"), &format!("Couldn't reach {}: {e}", agent.name), &[], None, None);
+        }
+        let _ = r.chat_sync();
+    }
     Done { agent: agent.name, thread, result, events, next }
 }
 
@@ -379,12 +455,59 @@ impl App {
         let session = t.sessions.get(&agent).cloned();
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || step(root, title, id, def, session, said, deliver, seen))
+                tokio::task::spawn_blocking(move || step(root, title, id, def, session, said, deliver, seen, false))
                     .await
                     .unwrap_or_else(|e| Done { agent, thread: None, result: Err(e.to_string()), events: Vec::new(), next: None })
             },
             move |d| Message::Ai(AiMsg::Done(i, Box::new(d))),
         )
+    }
+
+    /// Run an agent for the team chat: its answer and anything it says to the others land in the chat.
+    pub(crate) fn chat_agent_step(&mut self, agent: String, said: Option<String>, deliver: Vec<hythe_git::threads::Event>) -> Task<Message> {
+        let known = agents();
+        let Some(def) = known.iter().find(|a| a.name == agent).cloned() else { return Task::none() };
+        let Some(root) = self.repo.as_ref().map(|r| r.root().to_path_buf()) else { return Task::none() };
+        let session = self.chat.sessions.get(&agent).cloned();
+        self.chat.working.insert(agent.clone());
+        self.status = format!("{agent} is working…");
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || step(root, "Team chat".into(), Some(TEAM_THREAD.into()), def, session, said, deliver, HashSet::new(), true))
+                    .await
+                    .unwrap_or_else(|e| Done { agent, thread: None, result: Err(e.to_string()), events: Vec::new(), next: None })
+            },
+            |d| Message::Chat(crate::chat::ChatMsg::AgentDone(Box::new(d))),
+        )
+    }
+
+    /// An agent finished a step in the team chat: remember its session, then hand on any
+    /// messages it sent to other agents (up to [`MAX_HOPS`] before waiting for a person).
+    pub(crate) fn chat_agent_done(&mut self, done: Done) -> Task<Message> {
+        self.chat.working.remove(&done.agent);
+        if let Ok((_, Some(s))) = &done.result {
+            self.chat.sessions.insert(done.agent.clone(), s.clone());
+        }
+        if self.chat.working.is_empty() {
+            self.status = "Agents finished".into();
+        }
+        self.refresh_git();
+        let mut tasks = vec![self.chat_load()];
+        if let Some((agent, mail)) = done.next {
+            if self.chat.hops >= MAX_HOPS {
+                if let Some(repo) = self.repo.clone() {
+                    let note = format!("Agents handed work to each other {MAX_HOPS} times, so I've paused. @{agent} has messages waiting; send a message to continue.");
+                    tasks.push(Task::perform(
+                        async move { tokio::task::spawn_blocking(move || repo.chat_post_as(Some("hythe"), &note, &[], None, None)).await.ok() },
+                        |_| Message::Noop,
+                    ));
+                }
+            } else {
+                self.chat.hops += 1;
+                tasks.push(self.chat_agent_step(agent, None, mail));
+            }
+        }
+        Task::batch(tasks)
     }
 
     /// Read the repository's saved threads (once per repository).
@@ -523,7 +646,7 @@ impl App {
             }
             AiMsg::Loaded(root, events, me) => {
                 let Ok(all) = events else { return Task::none() };
-                for info in hythe_git::threads::summarize(&all).into_iter().filter(|t| !t.archived) {
+                for info in hythe_git::threads::summarize(&all).into_iter().filter(|t| !t.archived && t.id != TEAM_THREAD) {
                     if self.ai.iter().any(|t| t.id.as_deref() == Some(info.id.as_str())) {
                         continue;
                     }
@@ -630,6 +753,16 @@ mod tests {
     }
 
     #[test]
+    fn extra_agents_can_be_added_and_mentioned() {
+        std::env::set_var("HYTHE_EXTRA_AGENTS", "copilot=copilot -p {prompt},mybot=mybot --stdin");
+        let known = agents();
+        std::env::remove_var("HYTHE_EXTRA_AGENTS");
+        let c = known.iter().find(|a| a.name == "copilot").expect("copilot is available");
+        assert_eq!(c.plain.as_deref(), Some("copilot -p {prompt}"));
+        assert_eq!(mentions("@copilot and @mybot and @opus, plus @nobody", &known), vec!["copilot", "mybot", "opus"]);
+    }
+
+    #[test]
     fn mentions_pick_the_agent() {
         let known = agents();
         assert_eq!(route("@opus can you review this?", &known), "opus");
@@ -677,7 +810,7 @@ mod tests {
         std::env::set_var("HYTHE_TOOLS_DIR", std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).map(|d| d.join("debug")).unwrap_or(tools));
 
         let def = agents().into_iter().find(|a| a.name == "opus").unwrap();
-        let done = step(dir.clone(), "Review".into(), None, def, None, Some("@opus please review".into()), Vec::new(), HashSet::new());
+        let done = step(dir.clone(), "Review".into(), None, def, None, Some("@opus please review".into()), Vec::new(), HashSet::new(), false);
 
         let thread = done.thread.clone().expect("thread was created");
         let (reply, session) = done.result.clone().unwrap();
@@ -695,7 +828,7 @@ mod tests {
 
         // Fable asks Opus for a review from inside its own run, using the real `hythe-agent`.
         let fable = agents().into_iter().find(|a| a.name == "fable").unwrap();
-        let done = step(dir.clone(), "Review".into(), Some(thread.clone()), fable, None, Some("@fable ask opus to review".into()), Vec::new(), done_seen(&msgs));
+        let done = step(dir.clone(), "Review".into(), Some(thread.clone()), fable, None, Some("@fable ask opus to review".into()), Vec::new(), done_seen(&msgs), false);
         std::env::remove_var("HYTHE_AGENT_CMD");
         std::env::remove_var("HYTHE_TOOLS_DIR");
         let (to, mail) = done.next.clone().expect("fable's message to opus is waiting for opus");

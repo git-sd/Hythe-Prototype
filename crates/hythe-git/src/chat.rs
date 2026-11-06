@@ -180,7 +180,15 @@ impl Repo {
     /// `reply_to`: the id of the message this one comments on; `quote`: the words of it
     /// the comment is about.
     pub fn chat_post(&self, body: &str, files: &[PathBuf], reply_to: Option<&str>, quote: Option<&str>) -> Result<()> {
-        let (author, login) = self.chat_identity();
+        self.chat_post_as(None, body, files, reply_to, quote)
+    }
+
+    /// Like [`chat_post`](Self::chat_post), but written by an AI agent called `agent`.
+    pub fn chat_post_as(&self, agent: Option<&str>, body: &str, files: &[PathBuf], reply_to: Option<&str>, quote: Option<&str>) -> Result<()> {
+        let (author, login) = match agent {
+            Some(a) => (a.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).take(40).collect::<String>(), None),
+            None => self.chat_identity(),
+        };
         let ms = now_ms();
         let mut entries = Vec::new();
         let mut header = format!("author: {author}\n");
@@ -226,12 +234,41 @@ impl Repo {
             return Ok(Vec::new());
         }
         let listing = self.chat_git(&["ls-tree", "--name-only", LOCAL])?;
-        let mut names: Vec<&str> = listing.lines().filter(|n| n.starts_with("m-")).collect();
+        let gone = self.chat_deleted(&listing)?;
+        let mut names: Vec<&str> = listing.lines().filter(|n| n.starts_with("m-") && !gone.contains(*n)).collect();
         names.sort_unstable();
         let names = &names[names.len().saturating_sub(limit)..];
         let request: String = names.iter().map(|n| format!("{LOCAL}:{n}\n")).collect();
         let out = git(&self.root, &["cat-file", "--batch"], &[], Some(request.as_bytes()))?;
         Ok(parse_batch(&out, names))
+    }
+
+    /// Ids of messages that were deleted: each deletion is a small `d-` file naming one.
+    fn chat_deleted(&self, listing: &str) -> Result<std::collections::HashSet<String>> {
+        let marks: Vec<&str> = listing.lines().filter(|n| n.starts_with("d-")).collect();
+        if marks.is_empty() {
+            return Ok(Default::default());
+        }
+        let request: String = marks.iter().map(|n| format!("{LOCAL}:{n}\n")).collect();
+        let out = git(&self.root, &["cat-file", "--batch"], &[], Some(request.as_bytes()))?;
+        let text = String::from_utf8_lossy(&out);
+        Ok(text.lines().filter_map(|l| l.strip_prefix("delete: ")).map(|id| id.trim().to_string()).collect())
+    }
+
+    /// Remove a message (and its comments' parent link stays harmless). Deleting is a
+    /// marker, so it reaches everyone on the next sync and history is never rewritten.
+    pub fn chat_delete(&self, id: &str) -> Result<()> {
+        if !id.starts_with("m-") || !id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_')) {
+            return Err(format!("bad message id `{id}`"));
+        }
+        let blob = text(git(&self.root, &["hash-object", "-w", "--stdin"], &[], Some(format!("delete: {id}\n").as_bytes()))?);
+        let parent = self.chat_ref(LOCAL);
+        let commit = self.chat_commit(&CHAT, &[(format!("d-{:013}-{}", now_ms(), unique()), blob)], parent.as_deref(), None)?;
+        let mut args = vec!["update-ref", LOCAL, commit.as_str()];
+        if let Some(p) = &parent {
+            args.push(p);
+        }
+        self.chat_git(&args).map(|_| ())
     }
 
     /// Save an uploaded file to `dest`.
@@ -420,5 +457,29 @@ mod tests {
         assert_eq!(m.attachments[0].name, "a_b.zip");
         assert_eq!(m.reply_to.as_deref(), Some("m-0000000000041-ab12.txt"));
         assert_eq!(m.quote.as_deref(), Some("line one"));
+    }
+
+    #[test]
+    fn deleting_a_message_hides_it_for_everyone_after_sync() {
+        let base = std::env::temp_dir().join(format!("hythe-chat-del-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let remote = base.join("remote.git");
+        sh(&base, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        let a = clone_of(&remote, &base.join("a"), "ann");
+        let b = clone_of(&remote, &base.join("b"), "bob");
+        a.chat_post("keep me", &[], None, None).unwrap();
+        a.chat_post("delete me", &[], None, None).unwrap();
+        a.chat_sync().unwrap();
+        b.chat_sync().unwrap();
+        let bad = b.chat_messages(50).unwrap().into_iter().find(|m| m.body == "delete me").unwrap();
+        b.chat_delete(&bad.id).unwrap();
+        assert_eq!(b.chat_messages(50).unwrap().len(), 1);
+        b.chat_sync().unwrap();
+        a.chat_sync().unwrap();
+        let left: Vec<String> = a.chat_messages(50).unwrap().into_iter().map(|m| m.body).collect();
+        assert_eq!(left, vec!["keep me".to_string()], "the deletion reached the other person");
+        assert!(b.chat_delete("../x").is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

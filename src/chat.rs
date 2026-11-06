@@ -58,6 +58,11 @@ pub struct Chat {
     pub quote: String,
     /// Messages whose comments are showing.
     pub open_threads: HashSet<String>,
+    /// Agents answering in the chat right now, and each one's session.
+    pub working: HashSet<String>,
+    pub sessions: HashMap<String, String>,
+    /// Agent-to-agent steps since a person last wrote.
+    pub hops: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +90,10 @@ pub enum ChatMsg {
     Send,
     /// Fetch, merge and push the chat branch.
     Sync,
+    /// Delete a message for everyone.
+    Delete(String),
+    /// An agent answered in the chat.
+    AgentDone(Box<crate::ai::Done>),
     Posted(Result<(), String>),
     Synced(Result<String, String>),
     Loaded(Result<Vec<ChatMessage>, String>),
@@ -211,6 +220,7 @@ impl App {
             }
             ChatMsg::Send => {
                 let body = self.chat.input.trim().to_string();
+                let said_text = body.clone();
                 let Some(repo) = self.repo.clone() else { return Task::none() };
                 if (body.is_empty() && self.chat.files.is_empty()) || self.chat.busy == Some("Sending…") {
                     return Task::none();
@@ -230,15 +240,40 @@ impl App {
                 self.chat.input.clear();
                 self.chat.note = None;
                 self.chat.busy = Some("Sending…");
-                return Task::perform(
+                // `@claude`, `@opus`...: those agents read the message and answer in the chat.
+                let mentioned = crate::ai::mentions(&body, &crate::ai::agents());
+                self.chat.hops = 0;
+                let mut tasks = vec![Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || repo.chat_post(&body, &files, reply_to.as_deref(), quote.as_deref()))
                             .await
                             .unwrap_or_else(|e| Err(e.to_string()))
                     },
                     |r| Message::Chat(ChatMsg::Posted(r)),
+                )];
+                for agent in mentioned {
+                    tasks.push(self.chat_agent_step(agent, Some(said_text.clone()), Vec::new()));
+                }
+                return Task::batch(tasks);
+            }
+            ChatMsg::Delete(id) => {
+                let Some(repo) = self.repo.clone() else { return Task::none() };
+                // Gone from view at once; the marker is written and shared in the background.
+                self.chat.messages.retain(|m| m.id != id && m.reply_to.as_deref() != Some(id.as_str()));
+                self.chat.open_threads.remove(&id);
+                if self.chat.replying.as_deref() == Some(id.as_str()) {
+                    self.chat.replying = None;
+                }
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || repo.chat_delete(&id))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                    },
+                    |r| Message::Chat(ChatMsg::Posted(r)),
                 );
             }
+            ChatMsg::AgentDone(done) => return self.chat_agent_done(*done),
             ChatMsg::Posted(result) => {
                 self.chat.busy = None;
                 match result {
@@ -716,7 +751,11 @@ impl App {
             .padding(3)
             .style(theme::flat(false))
             .on_press(Message::Chat(ChatMsg::Reply(m.id.clone())));
-        row![avatar, body.width(Length::Fill), comment].spacing(12).into()
+        let delete = button(icon(Icon::Close, 11.0, theme::TEXT_FAINT))
+            .padding(3)
+            .style(theme::flat(false))
+            .on_press(Message::Chat(ChatMsg::Delete(m.id.clone())));
+        row![avatar, body.width(Length::Fill), comment, delete].spacing(8).into()
     }
 
     /// Comments on a message, like Zed's: "N comments", and when open, a card quoting
