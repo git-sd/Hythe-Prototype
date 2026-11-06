@@ -117,6 +117,20 @@ pub fn mentions(text: &str, known: &[AgentDef]) -> Vec<String> {
     out
 }
 
+/// Agents that fit an unfinished `@word` at the end of `input` (all of them for a bare `@`).
+pub fn mention_matches(input: &str, known: &[AgentDef]) -> Vec<AgentDef> {
+    let Some(tok) = input.rsplit(char::is_whitespace).next() else { return Vec::new() };
+    let Some(prefix) = tok.strip_prefix('@') else { return Vec::new() };
+    let p = prefix.to_ascii_lowercase();
+    known.iter().filter(|a| a.name.starts_with(&p) && a.name != p).cloned().collect()
+}
+
+/// `input` with its unfinished `@word` replaced by `@name `.
+pub fn complete_mention(input: &str, name: &str) -> String {
+    let cut = input.rfind('@').unwrap_or(input.len());
+    format!("{}@{name} ", &input[..cut])
+}
+
 /// What an agent is told about the others, once, when it joins a thread.
 pub fn preamble(me: &AgentDef, thread: &str, known: &[AgentDef]) -> String {
     let others: Vec<String> = known.iter().filter(|a| a.name != me.name).map(|a| format!("@{}", a.name)).collect();
@@ -445,6 +459,24 @@ impl App {
         self.ai_active.and_then(|i| self.ai.get(i)).filter(|t| t.root == root.path)
     }
 
+    /// Suggestions under the message box while an `@mention` is being typed.
+    pub(crate) fn mention_strip<'a>(&self, input: &str, pick: impl Fn(String) -> Message) -> Element<'a, Message> {
+        let found = mention_matches(input, &agents());
+        if found.is_empty() {
+            return iced::widget::space::vertical().height(Length::Fixed(0.0)).into();
+        }
+        let mut chips = row![text("Mention").size(11).color(theme::TEXT_FAINT)].spacing(6).align_y(Alignment::Center);
+        for a in found.into_iter().take(8) {
+            chips = chips.push(
+                button(text(format!("@{}", a.name)).size(12).color(theme::ACCENT))
+                    .padding([2, 8])
+                    .style(theme::flat(false))
+                    .on_press(pick(complete_mention(input, &a.name))),
+            );
+        }
+        container(chips).clip(true).into()
+    }
+
     /// Start an agent step in thread `i`.
     fn ai_step(&mut self, i: usize, agent: String, said: Option<String>, deliver: Vec<hythe_git::threads::Event>) -> Task<Message> {
         let known = agents();
@@ -686,7 +718,10 @@ impl App {
             );
         }
         for turn in &t.turns {
-            let face = if turn.who.is_none() { self.my_face() } else { claude_face() };
+            let face = match &turn.who {
+                None => self.my_face(),
+                Some(who) => agent_face(&hythe_git::threads::clean_name(who), 22.0),
+            };
             let mut body = column![].spacing(8);
             for part in crate::chat::split_code(&turn.text) {
                 body = body.push(match part {
@@ -705,7 +740,7 @@ impl App {
         }
         if let Some(who) = &t.running {
             list = list.push(
-                row![claude_face(), text(format!("{who} is working…")).size(13).color(theme::TEXT_DIM)].spacing(12).align_y(Alignment::Center),
+                row![agent_face(who, 22.0), text(format!("{who} is working…")).size(13).color(theme::TEXT_DIM)].spacing(12).align_y(Alignment::Center),
             );
         }
         let can_send = !t.busy() && !t.input.trim().is_empty();
@@ -726,19 +761,77 @@ impl App {
         .align_y(Alignment::Center);
         column![
             crate::view::vscroll(list).anchor_bottom().width(Length::Fill).height(Length::Fill),
+            container(self.mention_strip(&t.input, |s| Message::Ai(AiMsg::Input(s)))).padding(Padding { top: 0.0, right: 14.0, bottom: 0.0, left: 14.0 }),
             container(composer).padding(Padding { top: 10.0, right: 14.0, bottom: 10.0, left: 14.0 }),
         ]
         .into()
     }
 }
 
-/// Claude's picture in the gutter: the sparkle on a dark disc.
-fn claude_face<'a>() -> Element<'a, Message> {
-    container(icon(Icon::Sparkle, 13.0, Color::from_rgb8(0xd9, 0x77, 0x57)))
-        .center(Length::Fixed(22.0))
-        .style(|_: &Theme| container::Style {
+/// Brand colour of each agent (the sparkle and the ring around its picture).
+pub fn brand(name: &str) -> Color {
+    match name {
+        "claude" => Color::from_rgb8(0xd9, 0x77, 0x57),
+        "fable" => Color::from_rgb8(0xc7, 0x7d, 0xff),
+        "opus" => Color::from_rgb8(0xe0, 0x8a, 0x5c),
+        "sonnet" => Color::from_rgb8(0xe6, 0xb0, 0x7a),
+        "haiku" => Color::from_rgb8(0xf0, 0xd0, 0x9a),
+        "copilot" => Color::from_rgb8(0x8a, 0x6c, 0xf0),
+        "codex" => Color::from_rgb8(0x10, 0xa3, 0x7f),
+        "gemini" => Color::from_rgb8(0x6a, 0x9c, 0xff),
+        "cursor" => Color::from_rgb8(0xe8, 0xe8, 0xe8),
+        "aider" => Color::from_rgb8(0x4c, 0xc0, 0x4c),
+        "opencode" => Color::from_rgb8(0xf2, 0xc0, 0x4a),
+        "qwen" => Color::from_rgb8(0x7a, 0x5b, 0xf2),
+        "amp" => Color::from_rgb8(0xf0, 0x5a, 0x5a),
+        "goose" => Color::from_rgb8(0x9a, 0xd0, 0xf0),
+        "crush" => Color::from_rgb8(0xf0, 0x6a, 0xb4),
+        "hythe" => theme::ACCENT,
+        _ => theme::TEXT_DIM,
+    }
+}
+
+/// Is `name` an agent handle (so its messages get an agent's picture)?
+pub fn is_agent(name: &str) -> bool {
+    name == "hythe" || agents().iter().any(|a| a.name == name)
+}
+
+/// Where to look for logo files: `assets/agents/<name>.svg`, next to the program or the project.
+fn logo_dir() -> Option<&'static PathBuf> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let exe = std::env::current_exe().ok();
+        let mut candidates = vec![PathBuf::from("assets/agents")];
+        if let Some(d) = exe.as_deref().and_then(Path::parent) {
+            candidates.push(d.join("assets/agents"));
+            candidates.push(d.join("../../assets/agents"));
+        }
+        candidates.into_iter().find(|p| p.is_dir())
+    })
+    .as_ref()
+}
+
+/// An agent's picture: its own logo if `assets/agents/<name>.svg` exists, otherwise a disc
+/// in its brand colour with the Claude sparkle for the Claude family or its initial.
+pub fn agent_face<'a>(name: &str, size: f32) -> Element<'a, Message> {
+    let color = brand(name);
+    let file = logo_dir().map(|d| d.join(format!("{name}.svg"))).filter(|p| p.is_file());
+    let inner: Element<'a, Message> = match file {
+        Some(path) => iced::widget::svg(iced::widget::svg::Handle::from_path(path))
+            .width(Length::Fixed(size * 0.62))
+            .height(Length::Fixed(size * 0.62))
+            .into(),
+        None if matches!(name, "claude" | "fable" | "opus" | "sonnet" | "haiku") => icon(Icon::Sparkle, size * 0.6, color).into(),
+        None => text(name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into()))
+            .size(size * 0.52)
+            .color(color)
+            .into(),
+    };
+    container(inner)
+        .center(Length::Fixed(size))
+        .style(move |_: &Theme| container::Style {
             background: Some(theme::CARD_BG.into()),
-            border: iced::Border { radius: 11.0.into(), color: theme::SELECTED, width: 1.0 },
+            border: iced::Border { radius: (size / 2.0).into(), color, width: 1.0 },
             ..Default::default()
         })
         .into()
@@ -760,6 +853,27 @@ mod tests {
         let c = known.iter().find(|a| a.name == "copilot").expect("copilot is available");
         assert_eq!(c.plain.as_deref(), Some("copilot -p {prompt}"));
         assert_eq!(mentions("@copilot and @mybot and @opus, plus @nobody", &known), vec!["copilot", "mybot", "opus"]);
+    }
+
+    #[test]
+    fn typing_an_at_sign_suggests_agents() {
+        let known = agents();
+        let names = |s: &str| mention_matches(s, &known).into_iter().map(|a| a.name).collect::<Vec<_>>();
+        assert!(names("hello @").len() >= 5, "a bare @ lists everyone");
+        assert_eq!(names("ask @op"), vec!["opus"]);
+        assert_eq!(names("ask @opus"), Vec::<String>::new(), "a finished mention needs no suggestion");
+        assert!(names("no at sign").is_empty());
+        assert!(names("done @opus ").is_empty());
+        assert_eq!(complete_mention("ask @op", "opus"), "ask @opus ");
+        assert_eq!(complete_mention("@", "claude"), "@claude ");
+    }
+
+    #[test]
+    fn every_agent_has_a_distinct_brand_colour() {
+        for name in ["claude", "fable", "opus", "sonnet", "haiku", "copilot", "codex", "gemini", "cursor", "aider", "opencode", "qwen", "amp", "goose", "crush"] {
+            assert_ne!(brand(name), theme::TEXT_DIM, "{name} has no brand colour");
+        }
+        assert!(is_agent("opus") && is_agent("hythe") && !is_agent("alice"));
     }
 
     #[test]

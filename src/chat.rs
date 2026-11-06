@@ -526,12 +526,14 @@ impl App {
             .into(),
             None => iced::widget::space::vertical().height(Length::Fixed(0.0)).into(),
         };
+        let strip = self.mention_strip(&c.input, |s| Message::Chat(ChatMsg::Input(s)));
         let composer = column![
             replying,
             attached,
+            strip,
             row![
                 self.my_face(),
-                text_input("Message", &c.input)
+                text_input("Message, or @claude, @opus…", &c.input)
                     .on_input(|s| Message::Chat(ChatMsg::Input(s)))
                     .on_submit(msg(ChatMsg::Send))
                     .padding([4, 4])
@@ -596,6 +598,7 @@ impl App {
         let hue = name.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32)) % 360;
         let face: Element<'a, Message> = match login.and_then(|l| self.member_avatars.get(l)) {
             Some(h) => iced::widget::image(h.clone()).width(Length::Fixed(SIZE)).height(Length::Fixed(SIZE)).border_radius(SIZE / 2.0).into(),
+            None if login.is_none() && crate::ai::is_agent(name) => crate::ai::agent_face(name, SIZE),
             None => {
                 let color = crate::view::hsv(hue as f32);
                 container(text(name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()).size(11).color(Color::WHITE))
