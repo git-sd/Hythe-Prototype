@@ -128,6 +128,8 @@ pub struct Commit {
     pub time: i64,
     pub subject: String,
     pub body: String,
+    /// On the remote branch but not pulled yet.
+    pub incoming: bool,
 }
 
 /// A file changed by a commit.
@@ -419,8 +421,22 @@ impl Repo {
     pub fn log(&self, limit: usize) -> Result<Vec<Commit>> {
         let n = limit.to_string();
         // Unit and record separators can't appear in commit text.
-        let out = self.git(&["log", "-n", &n, "--format=%H%x1f%an%x1f%at%x1f%s%x1f%b%x1e"])?;
-        Ok(parse_log(&out))
+        let fmt = "--format=%H%x1f%an%x1f%at%x1f%s%x1f%b%x1e";
+        // With an upstream, show its commits too (newest first), so History matches GitHub.
+        let incoming: Vec<String> = self
+            .git(&["rev-list", "HEAD..@{upstream}"])
+            .map(|o| o.lines().map(|l| l.trim().to_string()).collect())
+            .unwrap_or_default();
+        let out = if self.upstream_head().is_some() {
+            self.git(&["log", "-n", &n, fmt, "HEAD", "@{upstream}"])?
+        } else {
+            self.git(&["log", "-n", &n, fmt])?
+        };
+        let mut commits = parse_log(&out);
+        for c in &mut commits {
+            c.incoming = incoming.contains(&c.sha);
+        }
+        Ok(commits)
     }
 
     /// What the commit compares against: its first parent, or the empty tree for a root commit.
@@ -544,6 +560,7 @@ pub fn parse_log(text: &str) -> Vec<Commit> {
                 time: f.next()?.trim().parse().ok()?,
                 subject: f.next()?.to_string(),
                 body: f.next().unwrap_or("").trim().to_string(),
+                incoming: false,
             })
         })
         .collect()
@@ -1038,6 +1055,12 @@ mod tests {
         }
         // Every push moves the tip, so a "Later" on one state doesn't hide the next.
         assert!(tips[0] != tips[1] && tips[1] != tips[2]);
+
+        // History lists the remote's commits too, flagged as not pulled yet.
+        let log = f.repo.log(10).unwrap();
+        assert_eq!(log.iter().filter(|c| c.incoming).count(), 3);
+        assert_eq!(log[0].subject, "Cy adds a file");
+        assert!(!log.last().unwrap().incoming);
 
         // Uncommitted work on a file a teammate also changed makes the pull refuse, loudly.
         std::fs::write(f.dir.join("Cy.txt"), "my own edit

@@ -606,6 +606,7 @@ impl App {
         body = body.push(
             row![
                 text(k.short.clone()).size(11).font(crate::theme::MONO).color(theme::ACCENT),
+                text(if k.incoming { "on GitHub, not pulled yet" } else { "" }).size(11).color(theme::TEXT_FAINT),
                 space::horizontal(),
                 icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }, 11.0, theme::TEXT_FAINT),
             ]

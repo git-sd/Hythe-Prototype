@@ -51,7 +51,12 @@ impl App {
 
     pub(crate) fn upstream_checked(&mut self, found: Option<Upstream>) {
         self.upstream_busy = false;
+        let changed = self.upstream.as_ref().map(|u| &u.head) != found.as_ref().map(|u| &u.head);
         self.upstream = found;
+        // New commits on the remote show up in History straight away.
+        if changed {
+            self.scm_reload();
+        }
     }
 
     pub(crate) fn upstream_update(&mut self) -> Task<Message> {
