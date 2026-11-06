@@ -237,6 +237,50 @@ mod tests {
     }
 
     #[test]
+    fn split_horizontal_vertical_and_focus_next() {
+        let mut p = Panes::new();
+        p.open_doc(0);
+        assert_eq!(p.list.len(), 1);
+        assert_eq!(p.focus, 0);
+
+        // Split horizontal (split right)
+        p.split(Axis::Horizontal);
+        assert_eq!(p.axis, Axis::Horizontal);
+        assert_eq!(p.list.len(), 2);
+        assert_eq!(p.focus, 1);
+        assert_eq!(p.current_doc(), Some(0));
+
+        // Split vertical (split down)
+        p.split(Axis::Vertical);
+        assert_eq!(p.axis, Axis::Vertical);
+        assert_eq!(p.list.len(), 3);
+        assert_eq!(p.focus, 2);
+
+        // Focus next cycles through panes
+        p.focus_next();
+        assert_eq!(p.focus, 0);
+        p.focus_next();
+        assert_eq!(p.focus, 1);
+        p.focus_next();
+        assert_eq!(p.focus, 2);
+    }
+
+    #[test]
+    fn unsaved_changes_risk_check_across_panes() {
+        let mut p = Panes::new();
+        p.open_doc(0); // Doc 0 in Pane 0
+        p.split(Axis::Horizontal); // Doc 0 also in Pane 1
+        assert_eq!(p.refs(0), 2);
+        assert_eq!(p.refs_outside(0, 0), 1, "Doc 0 is open in another pane");
+        assert_eq!(p.refs_outside(0, 1), 1, "Doc 0 is open in another pane");
+
+        // If closed in pane 1, doc 0 is still retained in pane 0
+        p.close_tab(1, 0);
+        assert_eq!(p.refs(0), 1);
+        assert_eq!(p.refs_outside(0, 0), 0, "Doc 0 is now unique to pane 0 and at risk of edit loss");
+    }
+
+    #[test]
     fn close_pane_keeps_last() {
         let mut p = Panes::new();
         p.open_doc(0);

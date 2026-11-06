@@ -110,4 +110,24 @@ mod tests {
         assert_eq!(hit[0].label, "Run Claude Code");
         assert!(matches!(hit[0].message, Message::NewTerminal(Some(0))));
     }
+
+    #[test]
+    fn core_editor_commands_exist_and_filter() {
+        let undo = filter("undo", &[]);
+        assert!(!undo.is_empty());
+        assert_eq!(undo[0].label, "Undo");
+        assert_eq!(undo[0].shortcut, "Ctrl+Z");
+        assert!(matches!(undo[0].message, Message::Undo));
+
+        let redo = filter("redo", &[]);
+        assert!(!redo.is_empty());
+        assert_eq!(redo[0].label, "Redo");
+        assert_eq!(redo[0].shortcut, "Ctrl+Y");
+        assert!(matches!(redo[0].message, Message::Redo));
+
+        let split = filter("split", &[]);
+        assert!(split.len() >= 2);
+        assert!(split.iter().any(|c| c.label == "Split Right" && c.shortcut == "Ctrl+\\"));
+        assert!(split.iter().any(|c| c.label == "Split Down" && c.shortcut == "Ctrl+Shift+\\"));
+    }
 }

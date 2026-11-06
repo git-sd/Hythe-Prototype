@@ -414,8 +414,17 @@ mod tests {
     #[test]
     fn document_ids_are_project_relative_with_forward_slashes() {
         let mut d = Doc::empty();
-        d.path = Some(std::path::PathBuf::from("C:\\work\\repo\\src\\main.rs"));
-        assert_eq!(doc_id(Path::new("C:\\work\\repo"), &d).as_deref(), Some("src/main.rs"));
-        assert_eq!(doc_id(Path::new("C:\\other"), &d), None);
+        #[cfg(windows)]
+        {
+            d.path = Some(std::path::PathBuf::from("C:\\work\\repo\\src\\main.rs"));
+            assert_eq!(doc_id(Path::new("C:\\work\\repo"), &d).as_deref(), Some("src/main.rs"));
+            assert_eq!(doc_id(Path::new("C:\\other"), &d), None);
+        }
+        #[cfg(not(windows))]
+        {
+            d.path = Some(std::path::PathBuf::from("/work/repo/src/main.rs"));
+            assert_eq!(doc_id(Path::new("/work/repo"), &d).as_deref(), Some("src/main.rs"));
+            assert_eq!(doc_id(Path::new("/other"), &d), None);
+        }
     }
 }

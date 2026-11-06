@@ -1570,6 +1570,14 @@ impl App {
                 continue;
             }
             if d.dirty {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if text == d.buffer.text() {
+                        // Disk matches current buffer: no real conflict, sync state.
+                        d.dirty = false;
+                        d.stamp = now;
+                        continue;
+                    }
+                }
                 d.stamp = now;
                 conflicts.push(d.name());
             } else if let Ok(text) = std::fs::read_to_string(&path) {
@@ -1581,12 +1589,31 @@ impl App {
                 }
             }
         }
-        if let Some(name) = conflicts.first() {
-            self.status = format!("{name} changed on disk, but you have unsaved edits; saving will overwrite it");
-        }
-        if !reloaded.is_empty() {
-            self.status = format!("{} updated from disk", reloaded.join(", "));
-            self.refresh_git();
+        match (!reloaded.is_empty(), !conflicts.is_empty()) {
+            (true, true) => {
+                self.status = format!(
+                    "{} updated from disk. Conflict in {}: unsaved edits will overwrite disk upon saving",
+                    reloaded.join(", "),
+                    conflicts.join(", ")
+                );
+                self.refresh_git();
+            }
+            (false, true) => {
+                self.status = if conflicts.len() == 1 {
+                    format!("{} changed on disk, but you have unsaved edits; saving will overwrite it", conflicts[0])
+                } else {
+                    format!(
+                        "{} files changed on disk ({}), but you have unsaved edits; saving will overwrite them",
+                        conflicts.len(),
+                        conflicts.join(", ")
+                    )
+                };
+            }
+            (true, false) => {
+                self.status = format!("{} updated from disk", reloaded.join(", "));
+                self.refresh_git();
+            }
+            (false, false) => {}
         }
     }
 
