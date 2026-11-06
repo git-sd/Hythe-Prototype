@@ -15,6 +15,7 @@ mod menus;
 mod palette;
 mod panes;
 mod scm;
+mod upstream;
 mod scm_view;
 mod state;
 mod terminal_view;
@@ -158,6 +159,11 @@ struct App {
     /// Git is read off the UI thread; these track the request in flight.
     git_wanted: bool,
     git_busy: bool,
+    /// Commits waiting on the remote, shown as a prompt to update.
+    upstream: Option<upstream::Upstream>,
+    upstream_busy: bool,
+    /// Remote tip the user chose "Later" for.
+    upstream_later: Option<String>,
     chat: Chat,
     /// Where the chat shows when it is not in its own window.
     chat_mode: chat::ChatMode,
@@ -305,6 +311,13 @@ pub enum Message {
     TogglePin,
     /// Re-read branch and change counts from git.
     GitRefresh,
+    /// Every 15 seconds: fetch and see whether the remote moved.
+    UpstreamTick,
+    UpstreamChecked(Option<upstream::Upstream>),
+    /// Pull the incoming changes.
+    UpstreamUpdate,
+    /// Hide the prompt until the remote moves again.
+    UpstreamLater,
     /// A button for a feature that isn't built yet.
     Unavailable(&'static str),
     /// Hover or click on a top-level entry of the cascading menu.
@@ -416,6 +429,9 @@ impl App {
             member_avatar_tried: HashSet::new(),
             git_wanted: false,
             git_busy: false,
+            upstream: None,
+            upstream_busy: false,
+            upstream_later: None,
             // Closed until asked for; the title bar and bottom bar icons open it.
             chat: Chat { dismissed: true, ..Chat::default() },
             chat_mode: chat::ChatMode::Overlay,
@@ -1088,6 +1104,10 @@ impl App {
                     None => self.status = "Save the file before pinning it".into(),
                 }
             }
+            Message::UpstreamTick => return self.upstream_task(),
+            Message::UpstreamChecked(found) => self.upstream_checked(found),
+            Message::UpstreamUpdate => return self.upstream_update(),
+            Message::UpstreamLater => self.upstream_later(),
             Message::GitRefresh => {
                 self.refresh_git();
                 return self.avatar_task();
@@ -1745,6 +1765,10 @@ impl App {
         // Collaboration: poll the connection for edits and cursors.
         if self.collab.is_some() {
             subs.push(iced::time::every(std::time::Duration::from_millis(40)).map(|_| Message::Collab(CollabMsg::Tick)));
+        }
+        // Is the remote ahead of us? Fetch quietly and offer to update.
+        if self.repo.is_some() {
+            subs.push(iced::time::every(std::time::Duration::from_secs(15)).map(|_| Message::UpstreamTick));
         }
         // Branch name and change counts drift as files are edited on disk.
         if self.root.is_some() {

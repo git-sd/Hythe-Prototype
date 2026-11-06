@@ -148,7 +148,7 @@ pub struct Contributor {
 
 fn run(dir: &Path, args: &[&str]) -> Result<String> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir).args(["-c", "core.quotepath=false", "-c", "color.ui=never"]).args(args);
+    cmd.env("GIT_TERMINAL_PROMPT", "0").arg("-C").arg(dir).args(["-c", "core.quotepath=false", "-c", "color.ui=never"]).args(args);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -326,6 +326,28 @@ impl Repo {
 
     pub fn fetch(&self) -> Result<String> {
         self.git(&["fetch", "--prune"])
+    }
+
+    /// Quiet fetch for background polling: never prompts, never prunes.
+    pub fn fetch_quiet(&self) -> Result<String> {
+        self.git(&["fetch", "--quiet"])
+    }
+
+    /// Full hash of the upstream branch's tip, if there is an upstream.
+    pub fn upstream_head(&self) -> Option<String> {
+        self.git(&["rev-parse", "@{upstream}"]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    }
+
+    /// Files changed upstream since the branches diverged (what a pull would bring).
+    pub fn incoming_files(&self) -> Vec<String> {
+        self.git(&["diff", "--name-only", "HEAD...@{upstream}"])
+            .map(|o| o.lines().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    /// "author: subject" of the newest upstream commit.
+    pub fn upstream_last_commit(&self) -> Option<String> {
+        self.git(&["log", "-1", "--format=%an: %s", "@{upstream}"]).ok().map(|s| s.trim().to_string())
     }
 
     /// Commits the local branch is (ahead, behind) its upstream.
@@ -937,5 +959,44 @@ mod tests {
         assert_eq!(time_ago(0, 3600), "1 hour ago");
         assert_eq!(time_ago(0, 3 * 86400), "3 days ago");
         assert_eq!(time_ago(0, 400 * 86400), "1 year ago");
+    }
+
+    #[test]
+    fn fetch_quiet_notices_a_push_from_someone_else() {
+        let f = Fixture::new();
+        let remote = f.dir.with_extension("remote.git");
+        let other = f.dir.with_extension("other");
+        let _ = std::fs::remove_dir_all(&remote);
+        let _ = std::fs::remove_dir_all(&other);
+        run(&f.dir, &["clone", "-q", "--bare", ".", remote.to_str().unwrap()]).unwrap();
+        run(&f.dir, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+        run(&f.dir, &["fetch", "-q", "origin"]).unwrap();
+        run(&f.dir, &["branch", "-u", "origin/main"]).unwrap();
+        assert_eq!(f.repo.ahead_behind(), Some((0, 0)));
+
+        // A teammate pushes a commit to the remote.
+        run(&f.dir, &["clone", "-q", remote.to_str().unwrap(), other.to_str().unwrap()]).unwrap();
+        run(&other, &["config", "user.name", "Teammate"]).unwrap();
+        run(&other, &["config", "user.email", "t@example.com"]).unwrap();
+        std::fs::write(other.join("b.txt"), "new
+").unwrap();
+        run(&other, &["add", "b.txt"]).unwrap();
+        run(&other, &["commit", "-q", "-m", "add b"]).unwrap();
+        run(&other, &["push", "-q", "origin", "main"]).unwrap();
+
+        // Until we fetch we don't know; after a quiet fetch we do.
+        assert_eq!(f.repo.ahead_behind(), Some((0, 0)));
+        f.repo.fetch_quiet().unwrap();
+        assert_eq!(f.repo.ahead_behind(), Some((0, 1)));
+        assert_eq!(f.repo.incoming_files(), vec!["b.txt".to_string()]);
+        assert_eq!(f.repo.upstream_last_commit().as_deref(), Some("Teammate: add b"));
+        assert!(f.repo.upstream_head().is_some());
+        // The working copy is untouched until the user chooses to pull.
+        assert!(!f.dir.join("b.txt").exists());
+        f.repo.pull().unwrap();
+        assert!(f.dir.join("b.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&remote);
+        let _ = std::fs::remove_dir_all(&other);
     }
 }

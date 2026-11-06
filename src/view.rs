@@ -162,6 +162,11 @@ impl App {
             column![main, divider_h(), self.bottom_bar(false)].width(Length::Fill).into()
         };
 
+        let right: Element<'_, Message> = match self.upstream_banner() {
+            Some(banner) => column![banner, right].width(Length::Fill).into(),
+            None => right,
+        };
+
         let mut body = row![].height(Length::Fill);
         if self.show_sidebar {
             body = body.push(self.left_block()).push(self.handle(Handle::List, true));
