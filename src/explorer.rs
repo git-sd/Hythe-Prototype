@@ -116,11 +116,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn refresh_picks_up_new_files_and_keeps_expansion() {
+    fn refresh_picks_up_new_files_and_keeps_expansion() -> std::io::Result<()> {
         let dir = std::env::temp_dir().join(format!("hythe-tree-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("sub")).unwrap();
-        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        std::fs::create_dir_all(dir.join("sub"))?;
+        std::fs::write(dir.join("a.txt"), "a")?;
         let mut root = Node::root(dir.clone());
         let names = |root: &Node| {
             let mut rows = Vec::new();
@@ -128,11 +128,12 @@ mod tests {
             rows.iter().map(|(_, n)| n.name.clone()).collect::<Vec<_>>()
         };
         assert_eq!(names(&root), ["sub", "a.txt"]);
-        std::fs::write(dir.join("sub").join("b.txt"), "b").unwrap();
-        std::fs::write(dir.join("c.txt"), "c").unwrap();
-        std::fs::remove_file(dir.join("a.txt")).unwrap();
+        std::fs::write(dir.join("sub").join("b.txt"), "b")?;
+        std::fs::write(dir.join("c.txt"), "c")?;
+        std::fs::remove_file(dir.join("a.txt"))?;
         root.refresh();
         assert_eq!(names(&root), ["sub", "b.txt", "c.txt"]);
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 }

@@ -15,6 +15,7 @@ pub enum Entry {
     Item(Item),
     Separator,
     /// A group title in the combined menu.
+    #[allow(dead_code)]
     Header(&'static str),
 }
 
@@ -82,6 +83,7 @@ pub fn entries(menu: usize, agents: &[String]) -> Vec<Entry> {
 }
 
 /// Every menu in one list, each under its title (the ☰ menu in the title bar).
+#[allow(dead_code)]
 pub fn all_entries(agents: &[String]) -> Vec<Entry> {
     let mut out = Vec::new();
     for (i, title) in MENUS.iter().enumerate() {
@@ -137,4 +139,41 @@ pub fn project_entries() -> Vec<Entry> {
         item("Source Control", "Ctrl+Shift+G", Message::Scm(ScmMsg::Show)),
         item("Close Repository", "", Message::CloseProject),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_menus_have_valid_entries() {
+        let agents = vec!["Claude Code".to_string(), "Gemini CLI".to_string()];
+        for i in 0..MENUS.len() {
+            let list = entries(i, &agents);
+            assert!(!list.is_empty(), "menu {i} ({}) should not be empty", MENUS[i]);
+            let items: Vec<_> = list.iter().filter_map(|e| match e {
+                Entry::Item(it) => Some(it),
+                _ => None,
+            }).collect();
+            assert!(!items.is_empty(), "menu {i} should contain items");
+        }
+    }
+
+    #[test]
+    fn terminal_menu_lists_agents() {
+        let agents = vec!["Claude Code".to_string(), "Gemini CLI".to_string()];
+        let list = entries(3, &agents);
+        let run_claude = list.iter().any(|e| match e {
+            Entry::Item(it) => it.label == "Run Claude Code" && matches!(it.message, Message::NewTerminal(Some(0))),
+            _ => false,
+        });
+        assert!(run_claude, "terminal menu should list installed agents");
+    }
+
+    #[test]
+    fn all_entries_includes_headers_and_separators() {
+        let list = all_entries(&[]);
+        let header_count = list.iter().filter(|e| matches!(e, Entry::Header(_))).count();
+        assert_eq!(header_count, MENUS.len());
+    }
 }

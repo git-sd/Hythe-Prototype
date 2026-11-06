@@ -41,9 +41,100 @@ pub enum AiMsg {
     Reply(usize, Result<(String, Option<String>), String>),
 }
 
+/// Validate whether a command name/path from `HYTHE_AGENT_CMD` is safe to spawn.
+pub fn is_safe_command_name(name: &str) -> bool {
+    let s = name.trim();
+    if s.is_empty() {
+        return false;
+    }
+    // Reject shell control characters and metacharacters
+    const FORBIDDEN: &[char] = &[';', '&', '|', '>', '<', '$', '`', '\n', '\r', '\0', '(', ')', '{', '}', '*', '?'];
+    if s.contains(FORBIDDEN) {
+        return false;
+    }
+    true
+}
+
+/// Sanitize error text from external AI processes to avoid leaking private paths or tokens.
+pub fn sanitize_error(raw: &str) -> String {
+    let line = raw.lines().find(|l| !l.trim().is_empty()).unwrap_or("no reply").trim();
+    let mut s = line.to_string();
+
+    // Redact home directories
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let home_str = home.to_string_lossy();
+        if !home_str.is_empty() {
+            s = s.replace(&*home_str, "~");
+        }
+    }
+
+    // Redact common secret / token patterns
+    if let Some(pos) = s.find("sk-") {
+        let end = s[pos..].find(|c: char| c.is_whitespace() || c == '"' || c == '\'').map(|e| pos + e).unwrap_or(s.len());
+        s.replace_range(pos..end, "[REDACTED_KEY]");
+    }
+
+    // Cap length to prevent unbounded string allocations
+    if s.len() > 200 {
+        s.truncate(197);
+        s.push_str("...");
+    }
+
+    if s.is_empty() {
+        "no reply".into()
+    } else {
+        s
+    }
+}
+
+/// Safely parse Claude JSON output or fallback to sanitized error message.
+pub fn parse_ai_response(stdout: &str, stderr: &str) -> Result<(String, Option<String>), String> {
+    let val = serde_json::from_str::<serde_json::Value>(stdout.trim())
+        .ok()
+        .or_else(|| {
+            if let (Some(start), Some(end)) = (stdout.find('{'), stdout.rfind('}')) {
+                if start < end {
+                    serde_json::from_str::<serde_json::Value>(&stdout[start..=end]).ok()
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+
+    match val {
+        Some(v) => {
+            let result = v.get("result")
+                .and_then(|r| r.as_str())
+                .or_else(|| v.get("error").and_then(|e| e.as_str()))
+                .or_else(|| v.get("message").and_then(|m| m.as_str()))
+                .unwrap_or("")
+                .to_string();
+            let session = v.get("session_id").and_then(|s| s.as_str()).map(str::to_string);
+            if v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false) {
+                let msg = if result.is_empty() { "Claude reported an error".into() } else { sanitize_error(&result) };
+                Err(msg)
+            } else {
+                Ok((result, session))
+            }
+        }
+        None => {
+            let err = stderr.trim();
+            let raw = if !err.is_empty() { err } else { stdout.trim() };
+            Err(sanitize_error(raw))
+        }
+    }
+}
+
 /// Ask Claude in `root`, continuing `session` if there is one.
 pub fn run(root: &Path, prompt: &str, session: Option<&str>) -> Result<(String, Option<String>), String> {
-    let program = std::env::var("HYTHE_AGENT_CMD").unwrap_or_else(|_| "claude".into());
+    let raw_program = std::env::var("HYTHE_AGENT_CMD").unwrap_or_else(|_| "claude".into());
+    let program = if is_safe_command_name(&raw_program) {
+        raw_program
+    } else {
+        "claude".into()
+    };
     let mut args = vec!["-p", "--output-format", "json", "--permission-mode", "acceptEdits"];
     // Only ever pass back an id Claude gave us (hex and dashes).
     if let Some(s) = session.filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')) {
@@ -69,24 +160,10 @@ pub fn run(root: &Path, prompt: &str, session: Option<&str>) -> Result<(String, 
             let _ = pipe.write_all(prompt.as_bytes());
         });
     }
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    let out = child.wait_with_output().map_err(|e| sanitize_error(&e.to_string()))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    match serde_json::from_str::<serde_json::Value>(stdout.trim()) {
-        Ok(v) => {
-            let result = v.get("result").and_then(|r| r.as_str()).unwrap_or("").to_string();
-            let session = v.get("session_id").and_then(|s| s.as_str()).map(str::to_string);
-            if v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false) {
-                Err(if result.is_empty() { "Claude reported an error".into() } else { result })
-            } else {
-                Ok((result, session))
-            }
-        }
-        Err(_) => {
-            let err = String::from_utf8_lossy(&out.stderr);
-            let why = if err.trim().is_empty() { stdout.trim().to_string() } else { err.trim().to_string() };
-            Err(why.lines().next().unwrap_or("no reply").to_string())
-        }
-    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    parse_ai_response(&stdout, &stderr)
 }
 
 impl App {
@@ -221,3 +298,61 @@ fn claude_face<'a>() -> Element<'a, Message> {
         })
         .into()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_injection_safety_validation() {
+        assert!(is_safe_command_name("claude"));
+        assert!(is_safe_command_name("/usr/local/bin/claude"));
+        assert!(is_safe_command_name("C:\\tools\\claude.exe"));
+
+        // Reject dangerous characters
+        assert!(!is_safe_command_name("claude; rm -rf /"));
+        assert!(!is_safe_command_name("claude && evil"));
+        assert!(!is_safe_command_name("claude | curl evil.com"));
+        assert!(!is_safe_command_name("claude > out.txt"));
+        assert!(!is_safe_command_name("claude $(whoami)"));
+        assert!(!is_safe_command_name("claude `whoami`"));
+        assert!(!is_safe_command_name(""));
+        assert!(!is_safe_command_name("   "));
+    }
+
+    #[test]
+    fn error_sanitization_removes_secrets_and_home_paths() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
+        let raw = format!("Error reading {}/private/config: invalid token sk-1234567890abcdef12345678", home);
+        let sanitized = sanitize_error(&raw);
+        assert!(!sanitized.contains(&home), "Home directory must be redacted");
+        assert!(sanitized.contains("~/private/config"));
+        assert!(!sanitized.contains("sk-1234567890abcdef12345678"), "API key must be redacted");
+        assert!(sanitized.contains("[REDACTED_KEY]"));
+    }
+
+    #[test]
+    fn parse_ai_response_handles_clean_and_embedded_json() {
+        // Clean JSON
+        let clean = r#"{"result": "Hello world", "session_id": "sess-123", "is_error": false}"#;
+        let res = parse_ai_response(clean, "").unwrap();
+        assert_eq!(res.0, "Hello world");
+        assert_eq!(res.1, Some("sess-123".into()));
+
+        // Embedded JSON with CLI preamble warnings
+        let embedded = "Warning: node experimental feature enabled\n{\"result\": \"reply with warning\", \"is_error\": false}";
+        let res2 = parse_ai_response(embedded, "").unwrap();
+        assert_eq!(res2.0, "reply with warning");
+
+        // Error JSON with error field
+        let err_json = r#"{"error": "Rate limit exceeded", "is_error": true}"#;
+        let err_res = parse_ai_response(err_json, "").unwrap_err();
+        assert_eq!(err_res, "Rate limit exceeded");
+
+        // Malformed non-JSON output falls back to sanitized stderr/stdout
+        let bad_out = "Uncaught exception in /tmp/test.js";
+        let err_res2 = parse_ai_response(bad_out, "").unwrap_err();
+        assert_eq!(err_res2, "Uncaught exception in /tmp/test.js");
+    }
+}
+

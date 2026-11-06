@@ -57,13 +57,20 @@ impl Persisted {
         for line in text.lines() {
             match line.split_once('=') {
                 Some(("project" | "recent", path)) if !path.is_empty() => {
-                    let path = PathBuf::from(path);
-                    if !p.projects.contains(&path) {
+                    let path = normalize_path(Path::new(path));
+                    if !p.projects.iter().any(|existing| normalize_path(existing) == path) {
                         p.projects.push(path);
                     }
                 }
-                Some(("active", path)) if !path.is_empty() => p.active = Some(PathBuf::from(path)),
-                Some(("pinned", path)) if !path.is_empty() => p.pinned.push(PathBuf::from(path)),
+                Some(("active", path)) if !path.is_empty() => {
+                    p.active = Some(normalize_path(Path::new(path)));
+                }
+                Some(("pinned", path)) if !path.is_empty() => {
+                    let pin = normalize_path(Path::new(path));
+                    if !p.pinned.iter().any(|existing| normalize_path(existing) == pin) {
+                        p.pinned.push(pin);
+                    }
+                }
                 _ => {}
             }
         }
@@ -86,32 +93,55 @@ impl Persisted {
 
     /// Add `dir` to the rail unless it's there. Returns its index.
     pub fn add_project(&mut self, dir: &Path) -> usize {
-        if let Some(i) = self.projects.iter().position(|p| p == dir) {
+        let normalized = normalize_path(dir);
+        if let Some(i) = self.projects.iter().position(|p| normalize_path(p) == normalized) {
             return i;
         }
         if self.projects.len() >= MAX_PROJECTS {
             self.projects.remove(0);
         }
-        self.projects.push(dir.to_path_buf());
+        self.projects.push(normalized);
         self.projects.len() - 1
     }
 
     pub fn remove_project(&mut self, dir: &Path) {
-        self.projects.retain(|p| p != dir);
-        if self.active.as_deref() == Some(dir) {
+        let normalized = normalize_path(dir);
+        self.projects.retain(|p| normalize_path(p) != normalized);
+        if self.active.as_deref().map(normalize_path) == Some(normalized.clone()) {
             self.active = None;
         }
-        self.pinned.retain(|f| !f.starts_with(dir));
+        self.pinned.retain(|f| !normalize_path(f).starts_with(&normalized));
     }
 
     pub fn toggle_pin(&mut self, file: &Path) -> bool {
-        if let Some(i) = self.pinned.iter().position(|p| p == file) {
+        let normalized = normalize_path(file);
+        if let Some(i) = self.pinned.iter().position(|p| normalize_path(p) == normalized) {
             self.pinned.remove(i);
             false
         } else {
-            self.pinned.push(file.to_path_buf());
+            self.pinned.push(normalized);
             true
         }
+    }
+}
+
+/// Normalize path components to resolve `.` and `..` traversals.
+pub fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        out
     }
 }
 
@@ -195,5 +225,15 @@ mod tests {
         }
         assert_eq!(p.projects.len(), MAX_PROJECTS);
         assert_eq!(p.projects.last(), Some(&PathBuf::from("/p/39")));
+    }
+
+    #[test]
+    fn path_normalization_resolves_dot_and_parent_traversals() {
+        let mut p = Persisted::default();
+        let idx1 = p.add_project(Path::new("/work/repo/sub/.."));
+        let idx2 = p.add_project(Path::new("/work/./repo"));
+        assert_eq!(idx1, idx2, "Relative paths resolving to same target should not duplicate");
+        assert_eq!(p.projects.len(), 1);
+        assert_eq!(p.projects[0], PathBuf::from("/work/repo"));
     }
 }

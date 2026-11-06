@@ -240,6 +240,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn doc_lifecycle_empty_dirty_save_and_reopen() {
+        let mut hl = Highlighter::new();
+        let mut d = Doc::empty();
+        assert_eq!(d.name(), "untitled");
+        assert!(!d.dirty);
+        assert_eq!(d.buffer.text(), "");
+        assert_eq!(d.language_name(), "Plain Text");
+
+        // Editing marks dirty and rehighlights
+        d.buffer.insert("fn main() {\n    println!(\"Hello Hythe!\");\n}\n");
+        d.edited(&mut hl);
+        assert!(d.dirty);
+        assert!(!d.classes.is_empty(), "Rust syntax highlights keyword and string");
+
+        let tmp = std::env::temp_dir().join("hythe_test_phase1.rs");
+        d.path = Some(tmp.clone());
+        let saved_path = d.save().expect("save should succeed");
+        assert_eq!(saved_path, tmp);
+        assert_eq!(d.name(), "hythe_test_phase1.rs");
+        assert_eq!(d.language_name(), "Rust");
+        assert!(!d.dirty);
+        assert!(d.stamp.is_some());
+
+        // Reopen doc from disk
+        let reopened = Doc::open(tmp.clone(), &mut hl).expect("Doc::open should succeed");
+        assert_eq!(reopened.name(), "hythe_test_phase1.rs");
+        assert_eq!(reopened.buffer.text(), "fn main() {\n    println!(\"Hello Hythe!\");\n}\n");
+        assert!(!reopened.dirty);
+        assert_eq!(reopened.stamp, d.stamp);
+        assert!(!reopened.classes.is_empty());
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
     fn zoom_steps_are_clamped_and_reset() {
         let mut s = Scroll::default();
         assert_eq!(s.metrics().line_h, LINE_H, "unset zoom is normal size");
