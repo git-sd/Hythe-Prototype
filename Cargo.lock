@@ -1625,6 +1625,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hythe-agent"
+version = "0.1.0"
+dependencies = [
+ "hythe-git",
+]
+
+[[package]]
 name = "hythe-complete"
 version = "0.1.0"
 

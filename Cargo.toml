@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = ["crates/hythe-term", "crates/hythe-complete", "crates/hythe-git", "crates/hythe-relay"]
+members = ["crates/hythe-term", "crates/hythe-complete", "crates/hythe-git", "crates/hythe-relay", "crates/hythe-agent"]
+default-members = [".", "crates/hythe-agent"]
 
 [dependencies]
 hythe-term = { path = "crates/hythe-term" }

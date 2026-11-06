@@ -590,7 +590,11 @@ impl App {
                         icon(Icon::Sparkle, 13.0, dim),
                         text(t.title.clone()).size(14).wrapping(text::Wrapping::None),
                         space::horizontal(),
-                        if t.busy { Element::from(dot(theme::ACCENT)) } else { space::horizontal().width(Length::Shrink).into() },
+                        if t.busy() { Element::from(dot(theme::ACCENT)) } else { space::horizontal().width(Length::Shrink).into() },
+                        button(icon(Icon::Close, 11.0, theme::TEXT_FAINT))
+                            .padding([0, 2])
+                            .style(theme::flat(false))
+                            .on_press(Message::Ai(crate::ai::AiMsg::Delete(n))),
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center)

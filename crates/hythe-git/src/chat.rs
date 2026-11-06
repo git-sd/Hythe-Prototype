@@ -15,6 +15,24 @@ use super::{noreply_login, Repo, Result};
 
 const LOCAL: &str = "refs/heads/hythe-chat";
 const REMOTE: &str = "refs/remotes/origin/hythe-chat";
+
+/// An orphan branch kept in git, shared with `origin` by fetch and push.
+pub(crate) struct Store {
+    pub local: &'static str,
+    pub remote: &'static str,
+    /// Scratch index name in `.git`.
+    pub index: &'static str,
+    pub nothing: &'static str,
+    pub synced: &'static str,
+}
+
+pub(crate) const CHAT: Store = Store {
+    local: LOCAL,
+    remote: REMOTE,
+    index: "hythe-chat-index",
+    nothing: "No messages yet",
+    synced: "Chat synced",
+};
 /// GitHub refuses files over 100 MB; stay well under.
 pub const MAX_UPLOAD: u64 = 50 * 1024 * 1024;
 
@@ -50,7 +68,7 @@ pub struct ChatMessage {
 }
 
 /// One git invocation with extra environment and optional stdin; stdout as bytes.
-fn git(dir: &Path, args: &[&str], envs: &[(&str, &Path)], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+pub(crate) fn git(dir: &Path, args: &[&str], envs: &[(&str, &Path)], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(dir).args(["-c", "core.quotepath=false"]).args(args);
     for (k, v) in envs {
@@ -81,18 +99,18 @@ fn git(dir: &Path, args: &[&str], envs: &[(&str, &Path)], stdin: Option<&[u8]>) 
     }
 }
 
-fn text(bytes: Vec<u8>) -> String {
+pub(crate) fn text(bytes: Vec<u8>) -> String {
     String::from_utf8_lossy(&bytes).trim().to_string()
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
 
-fn unique() -> String {
+pub(crate) fn unique() -> String {
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos() as u64)
@@ -100,7 +118,7 @@ fn unique() -> String {
     format!("{:08x}", (n ^ ((std::process::id() as u64) << 20)) & 0xffff_ffff)
 }
 
-fn clean(name: &str) -> String {
+pub(crate) fn clean(name: &str) -> String {
     let s: String = name
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_') { c } else { '_' })
@@ -110,17 +128,17 @@ fn clean(name: &str) -> String {
 }
 
 impl Repo {
-    fn chat_git(&self, args: &[&str]) -> Result<String> {
+    pub(crate) fn chat_git(&self, args: &[&str]) -> Result<String> {
         git(&self.root, args, &[], None).map(text)
     }
 
-    fn chat_ref(&self, name: &str) -> Option<String> {
+    pub(crate) fn chat_ref(&self, name: &str) -> Option<String> {
         self.chat_git(&["rev-parse", "--verify", "-q", name]).ok().filter(|s| !s.is_empty())
     }
 
     /// A scratch index in `.git`, so the real one is never involved.
-    fn chat_index(&self) -> Result<PathBuf> {
-        let rel = self.chat_git(&["rev-parse", "--git-path", "hythe-chat-index"])?;
+    fn chat_index(&self, name: &str) -> Result<PathBuf> {
+        let rel = self.chat_git(&["rev-parse", "--git-path", name])?;
         let path = if Path::new(&rel).is_absolute() { PathBuf::from(rel) } else { self.root.join(rel) };
         let _ = std::fs::remove_file(&path);
         Ok(path)
@@ -137,8 +155,8 @@ impl Repo {
     }
 
     /// Commit the files in `entries` (name, blob id) on top of the chat branch.
-    fn chat_commit(&self, entries: &[(String, String)], parent: Option<&str>, extra_parent: Option<&str>) -> Result<String> {
-        let index = self.chat_index()?;
+    pub(crate) fn chat_commit(&self, store: &Store, entries: &[(String, String)], parent: Option<&str>, extra_parent: Option<&str>) -> Result<String> {
+        let index = self.chat_index(store.index)?;
         let env = [("GIT_INDEX_FILE", index.as_path())];
         let run = |args: &[&str]| git(&self.root, args, &env, None).map(text);
         if let Some(p) = parent {
@@ -194,7 +212,7 @@ impl Repo {
         entries.push((format!("m-{ms:013}-{}.txt", unique()), blob));
 
         let parent = self.chat_ref(LOCAL);
-        let commit = self.chat_commit(&entries, parent.as_deref(), None)?;
+        let commit = self.chat_commit(&CHAT, &entries, parent.as_deref(), None)?;
         let mut args = vec!["update-ref", LOCAL, commit.as_str()];
         if let Some(p) = &parent {
             args.push(p);
@@ -224,24 +242,30 @@ impl Repo {
 
     /// Exchange chat with `origin`: fetch, merge, push. Returns a short summary.
     pub fn chat_sync(&self) -> Result<String> {
+        self.store_sync(&CHAT)
+    }
+
+    /// Fetch, merge and push any [`Store`] branch.
+    pub(crate) fn store_sync(&self, store: &Store) -> Result<String> {
+        let (local_ref, remote_ref) = (store.local, store.remote);
         self.chat_git(&["remote", "get-url", "origin"]).map_err(|_| "This repository has no `origin` remote".to_string())?;
         for attempt in 0..2 {
             // A missing remote branch just means nobody has pushed chat yet.
-            let spec = format!("+{LOCAL}:{REMOTE}");
+            let spec = format!("+{local_ref}:{remote_ref}");
             if let Err(e) = self.chat_git(&["fetch", "origin", &spec]) {
                 if !e.contains("couldn't find remote ref") {
                     return Err(e);
                 }
             }
-            self.chat_merge()?;
-            let Some(local) = self.chat_ref(LOCAL) else {
-                return Ok("No messages yet".into());
+            self.store_merge(store)?;
+            let Some(local) = self.chat_ref(local_ref) else {
+                return Ok(store.nothing.into());
             };
-            if self.chat_ref(REMOTE).as_deref() == Some(local.as_str()) {
+            if self.chat_ref(remote_ref).as_deref() == Some(local.as_str()) {
                 return Ok("Chat is up to date".into());
             }
-            match self.chat_git(&["push", "origin", &format!("{LOCAL}:{LOCAL}")]) {
-                Ok(_) => return Ok("Chat synced".into()),
+            match self.chat_git(&["push", "origin", &format!("{local_ref}:{local_ref}")]) {
+                Ok(_) => return Ok(store.synced.into()),
                 // Someone pushed in between: fetch and merge once more.
                 Err(e) if attempt == 0 && (e.contains("rejected") || e.contains("fetch first")) => continue,
                 Err(e) => return Err(e),
@@ -251,18 +275,19 @@ impl Repo {
     }
 
     /// Bring the local chat branch up to the union of local and remote.
-    fn chat_merge(&self) -> Result<()> {
-        let (local, remote) = (self.chat_ref(LOCAL), self.chat_ref(REMOTE));
+    fn store_merge(&self, store: &Store) -> Result<()> {
+        let (local_ref, remote_ref) = (store.local, store.remote);
+        let (local, remote) = (self.chat_ref(local_ref), self.chat_ref(remote_ref));
         let (local, remote) = match (local, remote) {
             (_, None) => return Ok(()),
-            (None, Some(r)) => return self.chat_git(&["update-ref", LOCAL, &r]).map(|_| ()),
+            (None, Some(r)) => return self.chat_git(&["update-ref", local_ref, &r]).map(|_| ()),
             (Some(l), Some(r)) => (l, r),
         };
         if local == remote || self.chat_git(&["merge-base", "--is-ancestor", &remote, &local]).is_ok() {
             return Ok(());
         }
         if self.chat_git(&["merge-base", "--is-ancestor", &local, &remote]).is_ok() {
-            return self.chat_git(&["update-ref", LOCAL, &remote, &local]).map(|_| ());
+            return self.chat_git(&["update-ref", local_ref, &remote, &local]).map(|_| ());
         }
         // Diverged: keep everything from both sides.
         let have = self.chat_git(&["ls-tree", "--name-only", &local])?;
@@ -276,8 +301,8 @@ impl Repo {
                 (!have.contains(name)).then(|| (name.to_string(), blob.to_string()))
             })
             .collect();
-        let commit = self.chat_commit(&entries, Some(&local), Some(&remote))?;
-        self.chat_git(&["update-ref", LOCAL, &commit, &local]).map(|_| ())
+        let commit = self.chat_commit(store, &entries, Some(&local), Some(&remote))?;
+        self.chat_git(&["update-ref", local_ref, &commit, &local]).map(|_| ())
     }
 }
 

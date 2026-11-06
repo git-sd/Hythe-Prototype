@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub mod chat;
+pub mod threads;
 pub use chat::{Attachment, ChatMessage};
 
 pub type Result<T> = std::result::Result<T, String>;

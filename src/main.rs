@@ -186,6 +186,8 @@ struct App {
     /// Conversations with Claude, and the one showing in the thread column.
     ai: Vec<ai::AiThread>,
     ai_active: Option<usize>,
+    /// Repository whose saved threads were read.
+    ai_loaded: Option<PathBuf>,
     /// A tab being dragged: (pane, tab).
     tab_drag: Option<(usize, usize)>,
     /// A rail tile, terminal or pinned file being dragged.
@@ -446,6 +448,7 @@ impl App {
             changes_tab: false,
             ai: Vec::new(),
             ai_active: None,
+            ai_loaded: None,
             tab_drag: None,
             item_drag: None,
             agent_right: false,
@@ -1206,11 +1209,12 @@ impl App {
                         self.scm_reload();
                         let diffs = if self.changes_visible() { self.load_all_diffs() } else { Task::none() };
                         let here = self.repo.as_ref().map(|x| x.root().to_path_buf());
+                        let saved = self.ai_load_task();
                         if here.is_some() && self.chat.loaded_for != here {
                             self.chat.loaded_for = here;
-                            return Task::batch([self.chat_load(), self.chat_sync(), diffs]);
+                            return Task::batch([self.chat_load(), self.chat_sync(), diffs, saved]);
                         }
-                        return diffs;
+                        return Task::batch([diffs, saved]);
                     } else {
                         // Another repository was opened meanwhile.
                         self.git_wanted = true;

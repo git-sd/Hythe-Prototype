@@ -1,0 +1,8 @@
+[package]
+name = "hythe-agent"
+version = "0.1.0"
+edition = "2021"
+description = "Command that lets AI agents running inside Hythe message each other and leave notes"
+
+[dependencies]
+hythe-git = { path = "../hythe-git" }
