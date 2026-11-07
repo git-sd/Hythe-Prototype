@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hythe</title>
+<meta name="description" content="">
+<meta name="theme-color" content="#111315">
+<link rel="preload" href="fonts/IBMPlexSans-Regular.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="bg" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="wrap navin">
+    <a class="brand" href="#top"><span class="logo" aria-hidden="true"></span><span data-text="name"></span></a>
+    <span class="grow"></span>
+    <a href="#demo">Demo</a><a href="#features">Features</a><a href="#stack">Open source</a>
+    <a class="navcta" href="#top" data-join>Join</a>
+  </div>
+</nav>
+
+<main id="top">
+  <!-- hero -->
+  <header class="hero wrap">
+    <p class="eyebrow"><span class="dot"></span><span data-text="eyebrow"></span></p>
+    <h1 class="name" data-text="name"></h1>
+    <p class="tagline" data-text="tagline"></p>
+    <form id="form" class="form" novalidate>
+      <div class="field">
+        <label for="email" class="sr">Email address</label>
+        <input id="email" name="email" type="email" inputmode="email" autocomplete="email"
+               autocapitalize="off" spellcheck="false" required aria-describedby="msg">
+        <button id="btn" type="submit"><span data-text="button"></span></button>
+      </div>
+      <p id="msg" class="msg" role="status" aria-live="polite"></p>
+    </form>
+    <div id="done" class="done" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+      <h2 data-text="successTitle"></h2>
+      <p id="doneBody" data-text="successBody"></p>
+    </div>
+    <p class="note" data-text="note"></p>
+  </header>
+
+  <!-- demo -->
+  <section class="tour wrap" id="demo" aria-label="Interactive product demo">
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <p class="explain" id="explain"></p>
+
+    <div class="app" id="app">
+      <aside class="side">
+        <div class="hdr">
+          <button class="ib" data-act="menu" title="Menu"><i class="ic" data-i="menu"></i></button>
+          <button class="ib" data-act="sidebar" title="Toggle sidebar"><i class="ic" data-i="sidebar"></i></button>
+          <button class="ib" data-act="search" title="Search"><i class="ic" data-i="search"></i></button>
+          <span class="grow"></span>
+          <button class="ib" data-act="history" title="History"><i class="ic" data-i="history"></i></button>
+        </div>
+        <div class="list" id="sideList"></div>
+        <button class="acct" data-act="account"><span class="av u1"></span>you <span class="faint">Hythe</span><span class="grow"></span><i class="ic" data-i="chev"></i></button>
+      </aside>
+
+      <section class="col thread">
+        <div class="hdr">
+          <button class="ib" data-act="sidebar" id="sideOpen" title="Show sidebar"><i class="ic" data-i="sidebar"></i></button>
+          <span class="ttl" id="tTitle"></span><span class="grow"></span>
+          <span class="avs" id="tAvs"></span>
+          <button class="ib" data-act="follow" title="Follow a teammate"><i class="ic" data-i="eye"></i></button>
+          <button class="ib share" data-act="share" title="Share this thread"><i class="ic" data-i="share"></i><span>Share</span></button>
+          <button class="ib" data-act="new" title="New thread"><i class="ic" data-i="plus"></i></button>
+          <button class="ib" data-act="threadMenu" title="More"><i class="ic" data-i="more"></i></button>
+        </div>
+        <div class="feed" id="feed"></div>
+        <form class="composer" id="composer" autocomplete="off">
+          <span class="av u1"></span>
+          <input id="say" placeholder="Message, or @claude, @copilot…" aria-label="Message the demo thread" maxlength="140">
+          <button type="button" class="ib" data-act="attach" title="Attach"><i class="ic" data-i="clip"></i></button>
+          <button class="ib" aria-label="Send" title="Send"><i class="ic" data-i="send"></i></button>
+        </form>
+        <div class="foot-bar">
+          <i class="ic" data-i="folder"></i><span>hythe</span><span class="faint">/</span><span>main</span>
+          <span class="add" id="addN">+0</span><span class="del" id="delN">−0</span>
+          <span class="grow"></span>
+          <button class="ib" data-act="term" title="Terminal"><i class="ic" data-i="term"></i></button>
+          <button class="ib" data-act="history" title="History"><i class="ic" data-i="history"></i></button>
+          <button class="ib" data-act="chat" title="Thread"><i class="ic" data-i="chat"></i></button>
+          <button class="ib" data-act="panel" title="Editor panel"><i class="ic" data-i="panel"></i></button>
+        </div>
+      </section>
+
+      <section class="col editor">
+        <div class="hdr"><span class="tab" id="eTab"></span><span class="grow"></span>
+          <button class="ib" data-act="split" title="Split"><i class="ic" data-i="split"></i></button>
+          <button class="ib" data-act="editorMenu" title="More"><i class="ic" data-i="more"></i></button>
+          <button class="ib" data-act="panel" title="Minimise"><i class="ic" data-i="min"></i></button>
+          <button class="ib" data-act="max" title="Maximise"><i class="ic" data-i="max"></i></button>
+          <button class="ib" data-act="closeEditor" title="Close"><i class="ic" data-i="close"></i></button>
+        </div>
+        <div class="esub" id="eSub"></div>
+        <div class="code" id="code"></div>
+        <div class="term" id="term" hidden></div>
+      </section>
+
+      <div class="pop" id="pop" hidden></div>
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <!-- features -->
+  <section class="sec wrap" id="features">
+    <h2 class="h2" data-text="featuresTitle"></h2>
+    <p class="lede" data-text="featuresText"></p>
+    <div class="grid" id="featGrid"></div>
+  </section>
+
+  <!-- open source -->
+  <section class="sec wrap" id="stack">
+    <h2 class="h2" data-text="stackTitle"></h2>
+    <p class="lede" data-text="stackText"></p>
+    <div class="grid stackgrid" id="stackGrid"></div>
+  </section>
+
+  <!-- final CTA -->
+  <section class="cta wrap">
+    <h2 class="h2" data-text="ctaTitle"></h2>
+    <p class="lede" data-text="ctaText"></p>
+    <button class="bigbtn" data-join><span data-text="button"></span></button>
+  </section>
+</main>
+
+<footer class="foot wrap"><span data-text="footer"></span><span class="grow"></span><a href="#top">Back to top ↑</a></footer>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
