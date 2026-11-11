@@ -63,7 +63,7 @@ window.WAITLIST_CONFIG = {
 
   // Sections
   demoTitle: "Try it",
-  demoText: "A working copy of the Hythe window. Every button does something.",
+  demoText: "A clickable demo of the Hythe window, with scripted teammates and agents. Every button does something.",
   featuresTitle: "What's different",
   featuresText: "Six things that happen in the thread instead of in another tool.",
   stackTitle: "Built on",

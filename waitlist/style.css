@@ -423,3 +423,16 @@ img.av{object-fit:cover;display:block}
 [data-i=copy]{--m:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linejoin='round'%3E%3Crect x='8' y='8' width='12' height='12' rx='2'/%3E%3Cpath d='M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3'/%3E%3C/svg%3E")}
 [data-i=github]{--m:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z'/%3E%3C/svg%3E")}
 .cmds{white-space:pre;word-break:normal;overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--selected) transparent;font-size:12.5px}
+.fbrand{align-content:flex-start}
+
+/* the star logo has its own transparent shape: no rounded tile around it */
+.brand img,.fbrand img,.foot img{border-radius:0}
+.brand img{width:22px;height:22px}
+
+/* neutral charcoal instead of the editor's blue-grey, so the logo's purple is the only colour in the chrome */
+:root{
+  --page:#151515; --panel:#1c1c1c; --card:#111111;
+  --border:#2a2a2a; --hover:#232323; --selected:#2d2d2d;
+  --text:#e8e8e6; --dim:#a9a9a6; --faint:#6f6f6c; --gutter:#5c5c59;
+  --added-bg:#1d2a1f; --removed-bg:#331f1f;
+}
