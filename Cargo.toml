@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = ["crates/hythe-term", "crates/hythe-complete", "crates/hythe-git", "crates/hythe-relay", "crates/hythe-agent"]
+members = ["crates/hythe-term", "crates/hythe-complete", "crates/hythe-git", "crates/hythe-relay", "crates/hythe-agent", "crates/hythe-installer"]
 default-members = [".", "crates/hythe-agent"]
 
 [dependencies]
@@ -35,6 +35,9 @@ tree-sitter-php = "0.24"
 rfd = "0.17"
 tokio = { version = "1", features = ["rt"] }
 serde_json = "1"
+
+[profile.release]
+strip = true
 
 [profile.dev]
 opt-level = 1

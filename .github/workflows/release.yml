@@ -1,0 +1,36 @@
+# Pushing a tag like v0.1.12 builds the Windows installer and attaches it to a GitHub Release.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target/dist"
+      - name: Build installer
+        shell: pwsh
+        run: ./installer/build-installer.ps1
+      - name: Test the installer (install, check, uninstall)
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist/Hythe-Setup-*.exe | Select-Object -First 1).FullName
+          $dir = Join-Path $env:RUNNER_TEMP "hythe-test"
+          Start-Process $setup -ArgumentList "/S","/noshortcuts","/dir=$dir" -Wait
+          foreach ($f in "hythe.exe","hythe-agent.exe","Uninstall.exe") { if (-not (Test-Path (Join-Path $dir $f))) { throw "missing $f" } }
+          Start-Process (Join-Path $dir "Uninstall.exe") -ArgumentList "/S","/uninstall","/dir=$dir" -Wait
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/Hythe-Setup-* --title "Hythe ${{ github.ref_name }}" --generate-notes
