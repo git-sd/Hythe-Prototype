@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Hythe">
+  <rect width="1024" height="1024" rx="96" fill="#201f1d"/>
+  <path fill="#efeeec" d="M224 224h128v352h320V224h128v576H672v-96H352v96H224z"/>
+  <rect x="448" y="352" width="128" height="128" fill="#8f57f6"/>
+</svg>

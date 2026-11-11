@@ -1,6 +1,5 @@
 (function () {
   var C = window.WAITLIST_CONFIG || {};
-  var KEY = "waitlist_signups";
   var $ = function (id) { return document.getElementById(id); };
   function esc(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
   var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -11,78 +10,31 @@
     var v = C[el.getAttribute("data-text")];
     if (v != null) el.textContent = v;
   });
-  document.title = C.name + " — " + (C.eyebrow || "Waitlist");
+  document.title = C.title || C.name;
   var md = document.querySelector('meta[name="description"]');
-  if (md) md.content = C.tagline || "";
+  if (md) md.content = C.sub || "";
 
-  // ---------- nav + join buttons ----------
-  var nav = document.querySelector(".nav");
-  var onScroll = function () { nav.classList.toggle("scrolled", window.scrollY > 8); };
-  window.addEventListener("scroll", onScroll, { passive: true }); onScroll();
-  document.querySelectorAll("[data-join]").forEach(function (b) {
-    b.addEventListener("click", function (e) {
-      e.preventDefault();
-      window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
-      setTimeout(function () { var em = $("email"); if (em && em.offsetParent) em.focus({ preventScroll: true }); }, reduce ? 0 : 450);
-    });
-  });
-
-  // ---------- waitlist form ----------
-  var form = $("form"), email = $("email"), btn = $("btn"), msg = $("msg");
-  email.placeholder = C.placeholder || "";
-  var busy = false;
-  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-  function setError(text) {
-    form.classList.remove("invalid");
-    msg.textContent = text || "";
-    if (text) { void form.offsetWidth; form.classList.add("invalid"); }
-  }
-  function setBusy(b) {
-    busy = b; btn.disabled = b; email.readOnly = b;
-    btn.firstElementChild.textContent = b ? C.buttonBusy : C.button;
-  }
-  function success(already) {
-    if (already) $("doneBody").textContent = C.successAgain;
-    document.querySelector(".hero").classList.add("joined");
-    $("done").hidden = false;
-  }
-  function readLocal() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; } }
-  function saveLocal(addr) {
-    var list = readLocal();
-    if (list.some(function (s) { return s.email === addr; })) return false;
-    list.push({ email: addr, at: new Date().toISOString() });
-    try { localStorage.setItem(KEY, JSON.stringify(list)); } catch (e) {}
-    return true;
-  }
-  email.addEventListener("input", function () { if (form.classList.contains("invalid")) setError(""); });
-  form.addEventListener("submit", function (e) {
-    e.preventDefault();
-    if (busy) return;
-    var addr = email.value.trim().toLowerCase();
-    if (!EMAIL_RE.test(addr) || addr.length > 254) { setError(C.errorInvalid); email.focus(); return; }
-    setError("");
-    setBusy(true);
-    if (!C.endpoint) { // preview mode: browser-only storage
-      setTimeout(function () { var isNew = saveLocal(addr); setBusy(false); success(!isNew); }, 450);
-      return;
-    }
-    fetch(C.endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify({ email: addr, source: "waitlist" })
-    }).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      setBusy(false); success(false);
-    }).catch(function () { setBusy(false); setError(C.errorNetwork); });
+  // ---------- install: every install link opens GitHub; commands can be copied ----------
+  document.querySelectorAll("[data-install]").forEach(function (l) { l.href = C.installUrl || C.repoUrl; });
+  document.querySelectorAll("[data-repo]").forEach(function (l) { l.href = C.repoUrl; });
+  document.querySelectorAll("[data-rust]").forEach(function (l) { l.href = C.rustUrl; });
+  var cmds = C.installCommands || [];
+  var NL = String.fromCharCode(10);
+  $("cmds").innerHTML = cmds.map(function (c) { return '<span class="pr">$</span> ' + esc(c); }).join(NL);
+  $("copyCmds").addEventListener("click", function () {
+    var b = this, label = b.querySelector("span");
+    var done = function (ok) { label.textContent = ok ? "Copied" : "Select and copy"; setTimeout(function () { label.textContent = "Copy"; }, 1800); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(cmds.join(NL)).then(function () { done(true); }, function () { done(false); });
+    else done(false);
   });
 
   // ---------- helpers for the demo ----------
   var F = C.features || [];
   var ic = function (n) { return '<i class="ic" data-i="' + n + '"></i>'; };
   var AV = {
-    you: '<span class="av u1"></span>',
-    sam: '<span class="av u2">S</span>',
-    ada: '<span class="av u3">A</span>',
+    you: '<img class="av u1" src="https://randomuser.me/api/portraits/women/68.jpg" alt="" loading="lazy">',   // Maya, the demo's user
+    sam: '<img class="av u2" src="https://randomuser.me/api/portraits/men/32.jpg" alt="" loading="lazy">',
+    ada: '<img class="av u3" src="https://randomuser.me/api/portraits/women/44.jpg" alt="" loading="lazy">',
     claude: '<span class="av ag claude">' + ic("sparkle") + "</span>",
     copilot: '<span class="av ag copilot">C</span>'
   };
@@ -93,15 +45,23 @@
       '<button class="ib" data-mact="hide" title="Hide">' + ic("close") + "</button></span></div>";
   }
 
-  // ---------- feature cards + open-source cards ----------
-  $("featGrid").innerHTML = F.map(function (f, i) {
-    return '<article class="fc"><span class="fi">' + ic(f.icon || "sparkle") + "</span><h3>" + esc(f.title) + "</h3><p>" + esc(f.text) +
-      '</p><button class="try" data-try="' + i + '">Try it in the demo ' + ic("arrow") + "</button></article>";
+  // ---------- "What's different" rows + Cargo.toml-style "Built on" list ----------
+  $("featList").innerHTML = F.map(function (f, i) {
+    return '<div class="fitem">' + ic(f.icon || "sparkle") + "<div><h3>" + esc(f.title) + "</h3><p>" + esc(f.text) +
+      '</p></div><button class="open" data-try="' + i + '">Open in demo ' + ic("arrow") + "</button></div>";
   }).join("");
-  $("stackGrid").innerHTML = (C.stack || []).map(function (s) {
-    return '<a class="sc" href="' + esc(s.url) + '" target="_blank" rel="noopener noreferrer"><span class="top">' + esc(s.name) +
-      '</span><span class="role">' + esc(s.role) + "</span><p>" + esc(s.desc || "") + "</p></a>";
+  $("stackList").innerHTML = (C.stack || []).map(function (s) {
+    return '<a class="dep" href="' + esc(s.url) + '" target="_blank" rel="noopener noreferrer"><span class="k2">' + esc(s.name) +
+      '</span><span class="r">' + esc(s.role) + "</span>" + ic("out").replace('class="ic"', 'class="ic go"') + "</a>";
   }).join("");
+  // ---------- agents grid + FAQ ----------
+  $("agentList").innerHTML = (C.agents || []).map(function (g) {
+    return '<div class="agent"><span class="an">' + esc(g.name) + '</span><code>' + esc(g.cmd) + "</code></div>";
+  }).join("");
+  $("faqList").innerHTML = (C.faq || []).map(function (f) {
+    return "<details><summary>" + esc(f.q) + ic("plus") + "</summary><p>" + esc(f.a) + "</p></details>";
+  }).join("");
+
   if (!F.length) { $("demo").remove(); return; }
 
   // ---------- code + highlighting ----------
@@ -268,8 +228,8 @@
   var CMDS = {
     help: "Try: cargo test, cargo build, git status, git log, ls, pwd, whoami, echo, clear",
     ls: "Cargo.toml  assets  crates  src  tests",
-    pwd: "/home/you/hythe",
-    whoami: "you",
+    pwd: "/home/maya/hythe",
+    whoami: "maya",
     "git status": "On branch main\nChanges not staged for commit:\n  modified:   src/sync.rs\n  modified:   Cargo.toml\nUntracked files:\n  tests/sync_test.rs",
     "cargo build": '<span class="o">   Compiling</span> hythe v0.1.11\n<span class="o">    Finished</span> dev profile in 2.14s',
     "cargo test": '<span class="o">   Compiling</span> hythe v0.1.11\n<span class="o">     Running</span> 6 tests\ntest sync::flaky_server ... <span class="o">ok</span>\ntest sync::dead_server  ... <span class="o">ok</span>\ntest sync::recovers     ... <span class="o">ok</span>\ntest result: <span class="o">ok</span>. 6 passed; 0 failed'
@@ -379,7 +339,7 @@
     var t = ln.querySelector(".t"), x = e.clientX - t.getBoundingClientRect().left;
     measure();
     var me = codeEl.querySelector(".cur.me");
-    if (!me) { codeEl.insertAdjacentHTML("beforeend", '<i class="cur me" data-n="You"></i>'); me = codeEl.querySelector(".cur.me"); }
+    if (!me) { codeEl.insertAdjacentHTML("beforeend", '<i class="cur me" data-n="Maya"></i>'); me = codeEl.querySelector(".cur.me"); }
     placeCursor(me, lns, Math.max(0, Math.round(x / cw)));
   });
 
@@ -423,7 +383,7 @@
     S.focus = s.focus;
     if (s.term) term = TERM_START.concat(["$ cargo test sync", CMDS["cargo test"]]);
     setTabs();
-    $("explain").textContent = f.text;
+    $("explain").innerHTML = "<b>" + esc(f.title) + ".</b> " + esc(f.text);
     $("tTitle").textContent = f.thread;
     $("tAvs").innerHTML = s.avs.map(function (a) { return AV[a]; }).join("");
     feed.innerHTML = S.store[S.active] || s.feed.map(function (h, k) { return h.replace('class="m"', 'class="m" style="animation-delay:' + (k * 0.1) + 's"'); }).join("");
@@ -462,7 +422,9 @@
     var w = pop.offsetWidth;
     var left = Math.min(Math.max(8, a.left - r.left), r.width - w - 8);
     pop.style.left = left + "px";
-    pop.style.top = (a.bottom - r.top + 6) + "px";
+    // open below the button, or above it when there isn't room (the account button sits at the bottom)
+    var below = a.bottom - r.top + 6, h = pop.offsetHeight;
+    pop.style.top = (below + h > r.height - 6 ? Math.max(6, a.top - r.top - h - 6) : below) + "px";
     if (opts && opts.search) {
       var q = $("popq"); q.focus({ preventScroll: true });
       q.oninput = function () { drawList(q.value.trim().toLowerCase()); };
@@ -560,8 +522,8 @@
     attach: function () { toast("Attach files, images or a terminal selection"); },
     account: function (b) {
       openPop(b, [
-        { label: "Settings", icon: "more", run: function () { toast("Settings live in the real app"); } },
-        { label: "Join the waitlist", icon: "arrow", run: function () { document.querySelector("[data-join]").click(); } }
+        { label: "Settings", icon: "gear", run: function () { toast("Settings live in the real app"); } },
+        { label: "Install Hythe", icon: "arrow", run: function () { window.open(C.installUrl || C.repoUrl, "_blank", "noopener"); } }
       ]);
     }
   };
@@ -619,7 +581,7 @@
     var f = e.target.closest(".reply"); if (!f) return;
     e.preventDefault();
     var inp = f.querySelector("input"), t = inp.value.trim(); if (!t) return;
-    f.insertAdjacentHTML("beforebegin", '<div class="who">' + AV.you + "You</div>" + esc(t));
+    f.insertAdjacentHTML("beforebegin", '<div class="who">' + AV.you + "Maya</div>" + esc(t));
     inp.value = "";
     var cnt = f.closest(".body").querySelector(".cnt"), n = (parseInt(cnt.textContent, 10) || 1) + 1;
     cnt.textContent = n + " comments";
@@ -690,10 +652,10 @@
 
   // ---------- tabs, cards, auto tour ----------
   tabs.innerHTML = F.map(function (f, i) {
-    return '<button role="tab" data-i="' + i + '"><span class="n">0' + (i + 1) + "</span>" + esc(f.title) + "</button>";
+    return '<button role="tab" data-i="' + i + '">' + ic(f.icon || "sparkle") + esc(f.title) + "</button>";
   }).join("");
   tabs.addEventListener("click", function (e) { var b = e.target.closest("button"); if (b) { stopTour(); show(+b.getAttribute("data-i")); } });
-  $("featGrid").addEventListener("click", function (e) {
+  $("featList").addEventListener("click", function (e) {
     var b = e.target.closest("[data-try]"); if (!b) return;
     stopTour(); show(+b.getAttribute("data-try"));
     $("demo").scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
