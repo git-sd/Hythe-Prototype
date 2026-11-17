@@ -11,20 +11,14 @@ window.WAITLIST_CONFIG = {
   sub: "Hythe is a code editor where teammates and AI agents like Claude and Copilot work in the same conversation, right next to the code they're changing.",
 
   // >>> INSTALL <<<
-  // Every install button opens `installUrl`. When you publish prebuilt downloads,
-  // point it at "https://github.com/git-sd/Hythe-Prototype/releases/latest".
+  // Every install button opens `installUrl`: the newest release, which holds the Windows installer.
   repoUrl: "https://github.com/git-sd/Hythe-Prototype",
-  installUrl: "https://github.com/git-sd/Hythe-Prototype",
-  installButton: "Install from GitHub",
+  installUrl: "https://github.com/git-sd/Hythe-Prototype/releases/latest",
+  guideUrl: "https://github.com/git-sd/Hythe-Prototype/blob/main/INSTALL.md",
+  installButton: "Download for Windows",
   installTitle: "Install",
-  installIntro: "Build it from source. You need git and the Rust toolchain.",
-  installCommands: [
-    "git clone https://github.com/git-sd/Hythe-Prototype",
-    "cd Hythe-Prototype",
-    "cargo run --release -p hythe"
-  ],
-  installNote: "No prebuilt downloads yet. Agents are optional: Hythe uses whichever ones you have installed.",
-  rustUrl: "https://rustup.rs",
+  installIntro: "Download the installer and double-click it. No compiling, no Rust, no admin rights. Hythe keeps itself up to date.",
+  installNote: "Windows 10 and 11. You need git for source control. Agents are optional: Hythe uses whichever ones you have installed.",
   footer: "© Hythe",
 
   // >>> AGENTS <<<  The coding-agent CLIs Hythe looks for on your PATH (see src/ai.rs).
@@ -54,9 +48,9 @@ window.WAITLIST_CONFIG = {
     { q: "Do my teammates all need Hythe?",
       a: "To join a thread or edit live, yes. Anyone else just sees a normal git repository with one extra branch for the threads." },
     { q: "How do I install it?",
-      a: "Clone the repository from GitHub and build it with cargo, using the three commands at the top of this page. The first build takes a few minutes; after that it starts straight away." },
+      a: "Download Hythe-Setup from the latest GitHub release and double-click it. It installs for your user, adds a Start menu shortcut and updates itself whenever a new version is out. Nothing to compile." },
     { q: "What do I need?",
-      a: "git and the Rust toolchain, which you can install from rustup.rs. Agents are optional: install any you want to use and Hythe finds them." },
+      a: "Windows 10 or 11 and git. You do not need Rust. Agents are optional: install any you want to use and Hythe finds them." },
     { q: "Is this finished?",
       a: "No. Hythe is a prototype under active development, so expect rough edges and frequent changes. Keep your work committed in git." }
   ],

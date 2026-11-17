@@ -14,19 +14,10 @@
   var md = document.querySelector('meta[name="description"]');
   if (md) md.content = C.sub || "";
 
-  // ---------- install: every install link opens GitHub; commands can be copied ----------
+  // ---------- install: every install link opens the latest GitHub release ----------
   document.querySelectorAll("[data-install]").forEach(function (l) { l.href = C.installUrl || C.repoUrl; });
   document.querySelectorAll("[data-repo]").forEach(function (l) { l.href = C.repoUrl; });
-  document.querySelectorAll("[data-rust]").forEach(function (l) { l.href = C.rustUrl; });
-  var cmds = C.installCommands || [];
-  var NL = String.fromCharCode(10);
-  $("cmds").innerHTML = cmds.map(function (c) { return '<span class="pr">$</span> ' + esc(c); }).join(NL);
-  $("copyCmds").addEventListener("click", function () {
-    var b = this, label = b.querySelector("span");
-    var done = function (ok) { label.textContent = ok ? "Copied" : "Select and copy"; setTimeout(function () { label.textContent = "Copy"; }, 1800); };
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(cmds.join(NL)).then(function () { done(true); }, function () { done(false); });
-    else done(false);
-  });
+  document.querySelectorAll("[data-guide]").forEach(function (l) { l.href = C.guideUrl; });
 
   // ---------- helpers for the demo ----------
   var F = C.features || [];
