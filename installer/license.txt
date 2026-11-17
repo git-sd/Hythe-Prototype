@@ -1,0 +1,71 @@
+HYTHE - TERMS AND PRIVACY POLICY
+
+Please read the following before installing Hythe. Clicking "I accept" means you agree to it.
+
+============================================================
+TERMS OF USE
+============================================================
+
+Terms
+
+Last updated 11 November 2026
+
+Hythe is a prototype. It's free to try, it will change often, and you should keep your work in git.
+
+Using Hythe
+
+You can download the source from GitHub and run it on your own computer. Use of the code is governed by the license published in the repository.
+
+It's a prototype
+
+Hythe is under active development. Features will change, some will break, and the Windows installer is not code-signed, so Windows may show a warning the first time you run it. It's provided as is, without warranties of any kind. Keep your work committed and pushed, as you would with any tool.
+
+The demo on this site
+
+The Hythe window on our home page is a simulation that runs in your browser. The agents, teammates, terminal and git history in it are scripted. No code is run and nothing you type into it leaves your browser.
+
+Agents and other tools
+
+Hythe runs the coding-agent tools you install, such as Claude Code or GitHub Copilot, under your own accounts. Their own terms, limits and charges apply to that use, and you're responsible for it.
+
+Open source and names
+
+Hythe is built on open-source projects, which belong to their authors and are used under their licenses. IBM Plex is used under the SIL Open Font License. Product names on this site belong to their owners, and listing them doesn't mean they endorse Hythe. The Hythe name and logo are ours.
+
+Liability
+
+To the extent the law allows, we aren't liable for indirect or consequential losses, or for lost data or code, arising from using Hythe or this site.
+
+Changes
+
+We may update these terms as Hythe develops. When we do, we'll change the date at the top.
+
+============================================================
+PRIVACY POLICY
+============================================================
+
+Privacy
+
+Last updated 11 November 2026
+
+This site doesn't collect anything about you. There are no forms, accounts, cookies, analytics or trackers.
+
+This website
+
+The page is static: it doesn't ask for your name or email, set cookies, or run analytics or advertising scripts. The demo runs entirely in your browser, and nothing you type into it is sent anywhere.
+
+Other services this page talks to
+
+- randomuser.me serves the profile pictures in the demo, so it sees the usual request details from your browser, such as your IP address.
+
+- GitHub hosts the code. When you follow an install link you're on GitHub, and GitHub's privacy statement applies there.
+
+Everything else on this page, including the fonts, is served from this site.
+
+The Hythe app
+
+Hythe runs on your computer. Threads are saved in your own git repository. Live editing goes through hythe-relay, a server you run yourself. Agents such as Claude Code or GitHub Copilot connect to their own providers under your accounts, and those providers' privacy terms apply to that use.
+
+Changes
+
+If we start collecting anything, such as a mailing list, we'll update this notice and the date at the top before we do.

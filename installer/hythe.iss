@@ -20,7 +20,12 @@ AppSupportURL=https://github.com/git-sd/Hythe-Prototype/issues
 AppUpdatesURL=https://github.com/git-sd/Hythe-Prototype/releases
 DefaultDirName={userpf}\Hythe
 DefaultGroupName=Hythe
-DisableProgramGroupPage=yes
+DisableProgramGroupPage=no
+DisableDirPage=no
+DisableReadyPage=no
+DisableWelcomePage=no
+LicenseFile=license.txt
+AllowNoIcons=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist
 OutputBaseFilename=Hythe-Setup-{#MyVersion}
@@ -45,7 +50,7 @@ Source: "{#Payload}\hythe.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Payload}\hythe-agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Hythe"; Filename: "{app}\hythe.exe"; IconFilename: "{app}\hythe.exe"
+Name: "{group}\Hythe"; Filename: "{app}\hythe.exe"; IconFilename: "{app}\hythe.exe"
 Name: "{autodesktop}\Hythe"; Filename: "{app}\hythe.exe"; IconFilename: "{app}\hythe.exe"; Tasks: desktopicon
 
 [Run]
