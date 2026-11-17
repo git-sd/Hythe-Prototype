@@ -14,6 +14,7 @@ window.WAITLIST_CONFIG = {
   // Every install button opens `installUrl`: the newest release, which holds the Windows installer.
   repoUrl: "https://github.com/git-sd/Hythe-Prototype",
   installUrl: "https://github.com/git-sd/Hythe-Prototype/releases/latest",
+  releaseApi: "https://api.github.com/repos/git-sd/Hythe-Prototype/releases/latest",
   guideUrl: "https://github.com/git-sd/Hythe-Prototype/blob/main/INSTALL.md",
   installButton: "Download for Windows",
   installTitle: "Install",

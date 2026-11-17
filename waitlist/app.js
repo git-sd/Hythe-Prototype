@@ -15,7 +15,25 @@
   if (md) md.content = C.sub || "";
 
   // ---------- install: every install link opens the latest GitHub release ----------
-  document.querySelectorAll("[data-install]").forEach(function (l) { l.href = C.installUrl || C.repoUrl; });
+  var downloadUrl = C.installUrl || C.repoUrl;
+  function pointInstallLinks() {
+    document.querySelectorAll("[data-install]").forEach(function (l) {
+      l.href = downloadUrl;
+      // A direct file link downloads in place; the fallback release page opens in a new tab.
+      if (downloadUrl !== (C.installUrl || C.repoUrl)) { l.removeAttribute("target"); l.setAttribute("download", ""); }
+    });
+  }
+  pointInstallLinks();
+  // Ask GitHub for the newest installer so the button downloads it straight away.
+  if (C.releaseApi && window.fetch) {
+    fetch(C.releaseApi, { headers: { Accept: "application/vnd.github+json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (rel) {
+        var asset = rel && (rel.assets || []).filter(function (x) { return /^Hythe-Setup.*\.exe$/i.test(x.name); })[0];
+        if (asset) { downloadUrl = asset.browser_download_url; pointInstallLinks(); }
+      })
+      .catch(function () {});
+  }
   document.querySelectorAll("[data-repo]").forEach(function (l) { l.href = C.repoUrl; });
   document.querySelectorAll("[data-guide]").forEach(function (l) { l.href = C.guideUrl; });
 
@@ -514,7 +532,7 @@
     account: function (b) {
       openPop(b, [
         { label: "Settings", icon: "gear", run: function () { toast("Settings live in the real app"); } },
-        { label: "Install Hythe", icon: "arrow", run: function () { window.open(C.installUrl || C.repoUrl, "_blank", "noopener"); } }
+        { label: "Install Hythe", icon: "arrow", run: function () { window.open(downloadUrl, "_blank", "noopener"); } }
       ]);
     }
   };
