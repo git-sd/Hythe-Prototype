@@ -10,6 +10,8 @@
 //!   Hythe-Setup.exe /desktop        also put a shortcut on the desktop
 //!   Hythe-Setup.exe /noshortcuts    no shortcuts (used by tests)
 //!   Hythe-Setup.exe /uninstall      remove it (what Settings > Apps runs)
+//!   Uninstall.exe /update           look for a newer release and install it silently
+//!                                   (Hythe runs this itself on startup)
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -22,12 +24,15 @@ const VERSION: &str = match option_env!("HYTHE_VERSION") {
     None => env!("CARGO_PKG_VERSION"),
 };
 const APP: &str = "Hythe";
+/// Where releases are published; the updater asks this repository for its latest one.
+const REPO: &str = "git-sd/Hythe-Prototype";
 const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Hythe";
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Options {
     silent: bool,
     uninstall: bool,
+    update: bool,
     desktop: bool,
     shortcuts_off: bool,
     dir: Option<PathBuf>,
@@ -40,6 +45,7 @@ fn parse_args(args: &[String]) -> Options {
         match lower.as_str() {
             "/s" | "/silent" | "--silent" => o.silent = true,
             "/uninstall" | "--uninstall" => o.uninstall = true,
+            "/update" | "--update" => o.update = true,
             "/desktop" => o.desktop = true,
             "/noshortcuts" => o.shortcuts_off = true,
             _ => {
@@ -57,6 +63,18 @@ fn parse_args(args: &[String]) -> Options {
 /// A string safe inside a single-quoted PowerShell literal.
 fn ps_quote(s: &str) -> String {
     s.replace('\'', "''")
+}
+
+/// "v0.1.12" -> [0, 1, 12]. Anything that is not a plain dotted number gives `None`.
+fn parse_version(v: &str) -> Option<Vec<u64>> {
+    v.trim().trim_start_matches('v').split('.').map(|p| p.parse().ok()).collect()
+}
+
+fn is_newer(candidate: &str, current: &str) -> bool {
+    match (parse_version(candidate), parse_version(current)) {
+        (Some(c), Some(cur)) => c > cur,
+        _ => false,
+    }
 }
 
 fn default_dir() -> PathBuf {
@@ -100,6 +118,23 @@ mod win {
             .status();
     }
 
+    pub fn powershell_output(script: &str) -> Result<String, String> {
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script])
+            .creation_flags(NO_WINDOW)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
+    }
+
+    pub fn run_detached(exe: &Path, args: &[String]) -> Result<(), String> {
+        Command::new(exe).args(args).creation_flags(NO_WINDOW).spawn().map(|_| ()).map_err(|e| e.to_string())
+    }
+
     pub fn start_menu() -> PathBuf {
         std::env::var_os("APPDATA")
             .map(PathBuf::from)
@@ -117,10 +152,11 @@ mod win {
             let _ = std::fs::create_dir_all(parent);
         }
         powershell(&format!(
-            "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath='{}'; $s.WorkingDirectory='{}'; $s.Description='{APP}'; $s.Save()",
+            "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath='{}'; $s.WorkingDirectory='{}'; $s.IconLocation='{},0'; $s.Description='{APP}'; $s.Save()",
             ps_quote(&lnk.to_string_lossy()),
             ps_quote(&target.to_string_lossy()),
             ps_quote(&dir.to_string_lossy()),
+            ps_quote(&target.to_string_lossy()),
         ));
     }
 
@@ -164,14 +200,73 @@ mod win {
     }
 }
 
+/// Replace `dest`. Windows will not overwrite a running program but will rename it, so a
+/// busy file is moved aside to `.old` (removed on the next run) and the new one put in
+/// its place: an update can land while Hythe is open and starts with the next launch.
 #[cfg(windows)]
 fn write_atomic(dest: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = dest.with_extension("new");
     std::fs::write(&tmp, bytes).map_err(|e| format!("could not write {}: {e}", dest.display()))?;
-    std::fs::rename(&tmp, dest).map_err(|e| {
+    if std::fs::rename(&tmp, dest).is_ok() {
+        return Ok(());
+    }
+    let old = dest.with_extension("old");
+    let _ = std::fs::remove_file(&old);
+    let result = std::fs::rename(dest, &old).and_then(|_| {
+        std::fs::rename(&tmp, dest).inspect_err(|_| {
+            let _ = std::fs::rename(&old, dest);
+        })
+    });
+    result.map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("could not replace {}. Is {APP} still running? Close it and run setup again. ({e})", dest.display())
     })
+}
+
+#[cfg(windows)]
+fn remove_leftovers(dir: &Path) {
+    for f in ["hythe.old", "hythe-agent.old", "Uninstall.old"] {
+        let _ = std::fs::remove_file(dir.join(f));
+    }
+}
+
+/// Ask GitHub for the newest release; if it is newer than this build, download its setup,
+/// check it against the published checksum and run it silently. Returns a short note.
+#[cfg(windows)]
+fn update(o: &Options) -> Result<String, String> {
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = o.dir.clone().or_else(|| me.parent().map(Path::to_path_buf)).ok_or("could not find the install folder")?;
+    let script = format!(
+        "$ErrorActionPreference='Stop';[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocol]::Tls12;\
+         $r=Invoke-RestMethod -UseBasicParsing -Headers @{{'User-Agent'='Hythe-Updater'}} 'https://api.github.com/repos/{REPO}/releases/latest';\
+         $r.tag_name;foreach($a in $r.assets){{$a.browser_download_url}}"
+    );
+    let out = win::powershell_output(&script)?;
+    let mut lines = out.lines().map(str::trim).filter(|l| !l.is_empty());
+    let tag = lines.next().ok_or("no release found")?.to_string();
+    if !is_newer(&tag, VERSION) {
+        return Ok(format!("{APP} {VERSION} is up to date."));
+    }
+    let urls: Vec<&str> = lines.collect();
+    let setup = urls.iter().find(|u| u.contains("Hythe-Setup-") && u.ends_with(".exe")).ok_or("release has no installer")?;
+    let sum = urls.iter().find(|u| u.ends_with(".exe.sha256")).ok_or("release has no checksum")?;
+    let tmp = std::env::temp_dir().join("hythe-update");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let file = tmp.join("Hythe-Setup.exe");
+    win::powershell_output(&format!(
+        "$ErrorActionPreference='Stop';[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocol]::Tls12;\
+         Invoke-WebRequest -UseBasicParsing -Uri '{}' -OutFile '{}';\
+         $want=((Invoke-WebRequest -UseBasicParsing -Uri '{}').Content -split '\\s+')[0].Trim().ToLower();\
+         $got=(Get-FileHash '{}' -Algorithm SHA256).Hash.ToLower();\
+         if($want -ne $got){{throw 'checksum mismatch'}}",
+        ps_quote(setup),
+        ps_quote(&file.to_string_lossy()),
+        ps_quote(sum),
+        ps_quote(&file.to_string_lossy()),
+    ))?;
+    win::run_detached(&file, &["/S".into(), "/update".into(), format!("/dir={}", dir.display())])?;
+    Ok(format!("Updating {APP} to {tag}."))
 }
 
 #[cfg(windows)]
@@ -181,6 +276,7 @@ fn install(o: &Options) -> Result<String, String> {
     }
     let dir = o.dir.clone().unwrap_or_else(default_dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    remove_leftovers(&dir);
     let exe = dir.join("hythe.exe");
     write_atomic(&exe, HYTHE)?;
     write_atomic(&dir.join("hythe-agent.exe"), AGENT)?;
@@ -191,7 +287,7 @@ fn install(o: &Options) -> Result<String, String> {
             write_atomic(&uninstaller, &std::fs::read(&me).map_err(|e| e.to_string())?)?;
         }
     }
-    if !o.shortcuts_off {
+    if !o.shortcuts_off && !o.update {
         win::shortcut(&win::start_menu(), &exe, &dir);
         if o.desktop {
             win::shortcut(&win::desktop(), &exe, &dir);
@@ -199,7 +295,7 @@ fn install(o: &Options) -> Result<String, String> {
     }
     win::register(&dir, &uninstaller).map_err(|e| format!("could not register the uninstaller: {e}"))?;
     let mut note = format!("{APP} {VERSION} is installed in {}.", dir.display());
-    if !win::git_installed() {
+    if !o.update && !win::git_installed() {
         note.push_str("\n\nGit was not found. Hythe uses it for source control, threads and chat: install it from https://git-scm.com and reopen Hythe.");
     }
     Ok(note)
@@ -225,11 +321,30 @@ fn uninstall(o: &Options) -> Result<String, String> {
     Ok(format!("{APP} was removed. Your repositories and chats are untouched."))
 }
 
+/// Both the installed `Uninstall.exe` and a freshly downloaded setup contain the app, so
+/// the two `/update` roles are told apart by the file name: only `Uninstall.exe` looks
+/// for a newer release.
+#[cfg(windows)]
+fn is_installed_updater() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_ascii_lowercase()))
+        .is_some_and(|n| n == "uninstall.exe")
+}
+
 #[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let o = parse_args(&args);
-    let result = if o.uninstall { uninstall(&o) } else { install(&o) };
+    // `/update` from the installed Uninstall.exe fetches and runs the newest setup; the
+    // downloaded setup then runs `/update` too, but with the app inside it, and installs.
+    let result = if o.uninstall {
+        uninstall(&o)
+    } else if o.update && is_installed_updater() {
+        update(&o)
+    } else {
+        install(&o)
+    };
     match result {
         Ok(note) => {
             if o.silent {
@@ -271,6 +386,7 @@ mod tests {
         assert!(o.silent && o.desktop && !o.uninstall);
         assert_eq!(o.dir, Some(PathBuf::from("C:\\Tools\\Hythe")), "the path keeps its capitalisation");
         assert!(parse_args(&args(&["/uninstall"])).uninstall);
+        assert!(parse_args(&args(&["/update", "/S"])).update);
         assert_eq!(parse_args(&args(&[])), Options::default());
         let q = parse_args(&args(&["/dir=\"C:\\Program Files\\Hythe\""]));
         assert_eq!(q.dir, Some(PathBuf::from("C:\\Program Files\\Hythe")));
@@ -279,6 +395,16 @@ mod tests {
     #[test]
     fn powershell_literals_cannot_be_broken_out_of() {
         assert_eq!(ps_quote("C:\\Users\\O'Brien\\Hythe"), "C:\\Users\\O''Brien\\Hythe");
+    }
+
+    #[test]
+    fn only_a_higher_release_counts_as_an_update() {
+        assert!(is_newer("v0.1.13", "0.1.12"));
+        assert!(is_newer("v0.2.0", "0.1.12"));
+        assert!(is_newer("v0.1.12", "0.1.9"), "numbers, not text");
+        assert!(!is_newer("v0.1.12", "0.1.12"));
+        assert!(!is_newer("v0.1.11", "0.1.12"));
+        assert!(!is_newer("nightly", "0.1.12"), "an odd tag is never installed");
     }
 
     #[test]

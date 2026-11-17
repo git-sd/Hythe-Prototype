@@ -7,6 +7,16 @@ use std::{env, fs};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=HYTHE_PAYLOAD");
+    println!("cargo:rerun-if-changed=../../assets/hythe.ico");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("../../assets/hythe.ico");
+        res.set("ProductName", "Hythe Setup");
+        res.set("FileDescription", "Hythe Setup");
+        if let Err(e) = res.compile() {
+            println!("cargo:warning=could not embed the Hythe icon: {e}");
+        }
+    }
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     let dir = env::var("HYTHE_PAYLOAD").ok();
     for file in ["hythe.exe", "hythe-agent.exe"] {

@@ -12,6 +12,7 @@ mod explorer;
 mod github;
 mod highlight;
 mod icons;
+mod updater;
 mod menus;
 mod palette;
 mod panes;
@@ -59,6 +60,7 @@ fn members_of(repo: &hythe_git::Repo) -> Vec<Member> {
 }
 
 fn main() -> iced::Result {
+    updater::check_in_background();
     // A daemon, not a single-window application: the chat can be popped out into its
     // own window. The main window is opened in `App::new`.
     iced::daemon(App::new, App::update, App::view_window)
@@ -393,6 +395,7 @@ impl App {
             // Ctrl+Shift+0 fits it to the monitor instead.
             maximized: true,
             exit_on_close_request: false,
+            icon: window::icon::from_file_data(include_bytes!("../assets/hythe-icon.png"), None).ok(),
             ..window::Settings::default()
         });
         let mut app = App {
