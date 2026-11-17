@@ -60,6 +60,10 @@ fn members_of(repo: &hythe_git::Repo) -> Vec<Member> {
 }
 
 fn main() -> iced::Result {
+    // A downloaded update runs before any window opens, then this program steps aside.
+    if updater::apply_staged() {
+        return Ok(());
+    }
     updater::check_in_background();
     // A daemon, not a single-window application: the chat can be popped out into its
     // own window. The main window is opened in `App::new`.

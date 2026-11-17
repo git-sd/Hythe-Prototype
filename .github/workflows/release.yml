@@ -17,17 +17,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target/dist"
+      - name: Install Inno Setup
+        shell: pwsh
+        run: if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
       - name: Build installer
         shell: pwsh
-        run: ./installer/build-installer.ps1
+        run: ./installer/build-installer.ps1 -Version "${{ github.ref_name }}"
       - name: Test the installer (install, check, uninstall)
         shell: pwsh
         run: |
           $setup = (Get-ChildItem dist/Hythe-Setup-*.exe | Select-Object -First 1).FullName
           $dir = Join-Path $env:RUNNER_TEMP "hythe-test"
-          Start-Process $setup -ArgumentList "/S","/noshortcuts","/dir=$dir" -Wait
-          foreach ($f in "hythe.exe","hythe-agent.exe","Uninstall.exe") { if (-not (Test-Path (Join-Path $dir $f))) { throw "missing $f" } }
-          Start-Process (Join-Path $dir "Uninstall.exe") -ArgumentList "/S","/uninstall","/dir=$dir" -Wait
+          Start-Process $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NOICONS","/DIR=$dir" -Wait
+          foreach ($f in "hythe.exe","hythe-agent.exe") { if (-not (Test-Path (Join-Path $dir $f))) { throw "missing $f" } }
+          $un = Get-ChildItem $dir -Filter "unins*.exe" | Select-Object -First 1
+          if (-not $un) { throw "missing uninstaller" }
+          Start-Process $un.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
